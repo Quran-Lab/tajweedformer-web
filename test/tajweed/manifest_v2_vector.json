@@ -1,0 +1,52 @@
+{
+  "manifest": {
+    "coreml": "zf.mlmodelc",
+    "coreml_format": 9,
+    "engine_format": 1,
+    "family": "zipformer_p-arabic",
+    "files": [
+      {
+        "path": "engine.zfs",
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "size": 4117544
+      },
+      {
+        "path": "keeps_packed.bin",
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "size": 1536
+      },
+      {
+        "path": "tokens.txt",
+        "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "size": 2970
+      },
+      {
+        "path": "zf.mlmodelc/coremldata.bin",
+        "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+        "size": 900
+      },
+      {
+        "path": "zf.mlmodelc/model.mil",
+        "sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        "size": 12345
+      },
+      {
+        "path": "zf.mlmodelc/weights/weight.bin",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "size": 131072000
+      }
+    ],
+    "format": 2,
+    "keeps": "keeps_packed.bin",
+    "min_sdk_version": "1.0.0",
+    "model_id": "v3.1",
+    "revision": "v3.1-ane-2026-09-28",
+    "sidecar": "engine.zfs",
+    "signature": "TV189Ty0HubkDHcYyJ8gC2kiEAzgs1y9F9WVimRgeW9/0g8J6jwaw1VSIH7R/wC/mUKfjTGFyOgA1RSb1CBeDQ==",
+    "tokens": "tokens.txt",
+    "tokens_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "public_key_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+  "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "signed_text": "quranlab-model-manifest 2\nmodel_id v3.1\nfamily zipformer_p-arabic\nrevision v3.1-ane-2026-09-28\nmin_sdk_version 1.0.0\nengine_format 1\ncoreml_format 9\ntokens_sha256 3333333333333333333333333333333333333333333333333333333333333333\ncoreml zf.mlmodelc\nsidecar engine.zfs\nkeeps keeps_packed.bin\ntokens tokens.txt\nfile 1111111111111111111111111111111111111111111111111111111111111111 4117544 engine.zfs\nfile 2222222222222222222222222222222222222222222222222222222222222222 1536 keeps_packed.bin\nfile 3333333333333333333333333333333333333333333333333333333333333333 2970 tokens.txt\nfile 4444444444444444444444444444444444444444444444444444444444444444 900 zf.mlmodelc/coremldata.bin\nfile 5555555555555555555555555555555555555555555555555555555555555555 12345 zf.mlmodelc/model.mil\nfile 6666666666666666666666666666666666666666666666666666666666666666 131072000 zf.mlmodelc/weights/weight.bin\n"
+}

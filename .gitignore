@@ -1,0 +1,10 @@
+node_modules/
+*.log
+model/
+*.zfg
+*.zfg.bin
+*.zfw
+*.onnx
+dist/
+package-lock.json
+test/browser/results/

@@ -1,0 +1,175 @@
+diff --git a/engine/src/kernels.c b/engine/src/kernels.c
+index 96c227a..1f89625 100644
+--- a/engine/src/kernels.c
++++ b/engine/src/kernels.c
+@@ -9,6 +9,23 @@
+ #include "zf/neon.h"
+ #define ZF_NEON ZF_NEON_AVAILABLE
+ 
++/* WebAssembly SIMD128 for the int8 linear kernel (zipformer-wasm). On WebAssembly the NEON source
++ * runs through zf/neon_emu.h so every float operation is ARM's; the int8 panel loop is the one place
++ * a native SIMD128 form gives the same bits for free, because it is integer arithmetic with no
++ * overflow anywhere: zf_weights_s8_pack refuses a weight of -128, so every NEON int16 lane
++ * (a_lo*w_lo + a_hi*w_hi, each product at most 128*127) stays within +-32512 and the reference's
++ * int32 total is the exact integer sum, which this form computes in another order.
++ * -DZF_WASM_SIMD_INT8=0 turns it off, leaving the emulated NEON loop, for A/B. */
++#if defined(__wasm_simd128__) && !defined(ZF_WASM_SIMD_INT8)
++#define ZF_WASM_SIMD_INT8 1
++#endif
++#if defined(__wasm_simd128__) && ZF_WASM_SIMD_INT8
++#include <wasm_simd128.h>
++#define ZF_WASM_SIMD 1
++#else
++#define ZF_WASM_SIMD 0
++#endif
++
+ /* ZF_QUANT_DIVIDE: quantise by dividing, as ONNX Runtime does, instead of by a reciprocal.
+  *
+  * The engine computes inv = 1/scale once and multiplies, which is the obvious thing when a divide
+@@ -350,7 +367,7 @@ int zf_kernels_set_variant(int use_asm) {
+ 
+ int zf_kernels_variant(void) { return g_use_asm; }
+ 
+-#if ZF_NEON
++#if ZF_NEON && !ZF_WASM_SIMD
+ /* [hsum(a), hsum(b), hsum(c), hsum(d)] in six pairwise adds, which keeps the four output units of
+  * a panel in a vector: no lane extraction, and no moves from NEON to the core registers. */
+ static inline int32x4_t hsum4_s32(int32x4_t a, int32x4_t b, int32x4_t c, int32x4_t d) {
+@@ -385,6 +402,46 @@ static inline void store_units(int32_t *dst, int32x4_t v, int valid) {
+   } while (0)
+ #endif
+ 
++#if ZF_WASM_SIMD
++/* Sum the four int32 lanes of v, once per (row, panel) in the epilogue. */
++static inline int32_t zf_hsum_i32x4(v128_t v) {
++  const v128_t s0 = wasm_i32x4_add(v, wasm_i32x4_shuffle(v, v, 2, 3, 0, 1));
++  const v128_t s1 = wasm_i32x4_add(s0, wasm_i32x4_shuffle(s0, s0, 1, 0, 3, 2));
++  return wasm_i32x4_extract_lane(s1, 0);
++}
++
++/* One 16-byte k group of activation (widened to int16 halves al, ah) against one packed unit's
++ * weights (wl, wh), into acc. Two forms, both exact. The default multiplies in int16 (no product
++ * exceeds 128*127 in magnitude, no pair of them 32512, see above) and folds adjacent pairs into
++ * int32: five instructions a row and unit in V8's lowering on arm64 and on x86-64.
++ * -DZF_WASM_INT8_FORM=1 uses i32x4.dot_i16x8_s instead, which is a single pmaddwd on x86-64 but
++ * three instructions on arm64, where it measured 2.7 times slower than the default (22 against
++ * 60 GMAC/s, M2 Pro, Node 22). */
++#ifndef ZF_WASM_INT8_FORM
++#define ZF_WASM_INT8_FORM 2
++#endif
++static inline v128_t zf_wsimd_dot(v128_t acc, v128_t al, v128_t ah, v128_t wl, v128_t wh) {
++#if ZF_WASM_INT8_FORM == 1
++  return wasm_i32x4_add(
++      acc, wasm_i32x4_add(wasm_i32x4_dot_i16x8(al, wl), wasm_i32x4_dot_i16x8(ah, wh)));
++#else
++  const v128_t t = wasm_i16x8_add(wasm_i16x8_mul(al, wl), wasm_i16x8_mul(ah, wh));
++  return wasm_i32x4_add(acc, wasm_i32x4_extadd_pairwise_i16x8(t));
++#endif
++}
++
++/* Store `valid` (1..4) lanes of a four-unit result vector to dst. */
++static inline void zf_wsimd_store_units(int32_t *dst, v128_t v, int valid) {
++  if (valid == ZF_S8_UNIT_BLOCK) {
++    wasm_v128_store(dst, v);
++    return;
++  }
++  int32_t tmp[ZF_S8_UNIT_BLOCK];
++  wasm_v128_store(tmp, v);
++  for (int u = 0; u < valid; ++u) dst[u] = tmp[u];
++}
++#endif
++
+ /* The panel loop, over rows [row_begin, row_end). */
+ /* `j_shift` is subtracted from the output column, so a caller can point `out` at a tile that holds
+  * only the panels it is about to scale rather than the whole accumulator slab. */
+@@ -412,7 +469,7 @@ static void linear_s8_rows_f(const int8_t *a, int row_begin, int row_end, int ld
+     const int jo = j0 - j_shift;
+     const int valid = (w->n - j0) < ZF_S8_UNIT_BLOCK ? (w->n - j0) : ZF_S8_UNIT_BLOCK;
+     int i = 0;
+-#if ZF_NEON
++#if ZF_NEON && !ZF_WASM_SIMD
+     const int32x4_t corr = vmulq_n_s32(vld1q_s32(w->row_sums + j0), correction);
+ #endif
+ #if ZF_HAVE_ASM
+@@ -484,7 +541,80 @@ static void linear_s8_rows_f(const int8_t *a, int row_begin, int row_end, int ld
+       continue;
+     }
+ #endif
+-#if ZF_NEON
++#if ZF_WASM_SIMD
++    /* One panel is four output units interleaved in 16-byte k groups. The correction
++     * (128 - a_zero_point) times each unit's row sum is added in the epilogue, as on NEON. Four rows
++     * at a time: each weight group is widened once and reused across the rows, each row's
++     * activation once and reused across the four units. */
++    const v128_t corr =
++        wasm_i32x4_mul(wasm_v128_load(w->row_sums + j0), wasm_i32x4_splat(correction));
++#define ZF_WSIMD_ROW(PA, C0, C1, C2, C3)                                            \
++  do {                                                                              \
++    const v128_t av = wasm_v128_load((PA) + p);                                     \
++    const v128_t al = wasm_i16x8_extend_low_i8x16(av);                              \
++    const v128_t ah = wasm_i16x8_extend_high_i8x16(av);                             \
++    C0 = zf_wsimd_dot(C0, al, ah, w0l, w0h);                                        \
++    C1 = zf_wsimd_dot(C1, al, ah, w1l, w1h);                                        \
++    C2 = zf_wsimd_dot(C2, al, ah, w2l, w2h);                                        \
++    C3 = zf_wsimd_dot(C3, al, ah, w3l, w3h);                                        \
++  } while (0)
++#define ZF_WSIMD_LOAD_W()                                                                         \
++  const int8_t *pw = panel + (size_t)p * ZF_S8_UNIT_BLOCK;                                        \
++  const v128_t w0v = wasm_v128_load(pw), w1v = wasm_v128_load(pw + 16);                           \
++  const v128_t w2v = wasm_v128_load(pw + 32), w3v = wasm_v128_load(pw + 48);                      \
++  const v128_t w0l = wasm_i16x8_extend_low_i8x16(w0v), w0h = wasm_i16x8_extend_high_i8x16(w0v);   \
++  const v128_t w1l = wasm_i16x8_extend_low_i8x16(w1v), w1h = wasm_i16x8_extend_high_i8x16(w1v);   \
++  const v128_t w2l = wasm_i16x8_extend_low_i8x16(w2v), w2h = wasm_i16x8_extend_high_i8x16(w2v);   \
++  const v128_t w3l = wasm_i16x8_extend_low_i8x16(w3v), w3h = wasm_i16x8_extend_high_i8x16(w3v)
++#define ZF_WSIMD_STORE(ROW, C0, C1, C2, C3)                                                 \
++  zf_wsimd_store_units(out + (size_t)(ROW) * ldc + jo,                                      \
++                       wasm_i32x4_add(wasm_i32x4_make(zf_hsum_i32x4(C0), zf_hsum_i32x4(C1), \
++                                                      zf_hsum_i32x4(C2), zf_hsum_i32x4(C3)), \
++                                      corr),                                                \
++                       valid)
++    for (; i + 4 <= m; i += 4) {
++      const int8_t *pa0 = a + (size_t)i * lda, *pa1 = pa0 + lda, *pa2 = pa1 + lda, *pa3 = pa2 + lda;
++      v128_t c00 = wasm_i32x4_splat(0), c01 = c00, c02 = c00, c03 = c00;
++      v128_t c10 = c00, c11 = c00, c12 = c00, c13 = c00;
++      v128_t c20 = c00, c21 = c00, c22 = c00, c23 = c00;
++      v128_t c30 = c00, c31 = c00, c32 = c00, c33 = c00;
++      for (int p = 0; p < k_pad; p += ZF_S8_K_GROUP) {
++        ZF_WSIMD_LOAD_W();
++        ZF_WSIMD_ROW(pa0, c00, c01, c02, c03);
++        ZF_WSIMD_ROW(pa1, c10, c11, c12, c13);
++        ZF_WSIMD_ROW(pa2, c20, c21, c22, c23);
++        ZF_WSIMD_ROW(pa3, c30, c31, c32, c33);
++      }
++      ZF_WSIMD_STORE(i, c00, c01, c02, c03);
++      ZF_WSIMD_STORE(i + 1, c10, c11, c12, c13);
++      ZF_WSIMD_STORE(i + 2, c20, c21, c22, c23);
++      ZF_WSIMD_STORE(i + 3, c30, c31, c32, c33);
++    }
++    for (; i + 2 <= m; i += 2) {
++      const int8_t *pa0 = a + (size_t)i * lda, *pa1 = pa0 + lda;
++      v128_t c00 = wasm_i32x4_splat(0), c01 = c00, c02 = c00, c03 = c00;
++      v128_t c10 = c00, c11 = c00, c12 = c00, c13 = c00;
++      for (int p = 0; p < k_pad; p += ZF_S8_K_GROUP) {
++        ZF_WSIMD_LOAD_W();
++        ZF_WSIMD_ROW(pa0, c00, c01, c02, c03);
++        ZF_WSIMD_ROW(pa1, c10, c11, c12, c13);
++      }
++      ZF_WSIMD_STORE(i, c00, c01, c02, c03);
++      ZF_WSIMD_STORE(i + 1, c10, c11, c12, c13);
++    }
++    for (; i < m; ++i) {
++      const int8_t *pa0 = a + (size_t)i * lda;
++      v128_t c00 = wasm_i32x4_splat(0), c01 = c00, c02 = c00, c03 = c00;
++      for (int p = 0; p < k_pad; p += ZF_S8_K_GROUP) {
++        ZF_WSIMD_LOAD_W();
++        ZF_WSIMD_ROW(pa0, c00, c01, c02, c03);
++      }
++      ZF_WSIMD_STORE(i, c00, c01, c02, c03);
++    }
++#undef ZF_WSIMD_ROW
++#undef ZF_WSIMD_LOAD_W
++#undef ZF_WSIMD_STORE
++#elif ZF_NEON
+     for (; i + 2 <= m; i += 2) {
+       const int8_t *pa0 = a + (size_t)i * lda;
+       const int8_t *pa1 = pa0 + lda;
