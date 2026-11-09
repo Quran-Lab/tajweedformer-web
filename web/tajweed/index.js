@@ -7,6 +7,6 @@ export * from './manifest.js';
 export * from './delivery.js';
 export {
   TajweedFormer, bindTajweed, EngineNotAvailableError, HEAD_SPECS, SCORER_HEADS, VOCAB, BLANK, MADD_CLASSES,
-  contextChunkMs, checkHeads, joinHeads, checkOf, cdnFolderUrl, DEFAULT_STREAM_HEADS,
+  contextChunkMs, checkHeads, joinHeads, checkOf, cdnFolderUrl, modelFolderUrl, MODELS_URL, DEFAULT_STREAM_HEADS,
   decode, decodeFrames, wordResults, sigmoidHead, WORD_BOUNDARY, CTC_FRAME_MS, HEAD_FRAME_MS, topK, topKOf, RANKED_HEADS,
 } from './tajweedformer.js';

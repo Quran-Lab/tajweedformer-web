@@ -10,7 +10,7 @@ import { SharingState, MAX_ASKS, REASK_GAP, copyFor } from '../web/consent/index
 const enc = new TextEncoder();
 const b64u = (b) => Buffer.from(b).toString('base64url');
 
-async function mockApi({ tamper = false, expired = false, flags = { analytics: true, issues: true, contributions: false }, tajweed = { v: 1, preset: 'sensitive' } } = {}) {
+async function mockApi({ base = undefined, tamper = false, expired = false, flags = { analytics: true, issues: true, contributions: false }, tajweed = { v: 1, preset: 'sensitive' } } = {}) {
   const kp = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
   const pub = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
   const kid = await keyId(pub);
@@ -34,7 +34,7 @@ async function mockApi({ tamper = false, expired = false, flags = { analytics: t
       const now = Math.floor(Date.now() / 1000);
       const cfg = { v: 1, app: 'web:https://app.example', channel: 'stable', issued_at: now, expires_at: expired ? now - 10 : now + 86400,
         models: {}, recommended: { model: 'Quran-Lab/tajweedformer-v4', model_id: 'v4.0', folder: 'sdk/v4.0', revision: 'abc123', source: 'stable' },
-        denylist: [], flags: state.flags, tajweed: state.tajweed };
+        denylist: [], flags: state.flags, tajweed: state.tajweed, ...(base === undefined ? {} : { base }) };
       const bytes = enc.encode(JSON.stringify(cfg));
       const sig = new Uint8Array(await crypto.subtle.sign({ name: 'Ed25519' }, kp.privateKey, bytes));
       const sent = tamper ? enc.encode(JSON.stringify({ ...cfg, channel: 'beta' })) : bytes;
@@ -74,7 +74,7 @@ test('launch: unattested token, register (new install once), signed config verif
   assert.equal(api.log.filter((x) => x.path === '/v1/attest').length, 0, 'the stored token is reused');
   // the model source from the recommended model
   const src = await ql2.modelSource();
-  assert.equal(src.url, 'https://cdn.quranlab.ai/hf/Quran-Lab/tajweedformer-v4/abc123/sdk/v4.0/');
+  assert.equal(src.url, 'https://cdn.quranlab.ai/models/Quran-Lab/tajweedformer-v4/abc123/sdk/v4.0/');
   assert.equal(src.headers['x-qlab-key'], 'qlk_v1_test_aaaaaaaaaaaaaaaaaaaaaa');
 });
 
@@ -284,4 +284,26 @@ test('the portal team fixtures (quranlab-local e2e:client recordings): the recor
   assert.deepEqual([...issue].filter((k) => !rec('issue (web)').has(k)), []);
   const reg = api.log.find((x) => x.path === '/v1/register').body;
   assert.deepEqual([...keysOf(reg)].filter((k) => !rec('register (web)').has(k)), []);
+});
+
+test('model source: the signed base, then cdn.quranlab.ai/models; modelsUrl wins; cdnUrl alone keeps /hf/', async () => {
+  const path = 'Quran-Lab/tajweedformer-v4/abc123/sdk/v4.0/';
+  const url = async (base, extra = {}) => (await (await QuranLab.configure(opts(await mockApi({ base }), extra))).modelSource()).url;
+  assert.equal(await url('https://models.example.org'), `https://models.example.org/${path}`);
+  assert.equal(await url('https://cdn.quranlab.ai'), `https://cdn.quranlab.ai/hf/${path}`, 'a bare cdn base means the old /hf/ path');
+  assert.equal(await url('https://cdn.quranlab.ai/hf/'), `https://cdn.quranlab.ai/hf/${path}`);
+  assert.equal(await url('javascript:alert(1)'), `https://cdn.quranlab.ai/models/${path}`, 'an unsafe base is ignored');
+  assert.equal(await url('https://cdn.quranlab.ai/models'), `https://cdn.quranlab.ai/models/${path}`, 'the models path is not the bare host');
+  assert.equal(await url(undefined, { cdnUrl: 'https://cdn.test' }), `https://cdn.test/hf/${path}`);
+  assert.equal(await url('https://models.example.org', { modelsUrl: 'https://mirror.test/' }), `https://mirror.test/${path}`);
+});
+
+test('cdnFolderUrl: cdn.quranlab.ai/models by default, the bare cdn.quranlab.ai keeps the /hf/ path', async () => {
+  const { cdnFolderUrl, modelFolderUrl, MODELS_URL } = await import('../web/tajweed/index.js');
+  assert.equal(MODELS_URL, 'https://cdn.quranlab.ai/models');
+  assert.equal(cdnFolderUrl({ key: 'k', revision: 'r1' }).url, 'https://cdn.quranlab.ai/models/Quran-Lab/tajweedformer-v4/r1/sdk/v4.0/');
+  assert.equal(cdnFolderUrl({ key: 'k', revision: 'r1', url: 'https://cdn.quranlab.ai' }).url, 'https://cdn.quranlab.ai/hf/Quran-Lab/tajweedformer-v4/r1/sdk/v4.0/');
+  assert.equal(cdnFolderUrl({ key: 'k', revision: 'r1', url: 'https://eeur.cdn.quranlab.ai/' }).url, 'https://eeur.cdn.quranlab.ai/hf/Quran-Lab/tajweedformer-v4/r1/sdk/v4.0/');
+  assert.equal(modelFolderUrl('https://x.test/base/', 'A/b c', 'r', 'sdk/v4.0'), 'https://x.test/base/A/b%20c/r/sdk/v4.0/');
+  assert.deepEqual(cdnFolderUrl({ key: 'k', revision: 'r1' }).headers, { 'x-qlab-key': 'k' });
 });

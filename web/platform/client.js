@@ -16,6 +16,11 @@ import { decode } from '../tajweed/decode.js';
 export const SDK_VERSION = '2.0.0';
 export const API_URL = 'https://api.quranlab.ai';
 export const CDN_URL = 'https://cdn.quranlab.ai';
+/** Where model files are served: {base}/{owner}/{repo}/{revision}/{path}. The signed config's `base`
+ * replaces it when present; a cdnUrl given without modelsUrl keeps the old {cdn}/hf/ path. */
+export const MODELS_URL = 'https://cdn.quranlab.ai/models';
+const SAFE_BASE = /^(https:\/\/[A-Za-z0-9.-]+(:\d+)?|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)(\/[A-Za-z0-9._~\/-]*)?$/;
+const REGIONAL_CDN = /^https:\/\/((weur|eeur|enam|wnam|apac|oc)\.)?cdn\.quranlab\.ai$/;
 const ISSUE_KINDS = ['engine_failed', 'model_load', 'checksum_mismatch', 'signature_invalid', 'update_failed', 'fallback',
   'self_test_failed', 'audio_input', 'other'];
 /** Codes after which the client stops all network calls until the next launch (error table). */
@@ -85,7 +90,8 @@ export class QuranLab {
    * @param {number} [o.sharingBitrate]  Opus bit/s for shared sessions (default 192000, SHARING_BITRATE_DEFAULT)
    * @param {object} [o.state]  persistence (default localStorage; Node: dirState(dir))
    * @param {Array<string|Uint8Array>} [o.trustedKeys]  pinned config keys (default Quran Lab's)
-   * @param {string} [o.apiUrl] [o.cdnUrl] [o.fetch] [o.clock]
+   * @param {string} [o.apiUrl] [o.modelsUrl] [o.cdnUrl] [o.fetch] [o.clock]  o.modelsUrl: model files (default the
+   *   signed config's base, else cdn.quranlab.ai/models); o.cdnUrl alone: the old {cdn}/hf/ path
    */
   constructor(o) {
     if (!o || typeof o.key !== 'string' || !/^qlk_v1_/.test(o.key)) throw new TypeError('QuranLab: a developer key qlk_v1_... is needed');
@@ -93,6 +99,8 @@ export class QuranLab {
     this.key = o.key;
     this.apiUrl = (o.apiUrl || API_URL).replace(/\/$/, '');
     this.cdnUrl = (o.cdnUrl || CDN_URL).replace(/\/$/, '');
+    this.modelsUrl = o.modelsUrl ? o.modelsUrl.replace(/\/+$/, '') : null;
+    this.legacyCdn = !!o.cdnUrl && !o.modelsUrl;
     this.platform = o.platform || 'web';
     this.bundleId = o.bundleId || (inBrowser ? globalThis.location.origin : null);
     if (!this.bundleId) throw new TypeError('QuranLab: bundleId is needed outside a browser (the origin for a web key, the app id for a desktop key)');
@@ -239,7 +247,12 @@ export class QuranLab {
     if (!rec || !rec.revision) throw new PlatformError(0, 'no_model', 'the config recommends no model for this app and SDK');
     const enc = (p) => p.split('/').map(encodeURIComponent).join('/');
     this.modelRevision = `${rec.model_id || 'v4.0'}+${rec.revision}`.slice(0, 64);
-    return { url: `${this.cdnUrl}/hf/${enc(rec.model)}/${enc(rec.revision)}/${enc(rec.folder || 'sdk/' + rec.model_id)}/`,
+    // the base: the app's modelsUrl, else the signed config's base, else the app's cdnUrl (old /hf/ path), else
+    // cdn.quranlab.ai/models. A bare cdn.quranlab.ai base always means the /hf/ path.
+    const signed = typeof cfg.base === 'string' && SAFE_BASE.test(cfg.base) ? cfg.base.replace(/\/+$/, '') : null;
+    let base = this.modelsUrl || signed || (this.legacyCdn ? this.cdnUrl + '/hf' : MODELS_URL);
+    if (REGIONAL_CDN.test(base)) base += '/hf';
+    return { url: `${base}/${enc(rec.model)}/${enc(rec.revision)}/${enc(rec.folder || 'sdk/' + rec.model_id)}/`,
       headers: { 'x-qlab-key': this.key, ...(this.origin ? { origin: this.origin } : {}) } };
   }
 

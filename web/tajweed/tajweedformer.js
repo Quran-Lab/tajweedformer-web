@@ -19,12 +19,23 @@ import { TajweedSettings, CLASSES, CHECKS, PRESETS, ITEM_CHECK, BACKENDS } from 
 import { openTajweedFolder, memoryReader, urlReader, ModelFolderError } from './manifest.js';
 import { cachedReader, profilePaths } from './delivery.js';
 
-/** The Quran Lab CDN's URL of a model folder: { key, revision, repo?, folder?, url? } ->
- * { url, headers }. */
-export function cdnFolderUrl({ key, revision, repo = 'Quran-Lab/tajweedformer-v4', folder = 'sdk/v4.0', url = 'https://cdn.quranlab.ai' }) {
-  if (!revision) throw new TypeError('cdn: a revision (commit) is needed; the platform config names it');
+/** Where Quran Lab serves model files: {base}/{owner}/{repo}/{revision}/{path}, with an app key. */
+export const MODELS_URL = 'https://cdn.quranlab.ai/models';
+
+/** A model folder's URL under a base. A bare cdn.quranlab.ai (or regional) base keeps the old shape,
+ * {cdn}/hf/{owner}/{repo}/{revision}/{path}, which stays served for every revision. */
+export function modelFolderUrl(base, repo, revision, folder) {
+  let b = String(base || MODELS_URL).replace(/\/+$/, '');
+  if (/^https:\/\/((weur|eeur|enam|wnam|apac|oc)\.)?cdn\.quranlab\.ai$/.test(b)) b += '/hf';
   const enc = (p) => p.split('/').map(encodeURIComponent).join('/');
-  return { url: `${url.replace(/\/$/, '')}/hf/${enc(repo)}/${enc(revision)}/${enc(folder)}/`, headers: key ? { 'x-qlab-key': key } : {} };
+  return `${b}/${enc(repo)}/${enc(revision)}/${enc(folder)}/`;
+}
+
+/** Quran Lab's URL of a model folder: { key, revision, repo?, folder?, url? } -> { url, headers }.
+ * url defaults to https://cdn.quranlab.ai/models; https://cdn.quranlab.ai still works (the /hf/ path). */
+export function cdnFolderUrl({ key, revision, repo = 'Quran-Lab/tajweedformer-v4', folder = 'sdk/v4.0', url = MODELS_URL }) {
+  if (!revision) throw new TypeError('cdn: a revision is needed; the platform config names it');
+  return { url: modelFolderUrl(url, repo, revision, folder), headers: key ? { 'x-qlab-key': key } : {} };
 }
 import { checkHeads, contextChunkMs, VOCAB, BLANK, HEAD_SPECS, SCORER_HEADS } from './heads.js';
 import { decode, wordResults, topK } from './decode.js';

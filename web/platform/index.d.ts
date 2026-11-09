@@ -21,6 +21,8 @@ export interface SignedConfig {
   denylist: Record<string, string>[];
   flags: { analytics?: boolean; issues?: boolean; contributions?: boolean; upload_trust?: Record<string, 'off' | 'capped' | 'attested'>; [k: string]: unknown };
   tajweed?: unknown;
+  /** where model files are served (qlab-api signs it): {base}/{model}/{revision}/{folder}/ */
+  base?: string;
 }
 
 export interface QuranLabOptions {
@@ -44,6 +46,9 @@ export interface QuranLabOptions {
   /** pinned Ed25519 config keys (default: Quran Lab's) */
   trustedKeys?: (string | Uint8Array)[];
   apiUrl?: string;
+  /** model files: default the signed config's base, else https://cdn.quranlab.ai/models */
+  modelsUrl?: string;
+  /** given alone (no modelsUrl): model files from the old {cdnUrl}/hf/ path */
   cdnUrl?: string;
   fetch?: typeof fetch;
   clock?: () => number;

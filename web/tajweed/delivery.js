@@ -3,7 +3,7 @@
 // and SHA-256, and kept in a content-addressed cache (keyed by SHA-256, so a file shared by contexts
 // or revisions, such as one shared weight file, is downloaded and stored once).
 //
-//   const reader = cachedReader({ baseUrl: 'https://cdn.quranlab.ai/hf/Quran-Lab/tajweedformer-v4/<rev>/sdk/v4.0/',
+//   const reader = cachedReader({ baseUrl: 'https://cdn.quranlab.ai/models/Quran-Lab/tajweedformer-v4/<rev>/sdk/v4.0/',
 //                                 headers: { 'x-qlab-key': key }, onProgress });
 //   const tf = await TajweedFormer.load({ reader, context: 'c16_l64' });
 //

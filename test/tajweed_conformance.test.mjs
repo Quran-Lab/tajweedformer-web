@@ -7,6 +7,7 @@
 //
 // References (test/tajweed/conformance/):
 //   c16_l64   v4_c16_l64_audio_expected.jsonl: the engine's conformance file, ONNX Runtime armv7's bits
+//   c8_l64    v4_c8_l64_audio_expected.jsonl: the same recipe at 160 ms (the engine's conformance file; its native x86 run matches it 35/35)
 //   c24_l72, c24_l256   v4_<ctx>_audio_native_x86.jsonl: the native engine (tajweedformer-sdk b6436d7,
 //             MinGW GCC 13 release build, zf_tajweed_check, audio in 20 ms pushes). The engine has no
 //             audio reference from ONNX Runtime at chunk 24 (its c24 files are the feature path, which
@@ -34,6 +35,7 @@ const TOKENS = env('TAJWEED_V4_TOKENS', '');
 const AUDIO = env('TAJWEED_V4_AUDIO', '');
 const CONTEXTS = [
   { context: 'c16_l64', chunkMs: 320, expected: 'v4_c16_l64_audio_expected.jsonl', ref: 'ONNX Runtime armv7' },
+  { context: 'c8_l64', chunkMs: 160, expected: 'v4_c8_l64_audio_expected.jsonl', ref: 'ONNX Runtime armv7' },
   { context: 'c24_l72', chunkMs: 480, expected: 'v4_c24_l72_audio_native_x86.jsonl', ref: 'the native x86 engine' },
   { context: 'c24_l256', chunkMs: 480, expected: 'v4_c24_l256_audio_native_x86.jsonl', ref: 'the native x86 engine' },
 ];

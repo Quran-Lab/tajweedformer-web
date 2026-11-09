@@ -21,7 +21,7 @@ export type MaddClass = 'fixed2' | 'muttasil' | 'free' | 'lazim';
 export type Feature = 'madd' | 'qalqalah' | 'gemination';
 /** Whose thresholds: int8 = the exact engine (default), fp32 = heads from CoreML, an NPU or a server. */
 export type Backend = 'int8' | 'fp32';
-/** A shipped context: "c16_l64" (320 ms chunks, left 64, the default) or "c24_l72" (480 ms). */
+/** A shipped context: "c16_l64" (320 ms chunks, left 64, the default), "c8_l64" (160 ms, CPU engine), "c24_l72" or "c24_l256" (480 ms). */
 export type ContextName = string;
 
 export declare const PRESETS: readonly Preset[];
@@ -682,6 +682,10 @@ export declare function cachedReader(o: { baseUrl: string; headers?: Record<stri
   FolderReader & { prefetch(paths: string[]): Promise<void>; stats: DeliveryStats; store: DeliveryStore | null };
 export declare function pruneCache(store: DeliveryStore, keepManifests: Manifest[]): Promise<number>;
 export declare function cdnFolderUrl(src: CdnSource): { url: string; headers: Record<string, string> };
+/** https://cdn.quranlab.ai/models */
+export declare const MODELS_URL: string;
+/** {base}/{repo}/{revision}/{folder}/ (a bare cdn.quranlab.ai base: the old /hf/ path) */
+export declare function modelFolderUrl(base: string | null | undefined, repo: string, revision: string, folder: string): string;
 
 export declare class TajweedFormer {
   static load(opts: TajweedFormerLoadOptions): Promise<TajweedFormer>;

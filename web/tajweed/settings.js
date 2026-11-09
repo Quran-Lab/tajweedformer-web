@@ -425,7 +425,7 @@ export class TajweedSettings {
     });
   }
 
-  /** The context ("c16_l64", "c24_l72"); null removes the app's choice. */
+  /** The context ("c16_l64", "c8_l64", "c24_l72", ...); null removes the app's choice. */
   setContext(context) {
     return this._edit((a) => { if (context === null) delete a.context; else a.context = context; });
   }
