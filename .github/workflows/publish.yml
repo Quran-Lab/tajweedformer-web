@@ -1,0 +1,54 @@
+name: Publish to npm
+
+# Started by hand on a tag (Actions, Publish to npm, Run workflow, Use workflow from: Tags).
+# Builds what the package ships (dist/ is git-ignored), runs the tests on those builds, then publishes.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Test, build and publish @quran-lab/tajweedformer
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag is the package version
+        run: |
+          v=$(node -p "require('./package.json').version")
+          [ "$GITHUB_REF_NAME" = "$v" ] || { echo "tag $GITHUB_REF_NAME is not the package version $v" >&2; exit 1; }
+      - name: Engine submodule
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci-engine.sh vendor/zipformer-sdk
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+      - name: Emscripten
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install 6.0.11
+          "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.11
+      - name: Tests without the engine
+        run: npm test
+      - name: Build (the engine with the tajweed library, the scorer alone, libopus) and test with it
+        env:
+          ZF_WASM_TAJWEED: '1'
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          npm run build
+          npm run build:scorer
+          npm run build:opus
+          npm run test:wasm
+          REQUIRE_SCORER=1 npm test
+      - name: What the package will contain
+        run: npm pack --dry-run
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public

@@ -23,7 +23,11 @@ command -v emcc >/dev/null || { echo "emcc not on PATH; run: source <emsdk>/emsd
 
 mkdir -p "$DL"
 TAR="${OPUS_TARBALL:-$DL/opus-$VERSION.tar.gz}"
-[ -f "$TAR" ] || curl -sfL -o "$TAR" "$URL"
+# downloads.xiph.org intermittently refuses TLS connections: retry, then the OSU Open Source Lab's mirror of it
+# (the same file: the checksum below decides)
+MIRROR="https://ftp.osuosl.org/pub/xiph/releases/opus/opus-$VERSION.tar.gz"
+[ -f "$TAR" ] || curl -sfL --retry 3 --retry-all-errors --retry-delay 5 -o "$TAR" "$URL" \
+  || curl -sfL --retry 3 --retry-all-errors --retry-delay 5 -o "$TAR" "$MIRROR"
 got=$(sha256sum "$TAR" | cut -d' ' -f1)
 [ "$got" = "$SHA256" ] || { echo "checksum mismatch for $TAR: $got" >&2; exit 1; }
 SRC="$DL/opus-$VERSION"

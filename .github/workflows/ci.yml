@@ -35,5 +35,6 @@ jobs:
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           npm run build
           npm run build:scorer
+          npm run build:opus
           npm run test:wasm
           REQUIRE_SCORER=1 npm test

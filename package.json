@@ -70,7 +70,7 @@
   "license": "SEE LICENSE IN README.md",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Quran-Lab/tajweedformer-wasm"
+    "url": "https://github.com/Quran-Lab/tajweedformer-web"
   },
   "devDependencies": {
     "puppeteer-core": "^24.43.1"
