@@ -1,4 +1,4 @@
-// Model folders and their signed manifest (manifest.json, format 1 and 2), for browsers and Node.
+// Model folders and their signed manifest (manifest.json, formats 1, 2 and 3), for browsers and Node.
 //
 // The manifest lists every file of a model folder with its size and SHA-256, says which file plays
 // which part, and may carry an Ed25519 signature over a plain-text rendering of all of it. The text
@@ -14,7 +14,7 @@
 import { validateCalibration, TajweedSettingsError } from './settings.js';
 
 /** The version of this SDK, compared with a manifest's min_sdk_version. */
-export const SDK_VERSION = '2.0.1';
+export const SDK_VERSION = '2.0.2';
 
 /** Manifest formats this SDK reads. */
 export const SUPPORTED_MANIFEST_FORMATS = Object.freeze([1, 2, 3]);
@@ -29,6 +29,8 @@ export const ENGINE_FORMATS_TAJWEEDFORMER = Object.freeze([2, 3]);
 export const V3_PLATFORMS = Object.freeze(['android', 'apple', 'web', 'native']);
 const V3_HEADER = ['model_id', 'family', 'revision', 'min_sdk_version', 'engine_format', 'coreml_format', 'tokens',
   'tokens_sha256', 'default_context', 'contexts'];
+/** The three values of a `golden_tolerance` entry, in the order of its signed line. */
+export const GOLDEN_TOLERANCE_KEYS = Object.freeze(['token_diffs', 'site_flag_diffs', 'word_flag_diffs']);
 
 /** Quran Lab's manifest signing key (raw Ed25519 public key, hex): the public half of qlab-cdn's and
  * qlab-api's MANIFEST_SIGNING_KEY, key id 660a07197c4808da, as compiled into the Swift and Android SDKs. */
@@ -104,10 +106,17 @@ export async function sha256Hex(bytes) {
  * The exact text the signature covers, for a manifest of format 1 or 2 (make_manifest.py
  * signed_text): a header line, the fields in a fixed order as "<key> <value>", then one
  * "file <sha256 lowercase> <size> <path>" line per file, sorted by the path's UTF-8 bytes.
+ *
+ * Format 3 (make_manifest3.py signed_text): the header lines; then, when the manifest has a
+ * `golden_tolerance` field and `tolerance` is not false, one line per build sorted by the build
+ * key's UTF-8 bytes, `golden_tolerance <build> <token_diffs> <site_flag_diffs> <word_flag_diffs>`
+ * (each value as the JSON writes it, `-` when missing; as the Android SDK's Manifest.signedMessage);
+ * then the `file` lines. Without the field the text is the 2.0.0 one, byte for byte.
  * @param {object} m  the parsed manifest.json
+ * @param {{tolerance?: boolean}} [o]  tolerance: false leaves the golden_tolerance lines out
  * @returns {string}
  */
-export function signedText(m) {
+export function signedText(m, { tolerance = true } = {}) {
   const files = [...m.files].sort((a, b) => compareBytes(utf8(a.path), utf8(b.path)));
   let t;
   if (m.format === 1) {
@@ -120,6 +129,7 @@ export function signedText(m) {
     // contract LAYOUT.md v2 (tajweedformer-coreml publish/make_manifest3.py signed_text)
     t = 'quranlab-model-manifest 3\n';
     for (const k of V3_HEADER) t += `${k} ${Array.isArray(m[k]) ? m[k].join(',') : m[k]}\n`;
+    if (tolerance) t += toleranceLines(m.golden_tolerance);
     const plat = (p) => (p === '*' ? '*' : V3_PLATFORMS.filter((x) => [].concat(p).includes(x)).join(','));
     for (const f of files) {
       const d = f.decoded || null;
@@ -132,6 +142,34 @@ export function signedText(m) {
   }
   for (const f of files) t += `file ${String(f.sha256).toLowerCase()} ${f.size} ${f.path}\n`;
   return t;
+}
+
+// The golden_tolerance lines of the signed text: every entry whose value is an object, sorted by
+// the build key's UTF-8 bytes (none for an absent field or one that is not an object).
+function toleranceLines(gt) {
+  if (!isObject(gt)) return '';
+  const val = (x) => (x === undefined || x === null ? '-' : String(x));
+  return Object.keys(gt).filter((b) => isObject(gt[b]))
+    .sort((a, b) => compareBytes(utf8(a), utf8(b)))
+    .map((b) => `golden_tolerance ${b} ${GOLDEN_TOLERANCE_KEYS.map((k) => val(gt[b][k])).join(' ')}\n`).join('');
+}
+
+/**
+ * The `golden_tolerance` field read leniently: per accelerator build (`coreml`, `coreml-compact`,
+ * `npu:<soc>:<context>`) its three counts, for each entry whose counts are integers 0 to 1000000;
+ * any other entry is left out (that build is exact). null when the field is absent or not an
+ * object. The web SDK runs the CPU engine only and never depends on it.
+ * @returns {Record<string, {token_diffs: number, site_flag_diffs: number, word_flag_diffs: number}>|null}
+ */
+export function parseGoldenTolerance(gt) {
+  if (!isObject(gt)) return null;
+  const out = {};
+  const count = (x) => isInt(x) && x >= 0 && x <= 1000000;
+  for (const [b, v] of Object.entries(gt)) {
+    if (!b || /[ \n]/.test(b) || !isObject(v) || !GOLDEN_TOLERANCE_KEYS.every((k) => count(v[k]))) continue;
+    out[b] = { token_diffs: v.token_diffs, site_flag_diffs: v.site_flag_diffs, word_flag_diffs: v.word_flag_diffs };
+  }
+  return out;
 }
 
 /** Whether `version` (x.y.z) is at or above `minimum`, part by part as numbers; a pre-release
@@ -222,23 +260,41 @@ export function checkManifestShape(m) {
  * @returns {Promise<boolean>}
  */
 export async function verifyManifestSignature(m, trustedKeys = [QURANLAB_PUBLIC_KEY_HEX]) {
+  return (await checkManifestSignature(m, trustedKeys)).valid;
+}
+
+/**
+ * The signature check with what it covers. A manifest with `golden_tolerance` is verified with the
+ * tolerance lines first; when that fails it is verified again without them, and if that passes the
+ * tolerance is unsigned and ignored (toleranceSigned false: every build exact), as in the Android
+ * and Swift SDKs. Throws ModelFolderError signature_unsupported as verifyManifestSignature.
+ * @returns {Promise<{valid: boolean, toleranceSigned: boolean}>}
+ */
+export async function checkManifestSignature(m, trustedKeys = [QURANLAB_PUBLIC_KEY_HEX]) {
+  const no = { valid: false, toleranceSigned: false };
   const sig = base64ToBytes(m.signature);
-  if (!sig || sig.length !== 64) return false;
-  const msg = utf8(signedText(m));
+  if (!sig || sig.length !== 64) return no;
   const s = subtle();
+  const keys = [];
   for (const k of trustedKeys) {
-    let key;
     try {
-      key = await s.importKey('raw', typeof k === 'string' ? hexToBytes(k) : asBytes(k), { name: 'Ed25519' }, false, ['verify']);
+      keys.push(await s.importKey('raw', typeof k === 'string' ? hexToBytes(k) : asBytes(k), { name: 'Ed25519' }, false, ['verify']));
     } catch (e) {
       if (e && (e.name === 'NotSupportedError' || /not supported|unrecognized/i.test(String(e.message)))) {
         throw new ModelFolderError('signature_unsupported', 'this runtime has no Ed25519 in WebCrypto, so the manifest signature cannot be checked');
       }
-      continue; // a malformed key never verifies
+      // a malformed key never verifies
     }
-    if (await s.verify({ name: 'Ed25519' }, key, sig, msg)) return true;
   }
-  return false;
+  const ok = async (text) => {
+    const msg = utf8(text);
+    for (const key of keys) if (await s.verify({ name: 'Ed25519' }, key, sig, msg)) return true;
+    return false;
+  };
+  const hasTolerance = m.format === 3 && m.golden_tolerance !== undefined && m.golden_tolerance !== null;
+  if (!hasTolerance) return { valid: await ok(signedText(m, { tolerance: false })), toleranceSigned: false };
+  if (await ok(signedText(m))) return { valid: true, toleranceSigned: true };
+  return { valid: await ok(signedText(m, { tolerance: false })), toleranceSigned: false };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -291,9 +347,11 @@ export class ModelFolder {
     }
     checkManifestShape(m);
 
+    let toleranceSigned = false;
     if (typeof m.signature === 'string') {
-      const ok = await verifyManifestSignature(m, opts.trustedKeys || [QURANLAB_PUBLIC_KEY_HEX]);
-      if (!ok) throw new ModelFolderError('signature_invalid', 'the manifest signature does not verify with a trusted key', 'manifest.json');
+      const sig = await checkManifestSignature(m, opts.trustedKeys || [QURANLAB_PUBLIC_KEY_HEX]);
+      if (!sig.valid) throw new ModelFolderError('signature_invalid', 'the manifest signature does not verify with a trusted key', 'manifest.json');
+      toleranceSigned = sig.toleranceSigned;
     } else if (opts.requireSignature) {
       throw new ModelFolderError('signature_required', 'the manifest is not signed and a signature is required', 'manifest.json');
     }
@@ -326,6 +384,8 @@ export class ModelFolder {
     f._verified = new Set();
     f._cache = new Map();
     f._keep = !!opts.cache;
+    // golden_tolerance only when the signature covers it; otherwise absent (every build exact)
+    f.goldenTolerance = toleranceSigned ? parseGoldenTolerance(m.golden_tolerance) : null;
     if ((opts.verify || 'all') === 'all') await f.verifyAll();
     return f;
   }
@@ -334,6 +394,10 @@ export class ModelFolder {
   get modelId() { return this.manifest.format === 1 ? this.manifest.model : this.manifest.model_id; }
   /** engine_format (1 for a format 1 manifest). */
   get engineFormat() { return this.manifest.format === 1 ? 1 : this.manifest.engine_format; }
+  /** A build's golden test tolerance when the signature covers golden_tolerance, else exact (zeros). */
+  toleranceFor(build) {
+    return (this.goldenTolerance && this.goldenTolerance[build]) || { token_diffs: 0, site_flag_diffs: 0, word_flag_diffs: 0 };
+  }
   /** Every listed path, sorted by UTF-8 bytes. */
   get paths() { return [...this._listed.keys()].sort((a, b) => compareBytes(utf8(a), utf8(b))); }
   /** Whether the manifest lists `path`. */

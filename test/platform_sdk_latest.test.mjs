@@ -59,23 +59,23 @@ async function capture(fn, nodeEnv) {
 }
 
 test('a newer SDK: one console.warn per launch with the exact line (two configs and two clients still one)', async () => {
-  assert.equal(SDK_VERSION, '2.0.1');
-  const api = await stub({ sdk_latest: { version: '2.0.2', severity: 'recommended', url: URL_OK } });
+  assert.equal(SDK_VERSION, '2.0.2');
+  const api = await stub({ sdk_latest: { version: '2.0.3', severity: 'recommended', url: URL_OK } });
   const lines = await capture(async () => {
     const ql = await launch(api);
     assert.equal(ql.lastError, undefined);
     await ql.refreshConfig(); // a second config in the same launch
     await launch(api, { debug: true }); // a second client in the same launch
   }, 'development');
-  assert.deepEqual(lines, [`Quran Lab SDK 2.0.2 is available (recommended), you have 2.0.1: ${URL_OK}`]);
+  assert.deepEqual(lines, [`Quran Lab SDK 2.0.3 is available (recommended), you have 2.0.2: ${URL_OK}`]);
   // a new launch warns again; a dotted version longer or shorter compares numerically
   api.extra = { sdk_latest: { version: '2.1', severity: 'required', url: URL_OK } };
-  assert.deepEqual(await capture(() => launch(api), undefined), [`Quran Lab SDK 2.1 is available (required), you have 2.0.1: ${URL_OK}`],
+  assert.deepEqual(await capture(() => launch(api), undefined), [`Quran Lab SDK 2.1 is available (required), you have 2.0.2: ${URL_OK}`],
     'Node without NODE_ENV is a development run');
 });
 
 test('equal, older or pre-release versions: nothing', async () => {
-  for (const version of ['2.0.1', '2.0.1.0', '2.0.0', '1.9.9', '2.0.2-beta.1', '2.0.2+build']) {
+  for (const version of ['2.0.2', '2.0.2.0', '2.0.1', '1.9.9', '2.0.3-beta.1', '2.0.3+build']) {
     const api = await stub({ sdk_latest: { version, severity: 'recommended', url: URL_OK } });
     assert.deepEqual(await capture(() => launch(api, { debug: true })), [], version);
   }

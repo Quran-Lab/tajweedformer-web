@@ -1,4 +1,4 @@
-# @quran-lab/tajweedformer 2.0.1: API
+# @quran-lab/tajweedformer 2.0.2: API
 
 Every type is in [`web/tajweed/index.d.ts`](../web/tajweed/index.d.ts),
 [`web/platform/index.d.ts`](../web/platform/index.d.ts) and
@@ -37,10 +37,16 @@ tf.presets;     // [{ name, label, siteFa }] from calibration
 tf.free();
 ```
 
-A folder is refused when its manifest is not format 2 with `engine_format` 2, when its
-`min_sdk_version` is above 2.0.1, when a signature does not verify (folders from the Quran Lab CDN must
-be signed), or when a file it needs does not match its size and SHA-256. A file the manifest does not
-list is never read.
+A folder is refused when its manifest is not format 2 with `engine_format` 2 or format 3 with
+`engine_format` 3, when its `min_sdk_version` is above 2.0.2, when a signature does not verify (folders
+from the Quran Lab CDN must be signed), or when a file it needs does not match its size and SHA-256. A
+file the manifest does not list is never read.
+
+A format 3 manifest's `golden_tolerance` (per accelerator build, the differences from the CPU engine its
+golden test may show) is part of the signed text: one line per build after the header lines, sorted by
+the build key's UTF-8 bytes. A manifest signed without those lines still verifies, and its tolerance is
+ignored (`folder.goldenTolerance` is null, every build exact). The web SDK runs the CPU engine only, so
+the field never changes what it computes. `checkManifestSignature(m)` returns `{ valid, toleranceSigned }`.
 
 ## Raw layer: streams and heads
 

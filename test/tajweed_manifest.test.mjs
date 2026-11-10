@@ -122,8 +122,8 @@ test('missing calibration: refused (not listed, or listed and absent)', async ()
   await rejects(openTajweedFolder(memoryReader(absent.files), opts), 'file_missing');
 });
 
-test('min_sdk_version 3.0.0: refused by this SDK (2.0.1)', async () => {
-  assert.equal(SDK_VERSION, '2.0.1');
+test('min_sdk_version 3.0.0: refused by this SDK (2.0.2)', async () => {
+  assert.equal(SDK_VERSION, '2.0.2');
   const { files } = await v4Folder({ edit: (m) => { m.min_sdk_version = '3.0.0'; } });
   await rejects(openTajweedFolder(memoryReader(files), opts), 'sdk_too_old');
   const ok = await v4Folder({ edit: (m) => { m.min_sdk_version = '1.9.9'; } });

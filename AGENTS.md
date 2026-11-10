@@ -58,7 +58,7 @@ Copy the setup prompt from [portal.quranlab.ai](https://portal.quranlab.ai) and 
 
 ## At a glance
 
-- **What it is:** the npm package `@quran-lab/tajweedformer` 2.0.1. It runs
+- **What it is:** the npm package `@quran-lab/tajweedformer` 2.0.2. It runs
   TajweedFormer V4 (Quran-Lab/tajweedformer-v4, served by cdn.quranlab.ai/models) on the
   [tajweedformer-engine](https://github.com/Quran-Lab/tajweedformer-engine) engine compiled to WebAssembly
   (SIMD128, no ONNX Runtime), bit for bit the same as the engine on every other platform.
@@ -80,7 +80,7 @@ One model, one engine, the same bits on every platform. Each SDK compiles the sa
 
 | Repository | What it is | Platforms | Install |
 | - | - | - | - |
-| [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+, desktop JVM | Maven `ai.quranlab:tajweedformer:2.0.1` |
+| [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+, desktop JVM | Maven `ai.quranlab:tajweedformer:2.0.2` |
 | [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+ | SwiftPM, product `TajweedFormer` |
 | [tajweedformer-web](https://github.com/Quran-Lab/tajweedformer-web) | WebAssembly SDK with SIMD128 | Browsers, Node | npm `@quran-lab/tajweedformer` |
 | [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake (`add_subdirectory`) |

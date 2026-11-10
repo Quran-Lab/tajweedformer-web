@@ -261,7 +261,7 @@ test('one stream across segments at different bitrates (192, 96, 32, 64, 192 kbi
   const encoder = new OpusEncoder(m, { sampleRate: 48000, settings: { ...OPUS_SETTINGS, bitrate: ladder.bitrate } });
   const w = new OggOpusWriter({
     encoder, resampler: new ShareResampler(inputRate), inputRate, plan: SEGMENT_PLAN, settings: OPUS_SETTINGS, serial: SERIAL,
-    vendor: `QuranLab SDK 2.0.1 ${opusVersion(m)}`,
+    vendor: `QuranLab SDK 2.0.2 ${opusVersion(m)}`,
     bitrate: (n) => (n > 1 ? ladder.bitrate : null),
     // libopus's own reading of the bitrate as the segment's first packet is about to be coded
     onSegmentOpen: (s) => opened.push({ ...s, libopus: encoder.get(OPUS_REQUEST.GET_BITRATE), packets: encoder.packetCount }),

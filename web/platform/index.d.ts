@@ -1,6 +1,6 @@
 // Types for @quran-lab/tajweedformer/platform: the Quran Lab platform client.
 
-export declare const SDK_VERSION: '2.0.1';
+export declare const SDK_VERSION: '2.0.2';
 export declare const API_URL: string;
 export declare const CDN_URL: string;
 

@@ -1,4 +1,4 @@
-// Type definitions for the TajweedFormer V4 API (@quran-lab/tajweedformer 2.0.1).
+// Type definitions for the TajweedFormer V4 API (@quran-lab/tajweedformer 2.0.2).
 
 // ---------------------------------------------------------------------------------------------
 // Names
@@ -183,7 +183,7 @@ export declare class TajweedSettings {
 // Model folders and the signed manifest
 // ---------------------------------------------------------------------------------------------
 
-export declare const SDK_VERSION: '2.0.1';
+export declare const SDK_VERSION: '2.0.2';
 export declare const SUPPORTED_MANIFEST_FORMATS: readonly number[];
 export declare const SUPPORTED_ENGINE_FORMATS: readonly number[];
 export declare const ENGINE_FORMAT_TAJWEEDFORMER: 2;
@@ -231,9 +231,19 @@ export interface FolderReader { read(path: string): Promise<Uint8Array | null> }
 export declare function memoryReader(files: Record<string, Uint8Array | ArrayBuffer | ArrayBufferView>): FolderReader;
 export declare function urlReader(baseUrl: string, fetchImpl?: typeof fetch): FolderReader;
 
-/** The exact signed text (make_manifest.py signed_text). */
-export declare function signedText(m: Manifest | Record<string, unknown>): string;
-export declare function verifyManifestSignature(m: Manifest, trustedKeys?: (string | Uint8Array)[]): Promise<boolean>;
+/** The exact signed text (make_manifest.py / make_manifest3.py signed_text). Format 3 with a golden_tolerance field:
+ * its lines after the header lines unless `tolerance` is false. */
+export declare function signedText(m: Manifest | Record<string, unknown>, o?: { tolerance?: boolean }): string;
+export declare function verifyManifestSignature(m: Manifest | Record<string, unknown>, trustedKeys?: (string | Uint8Array)[]): Promise<boolean>;
+/** The signature check and whether it covers golden_tolerance (verified with its lines; a manifest that verifies
+ * only without them is valid and its tolerance is ignored). */
+export declare function checkManifestSignature(m: Manifest | Record<string, unknown>, trustedKeys?: (string | Uint8Array)[]):
+  Promise<{ valid: boolean; toleranceSigned: boolean }>;
+/** A golden_tolerance entry: the differences from the CPU engine an accelerator build's golden test may show. */
+export interface GoldenTolerance { token_diffs: number; site_flag_diffs: number; word_flag_diffs: number }
+export declare const GOLDEN_TOLERANCE_KEYS: readonly ['token_diffs', 'site_flag_diffs', 'word_flag_diffs'];
+/** golden_tolerance read leniently: well-formed entries only (counts 0 to 1000000); null when absent. */
+export declare function parseGoldenTolerance(gt: unknown): Record<string, GoldenTolerance> | null;
 export declare function checkManifestShape(m: unknown): Manifest;
 export declare function versionAtLeast(version: string, minimum: string): boolean;
 export declare function isSafePath(p: string): boolean;
@@ -261,6 +271,10 @@ export declare class ModelFolder {
   readonly manifest: Manifest;
   readonly modelId: string;
   readonly engineFormat: number;
+  /** golden_tolerance per build when the signature covers it; null when absent or unsigned (every build exact) */
+  readonly goldenTolerance: Record<string, GoldenTolerance> | null;
+  /** a build's tolerance (`coreml`, `npu:<soc>:<context>`, ...), zeros when not signed or not listed */
+  toleranceFor(build: string): GoldenTolerance;
   readonly paths: string[];
   has(path: string): boolean;
   under(prefix: string): string[];
