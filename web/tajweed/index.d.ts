@@ -1,4 +1,4 @@
-// Type definitions for the TajweedFormer V4 API (@quran-lab/tajweedformer 2.0.2).
+// Type definitions for the TajweedFormer V4 API (@quran-lab/tajweedformer 2.0.3).
 
 // ---------------------------------------------------------------------------------------------
 // Names
@@ -183,7 +183,7 @@ export declare class TajweedSettings {
 // Model folders and the signed manifest
 // ---------------------------------------------------------------------------------------------
 
-export declare const SDK_VERSION: '2.0.2';
+export declare const SDK_VERSION: '2.0.3';
 export declare const SUPPORTED_MANIFEST_FORMATS: readonly number[];
 export declare const SUPPORTED_ENGINE_FORMATS: readonly number[];
 export declare const ENGINE_FORMAT_TAJWEEDFORMER: 2;

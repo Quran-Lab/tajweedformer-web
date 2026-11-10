@@ -1,6 +1,6 @@
 {
   "name": "@quran-lab/tajweedformer",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "TajweedFormer V4 for browsers and Node: the exact engine in WebAssembly (bit-identical to the native engine), cached and verified model delivery, every head of the network, the decoded layer (top-1 and runner-up, confidence, timings), per-site and per-word tajweed verdicts with calibrated settings, and the Quran Lab platform client (signed config, telemetry, opt-in recitation sharing).",
   "type": "module",
   "main": "web/index.js",

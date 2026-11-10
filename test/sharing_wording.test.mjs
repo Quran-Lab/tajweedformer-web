@@ -125,7 +125,9 @@ test('a session of a custom grant carries consent_text_sha256; the deck\'s wordi
   process.chdir(dir);
   resetSharingForTests();
   try {
-    const api = await stubApi({ contributions: true });
+    // share_join_ms 0: each session below is its own recording with its own session JSON, as before 2.0.3 (with
+    // the default window, sessions in a row under one grant share a recording and one session JSON)
+    const api = await stubApi({ contributions: true, share_join_ms: 0 });
     const ql = await client(api);
     // the app's own UI answers later, from the learner's tap
     let shown = null;

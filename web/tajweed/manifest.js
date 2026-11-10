@@ -14,7 +14,7 @@
 import { validateCalibration, TajweedSettingsError } from './settings.js';
 
 /** The version of this SDK, compared with a manifest's min_sdk_version. */
-export const SDK_VERSION = '2.0.2';
+export const SDK_VERSION = '2.0.3';
 
 /** Manifest formats this SDK reads. */
 export const SUPPORTED_MANIFEST_FORMATS = Object.freeze([1, 2, 3]);

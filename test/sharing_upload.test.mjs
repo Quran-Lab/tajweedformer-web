@@ -107,8 +107,11 @@ async function configure(server, { storage = new MemoryStorage(), enabled = true
   const state = { enabled, flags };
   const tokenProvider = async () => token;
   tokenProvider.invalidate = async () => {};
+  // 2.0.3: these tests are about one session and its upload, so the join window is 0 here (share_join_ms 0: a
+  // session's recording closes when the session ends, as before 2.0.3). Takes that share a recording are in
+  // sharing_takes.test.mjs.
   const sharing = await createSharing({ api: API, fetch: server.fetch, tokenProvider, storage, consentVersion, clock, turnstile,
-    enabled: () => state.enabled, flags: () => state.flags, opus: async () => opus, device: { deviceClass: 'browser', osMajor: 14 }, bitrate });
+    enabled: () => state.enabled, flags: () => ({ share_join_ms: 0, ...state.flags }), opus: async () => opus, device: { deviceClass: 'browser', osMajor: 14 }, bitrate });
   return { sharing, storage, state, outbox: sharing.outbox };
 }
 
@@ -537,7 +540,7 @@ test('createSharingSession: the controller\'s names, one page pipeline, module o
   const raw = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
   const common = { api: API, fetch: server.fetch, tokenProvider: async () => UNATT, headers: { 'x-qlab-sdk': 'web/2.0.0' },
     contributor: 'c'.repeat(32), contributorKeyRaw: raw, recoveryHash: 'd'.repeat(64), consentVersion: 'deck-1',
-    device: { deviceClass: 'browser', osMajor: 14 }, flags: { contributions: true, upload_trust: { web: 'capped' } }, storage,
+    device: { deviceClass: 'browser', osMajor: 14 }, flags: { contributions: true, upload_trust: { web: 'capped' }, share_join_ms: 0 }, storage,
     opus: async () => opus };
   const s = await mod.createSharingSession({ ...common, inputSampleRate: 16000, inputRoute: 'built_in', decodeInfo: { backend: 'exact', modelRevision: 'v4.0+abc' } });
   assert.equal(typeof s.push, 'function');

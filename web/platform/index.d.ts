@@ -1,6 +1,6 @@
 // Types for @quran-lab/tajweedformer/platform: the Quran Lab platform client.
 
-export declare const SDK_VERSION: '2.0.2';
+export declare const SDK_VERSION: '2.0.3';
 export declare const API_URL: string;
 export declare const CDN_URL: string;
 
@@ -89,7 +89,8 @@ export declare class QuranLab {
   register(): Promise<{ ok: boolean; app_id: string; store_status: string } | null>;
   /** the app came back to the foreground: a launch counted, register on a new day */
   foreground(): void;
-  /** the app goes to the background: the delta sealed and sent (keepalive) */
+  /** the app goes to the background: the delta sealed and sent (keepalive); since 2.0.3 the shared recording
+   * that takes in a row keep open closes too */
   background(): Promise<number>;
   /** a send point: seal the delta and send the reports due */
   sendTelemetry(reason?: string, o?: { keepalive?: boolean }): Promise<number>;

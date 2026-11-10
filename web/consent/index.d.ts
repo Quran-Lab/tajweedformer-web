@@ -104,6 +104,13 @@ export interface SharingController {
   answer(yes: boolean, o?: { guardianConfirmed?: boolean }): 'granted' | 'declined' | 'final';
   sessionCompleted(o?: { feedback?: boolean }): Promise<Answer | null>;
   setSharing(on: boolean, o?: { guardianConfirmed?: boolean }): void;
+  /** 2.0.3: the app went to the background: the shared recording that takes in a row keep open closes now (the
+   * platform client calls it when the page is hidden) */
+  background(): Promise<void>;
+  /** 2.0.3: the app is in the foreground again */
+  foreground(): Promise<void>;
+  /** 2.0.3: no take follows: the open recording closes now instead of at the end of its join window */
+  closeRecording(): Promise<void>;
   /** "Delete what I shared": signed with this install's device key (no app credential can delete) */
   deleteShared(): Promise<{ accepted: boolean; sessionsLeft: number | null }>;
   /** "Show my recovery code": for the learner only */

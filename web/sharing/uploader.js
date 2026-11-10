@@ -4,7 +4,7 @@
 // signed, valid 7 days); POST /v1/uploads/{id}/urls?from=n answers the next batch, or fresh URLs for
 // the same numbers. Segments go straight to R2 as plain PUTs. Nothing is sent at the end.
 
-export const SDK_VERSION = '2.0.2';
+export const SDK_VERSION = '2.0.3';
 export const INPUT_ROUTES = Object.freeze(['built_in', 'wired', 'usb', 'bluetooth', 'car', 'continuity', 'other', 'unknown']);
 const CONSENT_RE = /^[A-Za-z0-9._-]{1,32}$/;
 const DEVICE_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,23}$/;
@@ -133,6 +133,16 @@ export class ContributionClient {
   urls({ id, from, contributor, token, signal }) {
     return this._send(`${this.api}/v1/uploads/${id}/urls?from=${from}`, {
       method: 'POST', headers: { ...this.headers, authorization: `Bearer ${token}`, 'x-qlab-contributor': contributor }, signal,
+    });
+  }
+
+  /** The take list of an uploaded recording that takes in a row shared (2.0.3): POST /v1/uploads/{id}/takes with
+   * the exact body {"takes":[{"start_ms","gap_ms"}, ...]} (2 to 256 entries). Idempotent: the server replaces
+   * the list. */
+  takes({ id, body, contributor, token, signal }) {
+    return this._send(`${this.api}/v1/uploads/${id}/takes`, {
+      method: 'POST', headers: { ...this.headers, authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-qlab-contributor': contributor },
+      body, signal,
     });
   }
 

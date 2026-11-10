@@ -82,9 +82,9 @@ One model, one engine, the same bits on every platform. Each SDK compiles the sa
 | Repository | What it is | Platforms | Install |
 | - | - | - | - |
 | [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+ on arm64-v8a and armeabi-v7a, desktop JVM | Maven Central `ai.quranlab:tajweedformer:2.0.2` |
-| [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "2.0.2"`, product `TajweedFormer` |
+| [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "2.0.3"`, product `TajweedFormer` |
 | [tajweedformer-web](https://github.com/Quran-Lab/tajweedformer-web) | WebAssembly SDK with SIMD128 | Browsers, Node 20+ | `npm install @quran-lab/tajweedformer` |
-| [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | Build tag 2.0.2 with CMake |
+| [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake `FetchContent`, tag 2.0.3 |
 | [tajweedformer-engine](https://github.com/Quran-Lab/tajweedformer-engine) | The engine: exact C runtime, tajweed scorer, conformance suite | everything above | Git submodule |
 
 The model is Quran-Lab/tajweedformer-v4 (`sdk/v4.0`), hosted by Quran Lab and served by
@@ -100,7 +100,7 @@ per-class thresholds) your users see, without shipping a new build.
 npm install @quran-lab/tajweedformer
 ```
 
-With a bundler (Vite, webpack and the like) the imports in the quick start resolve as they are written. Without one, import the same two modules by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@2.0.2/web/index.js` and `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@2.0.2/web/platform/index.js`.
+With a bundler (Vite, webpack and the like) the imports in the quick start resolve as they are written. Without one, import the same two modules by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@2.0.3/web/index.js` and `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@2.0.3/web/platform/index.js`.
 
 ## Before you start
 
@@ -286,6 +286,16 @@ step it down, 192, 96, 64, 32 kbit/s; three successful segment uploads with at m
 back up. A change applies from the next segment, so the stream stays one valid Ogg Opus file; each
 segment's bitrate is in the outbox item's `segmentBitrates`. A new page starts at 192 kbit/s.
 `sharingBitrate` (or `bitrate`) still fixes one bitrate instead, for tests.
+
+**Takes in a row are one recording (2.0.3).** An app often stops and starts its takes while the learner
+keeps reciting. When a take ends, the shared recording stays open for a few seconds (3 s, or the signed
+config's `flags.share_join_ms`; 0 turns this off): a take that starts in that time at the same sample rate
+continues the same Ogg stream, with no new headers and no audio made up for the pause, byte for byte what
+one continuous take would have given. The recording closes when no take follows in time, when the page is
+hidden, when sharing is turned off, or after 20 minutes; `sharing.closeRecording()` closes it at once when
+the app knows no take follows (the learner left the recitation screen). For a recording of several takes
+the SDK sends, after its last segment, where each take starts in the stream and how long the pause before
+it was; outbox items show `takes`. The calls are in [docs/api.md](docs/api.md).
 
 ## Exactness
 

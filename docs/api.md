@@ -1,4 +1,4 @@
-# @quran-lab/tajweedformer 2.0.2: API
+# @quran-lab/tajweedformer 2.0.3: API
 
 Every type is in [`web/tajweed/index.d.ts`](../web/tajweed/index.d.ts),
 [`web/platform/index.d.ts`](../web/platform/index.d.ts) and
@@ -38,7 +38,7 @@ tf.free();
 ```
 
 A folder is refused when its manifest is not format 2 with `engine_format` 2 or format 3 with
-`engine_format` 3, when its `min_sdk_version` is above 2.0.2, when a signature does not verify (folders
+`engine_format` 3, when its `min_sdk_version` is above 2.0.3, when a signature does not verify (folders
 from the Quran Lab CDN must be signed), or when a file it needs does not match its size and SHA-256. A
 file the manifest does not list is never read.
 
@@ -171,3 +171,48 @@ lets the app show the sheet at its own time; the lines are always the SDK's (`co
 Elements: `<quranlab-consent>` (`QuranLabConsent.ask(...)`) and `<quranlab-sharing-settings>`
 (`.controller = sharing`). Theme with `--ql-bg`, `--ql-fg`, `--ql-muted`, `--ql-accent`,
 `--ql-accent-fg`, `--ql-radius`, `--ql-font` and `::part(sheet|title|body|primary|secondary|guardian)`.
+
+### Takes in a row share one recording (2.0.3)
+
+A take is one session the SDK listens to; a recording is what is shared: one Ogg Opus stream, one outbox
+item, one session id. When a take ends while sharing is on, its recording stays open for the join window,
+and a take that starts within it continues the same stream. Nothing changes in how an app starts and ends
+its takes.
+
+- **The join window:** the signed config's `flags.share_join_ms`, a whole number 0 to 10000 (ms); absent or
+  anything else: 3000; 0: never join (`joinWindowMs(flags)`). A take joins when it starts at most that long
+  after the previous take with audio ended, at the same input sample rate, with the app in the foreground,
+  sharing on, and the same contributor, consent version and model as the recording. Otherwise the open
+  recording closes (its last page with the end-of-stream flag) and the take starts a new one.
+- **What also closes it at once:** the window passing, the page becoming hidden, sharing turned off (the queue
+  is deleted, the open recording with it), 20 minutes of audio, 256 takes. With 30 s or less of room under the
+  20 minutes, a joining take is held in memory until it ends: it joins when it fits, and starts a new recording
+  when it does not; a recording is never cut inside a take.
+- **The controller** (`enableSharing(ql)`): `closeRecording()` closes the open recording now, for an app that
+  knows no take follows; `background()` and `foreground()` tell it the app left or came back (the platform
+  client calls them from `ql.background()` and `ql.foreground()`, and the sharing pipeline listens to the page's
+  `visibilitychange`, `pagehide` and `pageshow` itself). In Node there is no page: an open recording keeps the
+  process alive until its window has passed, so call `closeRecording()` (or `background()`) before the app exits.
+  `setSharing(true)` after `setSharing(false)` in the same page shares the next take again.
+- **The pipeline** (`createSharing(options)` from `@quran-lab/tajweedformer/sharing`): `closeRecording()`,
+  `background()`, `foreground()`, and `recorder` (`recording`: the open one or null; `takes`: its takes so far;
+  `window`: the join window in force). The same three calls are on the module's `outbox`. Options:
+  `clock` (wall ms), `timers` (`{ setTimeout, clearTimeout }` for the window), `lifecycle` (`{ document, window }`:
+  where the page events come from), `onIssue(kind, code)` and `log(message)`.
+- **A take** (`await sharing.startSession({ inputSampleRate, inputRoute, decode, startedAt })`): `push(pcm)`,
+  `finish({ completed, endedAt })`, `abort()`, `id` (the recording's id: the same for every take that joined
+  it) and `duration` (the take's seconds). `finish()` resolves to the take's audio in ms once it is stored; the
+  recording may stay open. `completed` of the recording is that of its last take with audio, and a cancelled
+  recording is shared from 2 s of audio in all.
+- **Outbox items** (`outbox.items()`, `onChange`): `takes`, how many takes share the recording (1 for one
+  take), and `takeList`: `null` for one take, else `'pending'`, `'sent'` or `'dropped'`.
+- **The take list:** `[{ start_ms, gap_ms }]`, one entry per take in order: `start_ms` is where the take's first
+  sample is in the stream (the recording's input samples before it, in ms, rounded down), `gap_ms` the wall
+  time since the previous take ended, rounded to 100 ms (the first entry is `{ 0, 0 }`; a take without audio has
+  no entry). It is kept in `takes.json` next to the recording's other files and sent once the recording has
+  closed and every segment is uploaded: `POST /v1/uploads/{id}/takes` with the token and `x-qlab-contributor`,
+  body `{"takes":[...]}`. The item is `uploaded` when its segments are, whatever becomes of the list: 2xx sent;
+  404 (a server without the route, or an upload it does not know) and 410 dropped; 400 dropped, with the issue
+  `takes:<code>`; 401 the token renewed and the same body sent again; anything else again later with the outbox's
+  backoff, also after a page reload. A recording recovered after the page was closed keeps the takes that
+  start before its last whole page.

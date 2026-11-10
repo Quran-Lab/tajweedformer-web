@@ -15,3 +15,7 @@ PLATFORM_CLIENT.md sections 9 and 10 of the V4 launch.
 - `consent_text.json` (SDK 2.0.1): custom consent wording. From the deck's consent version and an app's
   overrides, the canonical text, `consent_text_sha256` and the `custom-<24 hex>` consent version; and the
   overrides every SDK refuses.
+- `takes_join.json` (SDK 2.0.3): back-to-back takes share one recording. Each case is the signed config's flags
+  and the takes in order (wall start and end in ms, input samples, rate), with the app going to the background
+  in between where it does; the recordings the capture forms, each with its rate, audio ms and take list
+  (`start_ms`, `gap_ms`; null for one take).

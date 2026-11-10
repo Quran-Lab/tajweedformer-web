@@ -109,7 +109,9 @@ test('a deck change with a 2.0.1 grant: no ask, sharing stays on, the JSON carri
 }));
 
 test('a wording change after a custom grant: no ask, the original custom version and hash in the JSON; a new learner records the new version', { skip: skipAudio }, () => inDir('share-wording-later-', async () => {
-  const api = await stubApi({ contributions: true });
+  // share_join_ms 0: each session is its own recording with its own session JSON, as before 2.0.3 (with the
+  // default window, the two sessions in a row under the first grant would share one)
+  const api = await stubApi({ contributions: true, share_join_ms: 0 });
   const pcm = clip16k(12);
   const ql = await client(api);
   const { ctl, asked } = wired(ql, { wording: { 'sheet.title': 'Help the next learner' } });

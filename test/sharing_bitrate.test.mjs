@@ -95,8 +95,10 @@ function speak(cap, seconds, state) {
 async function pipeline(server) {
   const tokenProvider = async () => ({ token: 'qlt_v1.eyJ2IjoxfQ.web', attested: false });
   tokenProvider.invalidate = async () => {};
+  // share_join_ms 0: a session's recording closes when the session ends, as before 2.0.3 (takes that share a
+  // recording, and the ladder across them, are in sharing_takes.test.mjs)
   return createSharing({ api: API, fetch: server.fetch, tokenProvider, storage: new MemoryStorage(), consentVersion: 'share-2026-11-09',
-    enabled: () => true, flags: () => ({ contributions: true, upload_trust: { web: 'capped' } }), opus: async () => opus,
+    enabled: () => true, flags: () => ({ contributions: true, upload_trust: { web: 'capped' }, share_join_ms: 0 }), opus: async () => opus,
     device: { deviceClass: 'browser', osMajor: 14 }, random: () => 0.5 });
 }
 

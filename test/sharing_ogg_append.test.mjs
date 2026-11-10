@@ -10,15 +10,17 @@
 // (the vector test covers the wire format; this one is about real encoder output).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   OggOpusWriter, OpusEncoder, ShareResampler, ShareCapture, MemoryStorage, recover, markers, OPUS_SETTINGS, SEGMENT_PLAN,
   loadOpus, opusVersion, decodeOggOpus, readPages, segmentName, FILES, BitrateLadder, OPUS_REQUEST,
 } from '../web/sharing/index.js';
+// the stream checks, shared with sharing_takes.test.mjs since 2.0.3 (moved there unchanged)
+import { SERIAL, clipSeconds, concat, sameBytes, checkStream, ffmpeg, ffprobeDuration, ffmpegPcm, decodeBoth } from './sharing_stream_checks.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const have = existsSync(path.join(root, 'dist', 'tajweedformer-opus.mjs'));
@@ -28,20 +30,7 @@ const m = have ? await loadOpus() : null;
 
 // a real 16 kHz recitation clip (the SDK's model self-test audio), repeated to a long session: 120 s
 // crosses 4 segments of the plan (10, 20, 40, then 60 s) and most of the packet sizes real speech makes
-const SERIAL = 0x1234abcd;
 const SEG_TEST_SECONDS = 120;
-function clipSeconds(rate, seconds) {
-  const clip = new Float32Array(readFileSync(path.join(root, 'test', 'sharing', 'selftest_16k.f32')).buffer.slice(0));
-  // the clip's own rate is 16 kHz: anything else plays it faster or slower, which is fine for the
-  // stream tests and keeps the resampler out of the 48 kHz case
-  const n = Math.round(seconds * rate);
-  const out = new Float32Array(n);
-  for (let i = 0; i < n; i += clip.length) out.set(clip.subarray(0, Math.min(clip.length, n - i)), i);
-  return out;
-}
-
-const concat = (parts) => { const out = new Uint8Array(parts.reduce((k, p) => k + p.length, 0)); let at = 0; for (const p of parts) { out.set(p, at); at += p.length; } return out; };
-const sameBytes = (a, b) => a.length === b.length && Buffer.compare(Buffer.from(a), Buffer.from(b)) === 0;
 
 function encode(pcm, inputRate, plan) {
   const segs = new Map(), closed = [];
@@ -62,45 +51,6 @@ function encode(pcm, inputRate, plan) {
   const bytes = (n) => concat(segs.get(n) || []);
   const order = [...segs.keys()].sort((a, b) => a - b);
   return { segs: order.map((n) => ({ n, b: bytes(n), closed: closed.find((c) => c.n === n) })), closed, ms, all: concat(order.map(bytes)), preSkip, finalGranule };
-}
-
-function checkStream(all) {
-  const pages = readPages(all); // throws on a bad CRC, a missing capture pattern, or a cut page
-  assert.ok(pages.length > 4, 'pages');
-  assert.equal(pages[0].flags & 0x02, 0x02, 'BOS on page 0');
-  assert.equal(pages[0].sequence, 0, 'first sequence number');
-  const td = new TextDecoder();
-  pages.forEach((p, i) => {
-    assert.equal(p.sequence, i, `page sequence number is continuous at ${i}`);
-    assert.equal(p.serial, SERIAL, 'one logical stream');
-    if (i > 0) assert.equal(p.flags & 0x02, 0, `BOS only on page 0 (page ${i})`);
-    assert.equal(p.flags & 0x04, i === pages.length - 1 ? 0x04 : 0, `EOS only on the last page (page ${i})`);
-    assert.equal(td.decode(p.packets[0].subarray(0, 8)) === 'OpusHead', i === 0, `OpusHead only on page 0 (page ${i})`);
-    assert.equal(td.decode(p.packets[0].subarray(0, 8)) === 'OpusTags', i === 1, `OpusTags only on page 1 (page ${i})`);
-  });
-  let g = 0;
-  for (const p of pages.slice(2, -1)) {
-    g += p.packets.length * 960;
-    assert.equal(p.granule, g, `granule position continuous at page ${p.sequence}`);
-  }
-  const last = pages[pages.length - 1];
-  const expectedEnd = g + last.packets.length * 960;
-  assert.ok(last.granule <= expectedEnd && last.granule > g, 'the last page trims the end padding');
-  return { pages, audioPages: pages.length - 2, lastGranule: last.granule };
-}
-
-const ffmpeg = spawnSync('ffmpeg', ['-hide_banner', '-version'], { encoding: 'utf8' }).status === 0;
-function ffprobeDuration(file) {
-  const out = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration:stream=codec_name,sample_rate,channels', '-of', 'json', file], { encoding: 'utf8' });
-  return JSON.parse(out);
-}
-function ffmpegPcm(file, decoder) {
-  const out = execFileSync('ffmpeg', ['-hide_banner', '-v', 'error', '-c:a', decoder, '-i', file, '-f', 's16le', '-ac', '1', '-ar', '48000', 'pipe:1'], { maxBuffer: 1 << 28 });
-  return new Uint8Array(out.buffer, out.byteOffset, out.byteLength);
-}
-
-function decodeBoth(file) {
-  return { native: ffmpegPcm(file, 'opus'), libopus: ffmpegPcm(file, 'libopus') };
 }
 
 const dumpDir = process.env.SHARE_OGG_DUMP;
@@ -261,7 +211,7 @@ test('one stream across segments at different bitrates (192, 96, 32, 64, 192 kbi
   const encoder = new OpusEncoder(m, { sampleRate: 48000, settings: { ...OPUS_SETTINGS, bitrate: ladder.bitrate } });
   const w = new OggOpusWriter({
     encoder, resampler: new ShareResampler(inputRate), inputRate, plan: SEGMENT_PLAN, settings: OPUS_SETTINGS, serial: SERIAL,
-    vendor: `QuranLab SDK 2.0.2 ${opusVersion(m)}`,
+    vendor: `QuranLab SDK 2.0.3 ${opusVersion(m)}`,
     bitrate: (n) => (n > 1 ? ladder.bitrate : null),
     // libopus's own reading of the bitrate as the segment's first packet is about to be coded
     onSegmentOpen: (s) => opened.push({ ...s, libopus: encoder.get(OPUS_REQUEST.GET_BITRATE), packets: encoder.packetCount }),

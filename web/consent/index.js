@@ -17,6 +17,10 @@
 //
 // The sheet is shown at most three times per install; a yes is kept, with the version the learner agreed to, across
 // copy decks, wordings and SDK upgrades (also from 2.0.0), and is never asked about again.
+//
+// Since 2.0.3 takes in a row share one recording (web/sharing/takes.js): each take the SDK listens to still starts
+// and ends a shared session here, and the sharing pipeline joins it to the recording the previous take left open.
+// The ask after a finished take does not close that recording.
 
 import { SharingState } from './state.js';
 import { copyFor, registerDeck, languages, EN } from './copy.js';
@@ -115,11 +119,22 @@ export function enableSharing(ql, o = {}) {
       if (pending === full) ctl.answer(a.yes, { guardianConfirmed: !!a.guardianConfirmed });
       return a;
     },
-    /** The settings switch: off stops uploads at once and deletes the unsent queue. */
+    /** The settings switch: off stops uploads at once and deletes the unsent queue (the open recording with it). */
     setSharing(on, opts) {
       state.setSharing(on, opts);
       if (!on && ctl.outbox) ctl.outbox.stop();
+      // on again in the same page: the pipeline that off stopped takes sessions again (before 2.0.3 it stayed
+      // stopped until the next page load, so nothing was shared after off and on)
+      else if (on && ctl.outbox) Promise.resolve(ctl.outbox.resume()).catch(() => {});
     },
+    /** The app went to the background (2.0.3): the shared recording that takes in a row keep open closes now.
+     * The platform client calls it when the page is hidden; call it yourself where the app knows better. */
+    async background() { if (ctl.outbox && ctl.outbox.background) await ctl.outbox.background(); },
+    /** The app is in the foreground again. */
+    async foreground() { if (ctl.outbox && ctl.outbox.foreground) await ctl.outbox.foreground(); },
+    /** No take follows (the learner left the recitation screen): the open recording closes now instead of at
+     * the end of its join window. */
+    async closeRecording() { if (ctl.outbox && ctl.outbox.closeRecording) await ctl.outbox.closeRecording(); },
     /** "Delete what I shared": challenge-response signed with this install's contributor key (P2.11). */
     async deleteShared() {
       const contributor = ql.contributor();
@@ -177,6 +192,8 @@ export function enableSharing(ql, o = {}) {
         // read at every pass: the signed config in force now, and the learner's answer now (a withdrawal
         // or a config that turned sharing off stops the next PUT, not only the next session)
         flags: () => ql.flags, enabled: () => state.sharing,
+        // a take list the server refused as a bad request goes to the issue reports
+        onIssue: (kind, code) => ql.reportIssue(kind, code),
         ...(ql.sharingBitrate ? { bitrate: ql.sharingBitrate } : {}),
       });
       ctl.outbox = mod.outbox || ctl.outbox;

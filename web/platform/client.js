@@ -14,7 +14,7 @@ import { QURANLAB_PUBLIC_KEY_HEX, hexToBytes, bytesToHex } from '../tajweed/mani
 import { decode } from '../tajweed/decode.js';
 import { noticeSdkLatest } from './update-notice.js';
 
-export const SDK_VERSION = '2.0.2';
+export const SDK_VERSION = '2.0.3';
 export const API_URL = 'https://api.quranlab.ai';
 export const CDN_URL = 'https://cdn.quranlab.ai';
 /** Where model files are served: {base}/{owner}/{repo}/{revision}/{path}. The signed config's `base`
@@ -239,14 +239,25 @@ export class QuranLab {
   foreground() {
     this._hidden = false;
     this.telemetry.count('launches');
+    this._sharingLife('foreground');
     if (!this.stopped) this.register().catch((e) => { this.lastError = e; });
   }
 
   /** The app goes to the background (the page is hidden or left): the delta since the last send point is
-   * sealed and sent with keepalive requests. */
+   * sealed and sent with keepalive requests, and the shared recording that takes in a row keep open closes
+   * (2.0.3). */
   background() {
     this._hidden = true;
+    this._sharingLife('background');
     return this.sendTelemetry('background', { keepalive: true });
+  }
+
+  // the sharing controller hears of the app's life (never in the way of the telemetry)
+  _sharingLife(what) {
+    try {
+      const f = this.sharing && this.sharing[what];
+      if (typeof f === 'function') Promise.resolve(f.call(this.sharing)).catch(() => {});
+    } catch (_) { /* sharing's own problem */ }
   }
 
   /** A send point: seal what was counted since the last one and send every report due (oldest first). */
