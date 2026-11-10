@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TajweedFormer quick start</title>
+<!-- The README's quick start as a page: microphone in, what the model heard out.
+     With a bundler (Vite, webpack, ...) the two imports below resolve from node_modules and this import map is
+     not needed. Without one, the map points the package names at this checkout; for an installed package use
+     "./node_modules/@quran-lab/tajweedformer/web/index.js" and ".../web/platform/index.js".
+     Serve the page from https or http://localhost (a browser gives the microphone to nothing else), from an
+     origin your web key allows. test/quickstart.test.mjs keeps the README's code equal to the script below. -->
+<script type="importmap">
+{ "imports": {
+  "@quran-lab/tajweedformer": "../web/index.js",
+  "@quran-lab/tajweedformer/platform": "../web/platform/index.js"
+} }
+</script>
+</head>
+<body>
+<button id="listen">Listen</button>
+<pre id="heard"></pre>
+<script type="module">
+// README:begin
+import { TajweedFormer } from '@quran-lab/tajweedformer';
+import { QuranLab } from '@quran-lab/tajweedformer/platform';
+
+document.querySelector('#listen').onclick = async () => {   // the microphone needs a tap
+  const ql = await QuranLab.configure({ key: 'qlk_v1_...' });   // your web key from portal.quranlab.ai
+  const audio = new AudioContext({ sampleRate: 48000 });
+  const tf = await TajweedFormer.load({ platform: ql, sampleRate: 48000 });   // downloads the model once, then cached
+  const stream = tf.createStream({ onChunk: () => {             // every 320 ms: what the model heard so far
+    document.querySelector('#heard').textContent = stream.decoded().tokens.map((t) => t.unit).join(' ');
+  } });
+
+  const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+  const worklet = `registerProcessor('mic', class extends AudioWorkletProcessor {
+    process(inputs) { if (inputs[0][0]) this.port.postMessage(inputs[0][0].slice()); return true; } });`;
+  await audio.audioWorklet.addModule(URL.createObjectURL(new Blob([worklet], { type: 'text/javascript' })));
+  const node = new AudioWorkletNode(audio, 'mic', { numberOfOutputs: 0 });
+  node.port.onmessage = (e) => stream.pushAudio(e.data);        // Float32Array, mono, 48 kHz
+  audio.createMediaStreamSource(mic).connect(node);
+};
+// README:end
+</script>
+</body>
+</html>
