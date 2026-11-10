@@ -45,7 +45,7 @@ jobs:
           npm run build:scorer
           npm run build:opus
           npm run test:wasm
-          REQUIRE_SCORER=1 npm test
+          REQUIRE_OPUS=1 REQUIRE_SCORER=1 npm test
       - name: What the package will contain
         run: npm pack --dry-run
       - name: Publish

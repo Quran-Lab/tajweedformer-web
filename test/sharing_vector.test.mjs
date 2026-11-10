@@ -16,6 +16,7 @@ import { OggOpusWriter, OpusEncoder, OPUS_SETTINGS, loadOpus, sha256Hex, deletio
 const root = fileURLToPath(new URL('..', import.meta.url));
 const VECTORS = process.env.SHARING_VECTORS || fileURLToPath(new URL('./sharing/vectors', import.meta.url));
 const have = existsSync(path.join(root, 'dist', 'tajweedformer-opus.mjs'));
+if (!have && process.env.REQUIRE_OPUS === '1') throw new Error('dist/tajweedformer-opus.mjs is missing: npm run build:opus');
 const skip = have ? false : 'dist/tajweedformer-opus.mjs is not built (npm run build:opus)';
 
 // pinned: the bytes the web SDK writes (libopus 1.6.1 in wasm; the same packets as a native x86-64 gcc

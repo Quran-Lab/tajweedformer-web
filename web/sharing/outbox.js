@@ -16,7 +16,12 @@ export const FILES = Object.freeze({ session: 'session.json', capture: 'capture.
 const DAY_MS = 86400000;
 /** Unsent sessions older than this are deleted (PLATFORM_CLIENT 10.4). */
 export const MAX_AGE_MS = 7 * DAY_MS;
-const PARALLEL = 2;
+// One segment PUT at a time, in segment order, as the Android, Apple and C SDKs do. Two in parallel (2.0.1 before
+// this fix) let the second segment start first whenever its bytes were read from storage first, so after an outage
+// or a relaunch a session could arrive as seg-00002, seg-00001, ... (the server accepts any order, but Quran Lab wants
+// segments in order). Tried and rejected: reading every segment of a group before starting its PUTs (the requests
+// still race on the wire).
+const PARALLEL = 1;
 
 const enc = new TextEncoder(), dec = new TextDecoder();
 const isId = (s) => /^[0-9a-f]{32}$/.test(s);
@@ -413,7 +418,7 @@ export class Outbox {
       rec.urls = merge(rec.urls, urls);
       await this._save(rec);
     }
-    // every closed segment, in order, at most PARALLEL PUTs at a time
+    // every closed segment, in order, one PUT at a time (PARALLEL)
     const todo = ms.filter((m) => !rec.uploaded.includes(segmentName(m.n) + '.opus'));
     for (let i = 0; i < todo.length; i += PARALLEL) {
       const group = [];

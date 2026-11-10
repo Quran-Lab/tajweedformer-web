@@ -2,7 +2,7 @@
 // SDK's SharingTests plus PLATFORM_CLIENT.md sections 8 to 10 for the web: the start (the session
 // JSON, closed schema), segments PUT straight to R2 on their own presigned URLs, the next batch at 5
 // left, fresh URLs on a 403, offline and relaunch, a page closed mid-session, sharing turned off,
-// refusals, the capped tier (Turnstile, segment cap), 7-day expiry, at most 2 PUTs at a time.
+// refusals, the capped tier (Turnstile, segment cap), 7-day expiry, one PUT at a time in segment order.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -423,18 +423,25 @@ test('capped tier: the Turnstile header when turnstile_web is on; 403 segment_ca
   assert.ok(!(await c.storage.list(item.id)).some((n) => n.endsWith('.opus')));
 });
 
-test('at most 2 PUTs at a time', { skip }, async () => {
-  const server = new Server();
-  server.down = true;
-  const c = await configure(server);
-  await session(c.sharing, 75); // 10 + 20 + 40 + 5 s: 4 segments
-  await c.outbox.drain({ ignoringBackoff: true });
-  server.down = false;
-  server.putDelay = 30;
-  const [item] = await settle(c.outbox);
-  assert.equal(item.segments, 4);
-  assert.equal(server.maxParallel, 2);
-  assert.equal(server.segments(item.id).length, 4);
+test('one PUT at a time, in segment order (also from storage on disk, after an outage)', { skip }, async () => {
+  for (const onDisk of [false, true]) {
+    const dir = onDisk ? mkdtempSync(path.join(tmpdir(), 'tf-share-order-')) : null;
+    try {
+      const server = new Server();
+      server.down = true;
+      const c = await configure(server, onDisk ? { storage: await dirStorage(dir) } : {});
+      await session(c.sharing, 75); // 10 + 20 + 40 + 5 s: 4 segments
+      await c.outbox.drain({ ignoringBackoff: true });
+      server.down = false;
+      server.putDelay = 30;
+      const [item] = await settle(c.outbox);
+      assert.equal(item.segments, 4);
+      assert.equal(server.maxParallel, 1, 'one PUT at a time');
+      assert.deepEqual(server.puts().map((p) => p.path), [1, 2, 3, 4].map((n) => `/qlab-contributions/v1/${item.id}/${segmentName(n)}.opus`),
+        'in segment order');
+      assert.equal(server.segments(item.id).length, 4);
+    } finally { if (dir) rmSync(dir, { recursive: true, force: true }); }
+  }
 });
 
 test('unsent sessions older than 7 days are deleted', { skip }, async () => {

@@ -26,8 +26,14 @@ jobs:
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
           "$RUNNER_TEMP/emsdk/emsdk" install 6.0.11
           "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.11
-      - name: Tests without the engine
-        run: npm test
+      - name: libopus for the sharing tests (built first, so no sharing test ever skips)
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          npm run build:opus
+      - name: Tests without the engine (libopus required)
+        run: REQUIRE_OPUS=1 npm test
+      - name: Sharing upload and stream tests five times (timing races in the upload queue show up here)
+        run: for i in 1 2 3 4 5; do REQUIRE_OPUS=1 node --test test/sharing_upload.test.mjs test/sharing_ogg_append.test.mjs || exit 1; done
       - name: Build (the engine with the tajweed library, and the scorer alone) and test with it
         env:
           ZF_WASM_TAJWEED: '1'
@@ -35,6 +41,5 @@ jobs:
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           npm run build
           npm run build:scorer
-          npm run build:opus
           npm run test:wasm
-          REQUIRE_SCORER=1 npm test
+          REQUIRE_OPUS=1 REQUIRE_SCORER=1 npm test
