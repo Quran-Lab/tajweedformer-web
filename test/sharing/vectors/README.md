@@ -10,3 +10,8 @@ PLATFORM_CLIENT.md sections 9 and 10 of the V4 launch.
 - `ogg/`: one session muxed from deterministic packets (see `expected.json` `about`): every SDK's muxer,
   fed those packets, writes these four segment files byte for byte. `npm run e2e:client` uploads them to
   the local stack, whose consumer accepts them as one complete session.
+- `bitrate_ladder.json` (SDK 2.0.1): the adaptive Opus bitrate ladder (192, 96, 64, 32 kbit/s). Each case is a
+  fresh ladder and its events in order; after each, the bit rate the next segment opens at.
+- `consent_text.json` (SDK 2.0.1): custom consent wording. From the deck's consent version and an app's
+  overrides, the canonical text, `consent_text_sha256` and the `custom-<24 hex>` consent version; and the
+  overrides every SDK refuses.

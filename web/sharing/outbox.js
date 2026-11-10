@@ -1,7 +1,7 @@
 // The shared sessions on their way to R2 (the Swift SDK's ContributionOutbox and ShareFiles, with
 // PLATFORM_CLIENT.md sections 8 to 10). Each session is a folder of files in a storage:
-//   session.json   the start's body          capture.json  { preSkip }
-//   seg-NNNNN.opus  a segment's Ogg pages     seg-NNNNN.json { n, bytes, sha256, granule }: closed
+//   session.json   the start's body          capture.json  { preSkip, bitrates: { n: bit/s } } (set as segments open)
+//   seg-NNNNN.opus  a segment's Ogg pages     seg-NNNNN.json { n, bytes, sha256, granule, bitrate }: closed
 //   end.json       { durationMs, completed }  item.json     the outbox's record (only the outbox writes it)
 // The upload starts once the first segment is closed; every closed segment is PUT straight to its
 // presigned URL, at most 2 at a time; the next batch of URLs is asked for when 5 unused remain, fresh
@@ -10,6 +10,7 @@
 
 import { segmentName, wholePages } from './oggopus.js';
 import { freshUrl, parseUrls, SharingError } from './uploader.js';
+import { isNetworkFailure } from './bitrate.js';
 
 export const FILES = Object.freeze({ session: 'session.json', capture: 'capture.json', end: 'end.json', item: 'item.json' });
 const DAY_MS = 86400000;
@@ -183,11 +184,19 @@ export async function markers(s, id) {
   return out.sort((a, b) => a.n - b.n);
 }
 
-/** Closes segment n: its marker, from the bytes as they are stored. */
-export async function mark(s, id, n, granule) {
+/** Closes segment n: its marker, from the bytes as they are stored, with the bit rate it was coded at. */
+export async function mark(s, id, n, granule, bitrate = null) {
   const b = await s.read(id, segmentName(n) + '.opus');
   if (!b) throw new Error(`no ${segmentName(n)}.opus`);
-  await writeJson(s, id, segmentName(n) + '.json', { n, bytes: b.length, sha256: await sha256Hex(b), granule });
+  const m = { n, bytes: b.length, sha256: await sha256Hex(b), granule };
+  if (Number.isInteger(bitrate)) m.bitrate = bitrate;
+  await writeJson(s, id, segmentName(n) + '.json', m);
+}
+
+/** Seconds of audio per closed segment, from the markers' granule positions (segment 1 from 0). */
+export function markerSeconds(ms) {
+  let prev = 0;
+  return ms.map((m) => { const sec = Math.max(0, m.granule - prev) / 48000; prev = m.granule; return sec; });
 }
 
 /** A session the page was closed in: open segments cut back to their whole pages and closed, the
@@ -204,7 +213,9 @@ export async function recover(s, id) {
     const { keep, granule } = wholePages(d);
     if (keep === 0) { await s.remove(id, name); continue; }
     if (keep < d.length) await s.truncate(id, name, keep);
-    await mark(s, id, n, granule);
+    // the bit rate the capture recorded when the segment opened
+    const bitrate = cap.bitrates && Number.isInteger(cap.bitrates[n]) ? cap.bitrates[n] : null;
+    await mark(s, id, n, granule, bitrate);
   }
   const ms = await markers(s, id);
   if (!ms.length) { await s.removeSession(id); return false; }
@@ -229,11 +240,15 @@ export const activeCaptures = new Set();
  * @param {() => Promise<string>} o.contributor
  * @param {() => number} [o.clock]  ms
  * @param {(item: object) => void} [o.onChange]
+ * @param {import('./bitrate.js').BitrateLadder} [o.ladder]  told about network failures, successful PUTs and the backlog
  */
 export class Outbox {
   constructor({ storage, client, tokenProvider, flags = () => null, enabled = () => true, turnstile = null, platform = 'web',
-    contributor, clock = () => Date.now(), onChange = null, onError = null, random = Math.random }) {
-    Object.assign(this, { storage, client, tokenProvider, flags, enabled, turnstile, platform, contributor, clock, onChange, onError, random });
+    contributor, clock = () => Date.now(), onChange = null, onError = null, random = Math.random, ladder = null }) {
+    Object.assign(this, { storage, client, tokenProvider, flags, enabled, turnstile, platform, contributor, clock, onChange, onError, random, ladder });
+    // closed segments not yet uploaded, per session: id -> Map(n -> seconds of audio); kept in memory so a
+    // capture can read the backlog at the moment it closes a segment (the markers are written after)
+    this.waiting = new Map();
     this.records = new Map();
     this.inFlight = new Map(); // "<id>/<file>" -> AbortController
     this.running = null;
@@ -245,7 +260,7 @@ export class Outbox {
 
   // ---- public ----
 
-  /** Every session, oldest first: { id, segments, bytes, durationMs, day, completed, status, failCode, attempts, lastError }. */
+  /** Every session, oldest first: { id, segments, bytes, durationMs, segmentBitrates, day, completed, status, failCode, attempts, lastError }. */
   async items() {
     await this._scan();
     const out = [];
@@ -257,6 +272,36 @@ export class Outbox {
 
   /** Sessions not yet fully uploaded. */
   async pending() { return (await this.items()).filter((x) => x.status === 'queued'); }
+
+  /** Seconds of audio in closed segments not yet uploaded, every session. */
+  backlogSeconds() {
+    let t = 0;
+    for (const w of this.waiting.values()) for (const sec of w.values()) t += sec;
+    return t;
+  }
+
+  /** A capture closed segment n of session id (seconds of audio): counted in the backlog at once, and the
+   * bitrate ladder told (a long backlog lowers the next segment's bitrate). */
+  segmentClosed(id, n, seconds) {
+    if (!this.waiting.has(id)) this.waiting.set(id, new Map());
+    this.waiting.get(id).set(n, seconds);
+    if (this.ladder) this.ladder.segmentClosed(this.backlogSeconds());
+  }
+
+  _networkResult(status) { if (this.ladder && isNetworkFailure(status)) this.ladder.uploadFailed(); }
+
+  // the backlog of a session first seen in storage (a page closed earlier, or a session found by a scan)
+  async _countWaiting(rec) {
+    if (rec.state !== 'active') { this.waiting.delete(rec.id); return; }
+    const ms = await markers(this.storage, rec.id);
+    const secs = markerSeconds(ms);
+    const w = this.waiting.get(rec.id) || new Map();
+    ms.forEach((m, i) => {
+      if ((rec.uploaded || []).includes(segmentName(m.n) + '.opus')) w.delete(m.n);
+      else if (!w.has(m.n)) w.set(m.n, secs[i]);
+    });
+    this.waiting.set(rec.id, w);
+  }
 
   /** Starts an upload pass (also at load, when a segment closes and when a retry is due). */
   resume() { this.stopped = false; return this.drain(); }
@@ -273,6 +318,7 @@ export class Outbox {
     for (const r of [...this.records.values()]) {
       if (r.state === 'active' && !activeCaptures.has(r.id)) { await this.storage.removeSession(r.id); this.records.delete(r.id); }
     }
+    this.waiting.clear();
   }
 
   /** Takes a session out before the server has it. */
@@ -283,6 +329,7 @@ export class Outbox {
     if (r.state !== 'active' || r.started || activeCaptures.has(id)) throw new Error(`item ${id} is already uploading`);
     await this.storage.removeSession(id);
     this.records.delete(id);
+    this.waiting.delete(id);
   }
 
   /** One upload pass, after any pass already running. */
@@ -399,6 +446,7 @@ export class Outbox {
     }
     if (!end || !rec.started || !ms.length || !ms.every((m) => rec.uploaded.includes(segmentName(m.n) + '.opus'))) return true;
     rec.state = 'uploaded';
+    this.waiting.delete(id);
     rec.lastError = null;
     rec.nextAttempt = null;
     rec.urls = null;
@@ -423,9 +471,13 @@ export class Outbox {
     } finally { this.inFlight.delete(key); }
     const rec = this.records.get(id);
     if (!rec || rec.state !== 'active' || this.stopped) return 'stop';
+    this._networkResult(r.status);
     if (r.status === 0) { await this._retry(id, `PUT ${name}: ${r.error}`); return 'offline'; }
     if (r.status >= 200 && r.status < 300) {
       if (!rec.uploaded.includes(name)) rec.uploaded.push(name);
+      const w = this.waiting.get(id);
+      if (w) w.delete(m.n);
+      if (this.ladder) this.ladder.uploadOk(this.backlogSeconds());
       rec.urls = (rec.urls || []).filter((x) => x.n !== m.n);
       rec.lastError = null;
       await this._save(rec);
@@ -458,6 +510,7 @@ export class Outbox {
   // A Worker answer: the URLs on 2xx; otherwise the item is retried, paused, capped or failed
   // (PLATFORM_CLIENT 8) and null comes back.
   async _answer(id, r) {
+    this._networkResult(r.status);
     if (r.status === 0) { await this._retry(id, r.error || 'offline'); return null; }
     if (r.status >= 200 && r.status < 300) {
       const u = parseUrls(r.body, id);
@@ -514,6 +567,7 @@ export class Outbox {
     const rec = this.records.get(id);
     if (!rec) return;
     Object.assign(rec, { state: 'failed', failCode: code, failMessage: message, nextAttempt: null, urls: null });
+    this.waiting.delete(id);
     await this._save(rec);
     for (const name of await this.storage.list(id)) if (name !== FILES.item) await this.storage.remove(id, name);
   }
@@ -523,6 +577,7 @@ export class Outbox {
     const rec = this.records.get(id);
     if (!rec) return;
     Object.assign(rec, { state: 'uploaded', capped: true, nextAttempt: null, urls: null, lastError: 'segment_cap' });
+    this.waiting.delete(id);
     await this._save(rec);
     for (const name of await this.storage.list(id)) if (/\.opus$/.test(name)) await this.storage.remove(id, name);
   }
@@ -531,6 +586,7 @@ export class Outbox {
   async _drop(id, code) {
     await this.storage.removeSession(id);
     this.records.delete(id);
+    this.waiting.delete(id);
     if (this.onChange) this.onChange({ id, status: 'dropped', failCode: code });
   }
 
@@ -566,17 +622,18 @@ export class Outbox {
     for (const id of await s.sessions()) {
       if (this.records.has(id)) continue;
       const rec = await readJson(s, id, FILES.item);
-      if (rec && rec.id === id) { this.records.set(id, rec); this.seqTop = Math.max(this.seqTop, rec.seq); continue; }
+      if (rec && rec.id === id) { this.records.set(id, rec); this.seqTop = Math.max(this.seqTop, rec.seq); await this._countWaiting(rec); continue; }
       const capturing = activeCaptures.has(id);
       if (capturing && !(await markers(s, id)).length) continue;
       if (!capturing && !(await readJson(s, id, FILES.end)) && !(await recover(s, id))) continue;
       const fresh = { id, seq: ++this.seqTop, state: 'active', started: false, urls: null, uploaded: [], failCode: null,
         failMessage: null, attempts: 0, lastError: null, nextAttempt: null, createdAt: this.clock() };
       await this._save(fresh);
+      await this._countWaiting(fresh);
     }
     for (const r of [...this.records.values()]) {
       if (r.state !== 'active' || activeCaptures.has(r.id)) continue;
-      if (!(await readJson(s, r.id, FILES.end)) && !(await recover(s, r.id))) this.records.delete(r.id);
+      if (!(await readJson(s, r.id, FILES.end)) && !(await recover(s, r.id))) { this.records.delete(r.id); this.waiting.delete(r.id); }
     }
   }
 
@@ -592,6 +649,8 @@ export class Outbox {
     const ses = await readJson(this.storage, r.id, FILES.session);
     return {
       id: r.id, segments: ms.length, bytes: ms.reduce((k, m) => k + m.bytes, 0), durationMs: end ? end.durationMs : 0,
+      // the bit rate each segment was coded at, in segment order (null for a segment recorded before 2.0.1)
+      segmentBitrates: ms.map((m) => (Number.isInteger(m.bitrate) ? m.bitrate : null)),
       day: ses ? ses.day : '', completed: end ? end.completed : null,
       status: r.state === 'active' ? 'queued' : r.state, capped: !!r.capped, failCode: r.failCode || null,
       failMessage: r.failMessage || null, attempts: r.attempts, lastError: r.lastError,

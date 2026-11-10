@@ -8,12 +8,13 @@
 //   const ql = await QuranLab.configure({ key: 'qlk_v1_...', appVersion: '1.4.0' });
 //   const tf = await TajweedFormer.load({ platform: ql });   // the recommended model, settings, telemetry
 
-import { Telemetry, deviceInfo, utcDay } from './telemetry.js';
+import { Telemetry, deviceInfo, utcDay, productOf } from './telemetry.js';
 import { localState } from './storage.js';
 import { QURANLAB_PUBLIC_KEY_HEX, hexToBytes, bytesToHex } from '../tajweed/manifest.js';
 import { decode } from '../tajweed/decode.js';
+import { noticeSdkLatest } from './update-notice.js';
 
-export const SDK_VERSION = '2.0.0';
+export const SDK_VERSION = '2.0.1';
 export const API_URL = 'https://api.quranlab.ai';
 export const CDN_URL = 'https://cdn.quranlab.ai';
 /** Where model files are served: {base}/{owner}/{repo}/{revision}/{path}. The signed config's `base`
@@ -26,6 +27,10 @@ const ISSUE_KINDS = ['engine_failed', 'model_load', 'checksum_mismatch', 'signat
 /** Codes after which the client stops all network calls until the next launch (error table). */
 const STOP_CODES = new Set(['invalid_key', 'unauthorized', 'developer_not_approved', 'not_a_member', 'key_type_mismatch',
   'origin_not_allowed', 'app_not_allowed', 'app_blocked', 'environment_mismatch', 'sdk_too_old']);
+/** A telemetry delta every this long while the app is in use (2.0.1: Quran Lab's choice, 15 minutes). */
+export const DELTA_INTERVAL_MS = 15 * 60_000;
+/** How often the schedule looks at the clock. */
+const TICK_MS = 60_000;
 
 /** A platform failure: { status, code } from the API's {"error","message"} body. */
 export class PlatformError extends Error {
@@ -85,13 +90,21 @@ export class QuranLab {
    * @param {string} [o.origin]  Node with a web key: the Origin header to send
    * @param {'on'|'off'} [o.analytics='on']  the one developer opt-out; never a prompt
    * @param {boolean} [o.issues=true]
-   * @param {boolean} [o.contributions=false]  recitation sharing (asks the learner first)
+   * @param {boolean} [o.contributions]  ignored since 2.0.1: whether the sharing sheet is offered is Quran Lab's
+   *   decision, in the signed config (flags.contributions); the SDK still asks the learner before anything is
+   *   recorded for upload
    * @param {'general'|'children'} [o.audience]
    * @param {number} [o.sharingBitrate]  Opus bit/s for shared sessions (default 192000, SHARING_BITRATE_DEFAULT)
    * @param {object} [o.state]  persistence (default localStorage; Node: dirState(dir))
    * @param {Array<string|Uint8Array>} [o.trustedKeys]  pinned config keys (default Quran Lab's)
    * @param {string} [o.apiUrl] [o.modelsUrl] [o.cdnUrl] [o.fetch] [o.clock]  o.modelsUrl: model files (default the
    *   signed config's base, else cdn.quranlab.ai/models); o.cdnUrl alone: the old {cdn}/hf/ path
+   * @param {boolean} [o.autoSend=true]  telemetry deltas on the SDK's own schedule (every 15 minutes while the page
+   *   is visible, when it is hidden or left); false: the app calls ql.foreground() / ql.background() / ql.sendTelemetry()
+   * @param {{document?: EventTarget & {visibilityState?: string}, window?: EventTarget}} [o.lifecycle]  where the
+   *   page's visibilitychange and pagehide come from (default the page's own)
+   * @param {boolean} [o.debug]  a development build: the "newer SDK available" line is logged (default: when
+   *   process.env.NODE_ENV is not 'production' where it resolves; a plain browser page stays silent)
    */
   constructor(o) {
     if (!o || typeof o.key !== 'string' || !/^qlk_v1_/.test(o.key)) throw new TypeError('QuranLab: a developer key qlk_v1_... is needed');
@@ -116,11 +129,16 @@ export class QuranLab {
     this.contributions = !!o.contributions;
     this.audience = o.audience || 'general';
     this.sharingBitrate = o.sharingBitrate || null;
+    this.autoSend = o.autoSend !== false;
+    this.debug = typeof o.debug === 'boolean' ? o.debug : undefined;
+    this.lifecycle = o.lifecycle || { document: globalThis.document, window: typeof globalThis.window !== 'undefined' ? globalThis.window : null };
+    this._lastSend = null;
+    this._hidden = false;
     this.stopped = null; // the code that stopped the network this launch
     this.config = null;
     this._token = null;
     this._timer = null;
-    this.telemetry = new Telemetry({ state: this.state, product: 'web', platform: this.platform, sdkVersion: SDK_VERSION,
+    this.telemetry = new Telemetry({ state: this.state, product: productOf(this.platform), platform: this.platform, sdkVersion: SDK_VERSION,
       appVersion: this.appVersion, device: deviceInfo(), clock: this.clock, enabled: this.analyticsOn });
     // the stored signed config, if still valid, until the network answers
     const saved = this.state.get('config');
@@ -139,14 +157,16 @@ export class QuranLab {
   get flags() { return (this.config && this.config.flags) || { analytics: true, issues: true, contributions: false }; }
 
   // ---- HTTP ----
-  async _call(method, path, { body = null, auth = 'token', headers = {}, raw = false } = {}) {
+  async _call(method, path, { body = null, auth = 'token', headers = {}, raw = false, keepalive = false } = {}) {
     if (this.stopped) throw new PlatformError(0, this.stopped, 'stopped for this launch');
     const h = { ...headers };
     if (this.origin) h.origin = this.origin;
     if (auth === 'key') h['x-qlab-key'] = this.key;
     else if (auth === 'token') h.authorization = `Bearer ${await this.token()}`;
     if (body !== null) h['content-type'] = 'application/json';
-    const r = await this.fetch(this.apiUrl + path, { method, headers: h, body: body === null ? undefined : JSON.stringify(body) });
+    const init = { method, headers: h, body: body === null ? undefined : typeof body === 'string' ? body : JSON.stringify(body) };
+    if (keepalive) init.keepalive = true; // a page being hidden or left: the request outlives it
+    const r = await this.fetch(this.apiUrl + path, init);
     if (raw) return r;
     if (r.status >= 400) {
       let e = {};
@@ -155,7 +175,7 @@ export class QuranLab {
       if (STOP_CODES.has(err.code)) this.stopped = err.code;
       if (err.code === 'invalid_token' && auth === 'token' && !headers['x-retried']) {
         this._token = null; this.state.set('token', null);
-        return this._call(method, path, { body, auth, headers: { ...headers, 'x-retried': '1' } }).catch((e2) => { throw e2; });
+        return this._call(method, path, { body, auth, headers: { ...headers, 'x-retried': '1' }, keepalive }).catch((e2) => { throw e2; });
       }
       throw err;
     }
@@ -174,16 +194,30 @@ export class QuranLab {
   }
 
   // ---- launch ----
+  /** The launch sequence: a launch counted, register (once per UTC day), the signed config, the telemetry
+   * reports left from earlier runs and this launch's delta, queued issues; then the delta schedule. */
   async launch() {
-    const steps = [() => this.register(), () => this.refreshConfig(), () => this.flush()];
+    this.telemetry.count('launches');
+    this.telemetry.launched();
+    const steps = [() => this.register(), () => this.refreshConfig(), () => this.sendTelemetry('launch')];
     for (const s of steps) {
       try { await s(); } catch (e) { this.lastError = e; if (this.stopped) break; }
     }
+    if (this.autoSend) this._startSchedule();
   }
 
-  /** POST /v1/register, once per launch. */
+  /** POST /v1/register, at most once per UTC day per install (the first launch or return to the foreground of
+   * the day): the day is stamped only after a 200, so a failed attempt is made again. Returns the answer, or
+   * null when this install already registered today. */
   async register() {
-    if (this._registered) return this._registered;
+    const today = utcDay(this.clock());
+    if (this.state.get('register.day') === today) return null;
+    if (this._registering) return this._registering;
+    this._registering = this._register(today).finally(() => { this._registering = null; });
+    return this._registering;
+  }
+
+  async _register(today) {
     const first = this.state.get('installed') === null;
     if (first) this.state.set('installed', true);
     const pendingNew = this.state.get('register.pending_new') === true;
@@ -192,9 +226,67 @@ export class QuranLab {
     const body = { platform: this.platform, bundle_id: this.bundleId, app_version: this.appVersion, sdk_version: SDK_VERSION, new_install: newInstall };
     if (this.appName) body.app_name = this.appName;
     if (this.modelRevision) body.model_revision = this.modelRevision;
-    this._registered = await this._call('POST', '/v1/register', { body });
+    const r = await this._call('POST', '/v1/register', { body });
     this.state.set('register.pending_new', null);
-    return this._registered;
+    this.state.set('register.day', today);
+    return r;
+  }
+
+  // ---- in use, background, the delta schedule ----
+  /** The app came back to the foreground (the page became visible again): a launch counted, register if this
+   * is the first foreground of a new UTC day. Called by the SDK's own page listeners; call it yourself with
+   * autoSend false. */
+  foreground() {
+    this._hidden = false;
+    this.telemetry.count('launches');
+    if (!this.stopped) this.register().catch((e) => { this.lastError = e; });
+  }
+
+  /** The app goes to the background (the page is hidden or left): the delta since the last send point is
+   * sealed and sent with keepalive requests. */
+  background() {
+    this._hidden = true;
+    return this.sendTelemetry('background', { keepalive: true });
+  }
+
+  /** A send point: seal what was counted since the last one and send every report due (oldest first). */
+  async sendTelemetry(reason = 'manual', { keepalive = false } = {}) {
+    this._lastSend = this.clock();
+    if (this.telemetry.enabled && this.flags.analytics !== false) this.telemetry.seal();
+    return this.flush({ keepalive });
+  }
+
+  /** The schedule looks at the clock (every minute): a delta every 15 minutes while the page is visible. */
+  _tick() {
+    const doc = this.lifecycle.document;
+    const visible = !(doc && doc.visibilityState === 'hidden');
+    if (!visible || this.stopped) return false;
+    if (this._lastSend !== null && this.clock() - this._lastSend < DELTA_INTERVAL_MS) return false;
+    this.sendTelemetry('interval').catch(() => {});
+    return true;
+  }
+
+  _startSchedule() {
+    if (this._schedule) return;
+    const doc = this.lifecycle.document, win = this.lifecycle.window;
+    const onVisibility = () => { if (doc.visibilityState === 'hidden') this.background().catch(() => {}); else if (this._hidden) this.foreground(); };
+    const onPageHide = () => { if (!this._hidden) this.background().catch(() => {}); };
+    if (doc && typeof doc.addEventListener === 'function') doc.addEventListener('visibilitychange', onVisibility);
+    if (win && typeof win.addEventListener === 'function') win.addEventListener('pagehide', onPageHide);
+    const timer = setInterval(() => this._tick(), TICK_MS);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+    this._schedule = { timer, onVisibility, onPageHide };
+  }
+
+  /** Stop the SDK's delta schedule and page listeners (a test, or an app tearing the client down). */
+  stopSchedule() {
+    const s = this._schedule;
+    if (!s) return;
+    clearInterval(s.timer);
+    const doc = this.lifecycle.document, win = this.lifecycle.window;
+    if (doc && typeof doc.removeEventListener === 'function') doc.removeEventListener('visibilitychange', s.onVisibility);
+    if (win && typeof win.removeEventListener === 'function') win.removeEventListener('pagehide', s.onPageHide);
+    this._schedule = null;
   }
 
   /**
@@ -208,7 +300,7 @@ export class QuranLab {
     const headers = {};
     if (saved && saved.etag && !nearExpiry) headers['if-none-match'] = saved.etag;
     const r = await this._call('GET', `/v1/config?${q}`, { headers, raw: true });
-    if (r.status === 304 && saved) { this.config = saved.cfg; return this.config; }
+    if (r.status === 304 && saved) { this.config = saved.cfg; this._noticeSdkLatest(); return this.config; }
     if (r.status >= 400) {
       let e = {};
       try { e = await r.json(); } catch (_) { /* none */ }
@@ -229,8 +321,13 @@ export class QuranLab {
     if (cfg.flags && cfg.flags.analytics === false) this.telemetry.clear();
     this.telemetry.enabled = this.analyticsOn && !(cfg.flags && cfg.flags.analytics === false);
     for (const tf of this._models || []) tf.setRemoteConfig(cfg);
+    this._noticeSdkLatest();
     return cfg;
   }
+
+  // the signed config's sdk_latest: one line for the developer per launch, never in production
+  // (update-notice.js); unknown or malformed fields of the config are ignored like every other one
+  _noticeSdkLatest() { noticeSdkLatest(this.config, SDK_VERSION, { debug: this.debug }); }
 
   /** Refresh the config every `ms` (60 s) while the app is in use; call stop() when it is not. */
   startRefresh(ms = 60_000) {
@@ -262,6 +359,12 @@ export class QuranLab {
     this._models.push(tf);
     if (this.config) tf.setRemoteConfig(this.config);
     tf._telemetry = this;
+    // the sharing sheet is offered where the signed config says so, whether or not the app called
+    // enableSharing (2.0.0 needed that call and the contributions option): in a page, the SDK wires its own
+    // sheet here. Nothing is captured before the learner answers "Share" on it.
+    if (!this.sharing && !this._sharingWiring && typeof globalThis.document !== 'undefined') {
+      this._sharingWiring = import('../consent/index.js').then((m) => { if (!this.sharing) m.enableSharing(this); }).catch(() => {});
+    }
     this.telemetry.modelLoaded(tf, tf.loadMs || 0);
     if (tf.delivery) {
       this.telemetry.download({ revision: this.modelRevision || 'unknown', profile: 'web-cpu', bytes: tf.delivery.bytesDownloaded,
@@ -292,13 +395,26 @@ export class QuranLab {
   scored(tf, result) { this.telemetry.scored(tf, result); }
 
   // ---- telemetry and issues ----
-  /** Send every completed day (202 drop, 400 drop, 401 renew once, else keep) and queued issues. */
-  async flush() {
+  /** Send the sealed telemetry reports that are due, oldest first, each with its stored bytes (202 deletes, 400 and
+   * 413 drop, 401 renews the token once then keeps, 429 / 5xx / 503 / network keep it with backoff: 1 min, 10 min,
+   * the next launch), then the queued issues. Returns the reports accepted. */
+  async flush({ keepalive = false } = {}) {
     let sent = 0;
+    if (this.stopped) return 0;
     if (this.telemetry.enabled && this.flags.analytics !== false) {
-      for (const p of this.telemetry.pending()) {
-        try { await this._call('POST', '/v1/events', { body: p }); this.telemetry.drop(p.day); sent++; } catch (e) {
-          if (e.status === 400 || e.status === 413) this.telemetry.drop(p.day); else break;
+      for (const r of this.telemetry.due()) {
+        try {
+          await this._call('POST', '/v1/events', { body: r.body, keepalive });
+          this.telemetry.dropReport(r.report_id);
+          sent++;
+        } catch (e) {
+          if (e.status === 400 || e.status === 413) {
+            this.telemetry.dropReport(r.report_id);
+            if (e.status === 400) this.reportIssue('other', `telemetry:${e.code || 'bad_request'}`);
+          } else {
+            this.telemetry.deferReport(r.report_id);
+            break;
+          }
         }
       }
     } else if (this.flags.analytics === false) this.telemetry.clear();
@@ -354,10 +470,12 @@ export class QuranLab {
     try { return await this._call('GET', '/v1/contributions/summary', { headers: { 'x-qlab-contributor': this.contributor() } }); } catch (_) { return null; }
   }
 
-  /** Whether this install may upload under the signed config (flags.contributions and upload_trust). */
+  /** Whether the signed config offers sharing to this app (flags.contributions and upload_trust). Quran Lab
+   * decides this per app; the app's `contributions` option no longer does (2.0.1). No signed config in force:
+   * no. This never means the learner agreed: the consent state (consent/state.js) does. */
   sharingAllowed() {
-    const f = this.flags;
-    if (!this.contributions || f.contributions !== true) return false;
+    const f = this.config && this.config.flags;
+    if (!f || f.contributions !== true) return false;
     // owner decision (11-07): web and desktop upload at the lower trust tier (`capped`, attested=false);
     // an absent upload_trust entry means that tier; `off` or `attested` (which they cannot meet) mean no
     const trust = (f.upload_trust && f.upload_trust[this.platform]) || 'capped';

@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.0.1
+
+- Recitation sharing is offered where Quran Lab decides, per app, in the signed config; the `contributions`
+  option is ignored, and without a signed config nothing is offered. Nothing is recorded or sent before the
+  learner answers "Share".
+- Fixed: web sessions were never uploaded in 2.0.0 (the consent controller passed the wrong device, token and
+  decode fields to the uploader).
+- Asking: the sheet is shown at most three times per install, ever (the count carries over from 2.0.0);
+  "Not now" may lead to a later ask within those three, a yes ends asking forever, and so does turning
+  sharing off after a yes (the app's settings can still turn it on). A yes persists across copy decks, app
+  wording and the upgrade from 2.0.0 (no sheet, no pause), and each session carries the version the learner
+  agreed to. Stopping and deleting work whatever the learner agreed to.
+- The consent sheet, default or yours: `theme` (or CSS custom properties) for the SDK's sheets; your own UI
+  with `ask: fn`, the SDK's localized strings and `sharing.answer(yes)`; your own wording with `setWording`,
+  recorded as consent version `custom-<24 hex>` with its SHA-256 sent with each session for Quran Lab to review.
+- Copy deck 2026-11-09.1 (consent `share-2026-11-09`) in eight languages: no longer says the recited ayah is
+  sent (it is not), and deletion from Quran Lab's servers is immediate.
+- Adaptive Opus bitrate on bad networks: 192, 96, 64 or 32 kbit/s, lowered when uploads fail or back up and
+  raised again when they succeed, changed between segments of the same Ogg stream; each segment's bitrate is
+  in the outbox items (`segmentBitrates`).
+- Telemetry: deltas during the day (every 15 minutes while the page is visible and when it is hidden), each
+  with a random `report_id`; new aggregate counters (launches, ayahs, ayahs per surah, words, tajweed rule
+  checks and flags, sharing sheet outcomes). Register once per UTC day per install.
+- Outside production (the new `debug` option, or `NODE_ENV` not `production`), one warning per load when
+  Quran Lab's signed config names a newer SDK: "Quran Lab SDK X is available (severity), you have Y: URL".
+- `docs/platform-client.md`: what the SDK sends to Quran Lab, when, and what an app can change.
+
 ## 2.0.0 (first public release)
 
 - TajweedFormer V4: `TajweedFormer.load` opens a signed `sdk/v4.0` folder (by URL, files or a

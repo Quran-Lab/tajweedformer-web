@@ -17,12 +17,14 @@ import { OpusEncoder, loadOpus, opusVersion } from './encoder.js';
 import { ShareResampler } from './resampler.js';
 import { ContributionClient, sessionJson, utcDay, b64url, SDK_VERSION } from './uploader.js';
 import { Outbox, FILES, defaultStorage, writeJson, mark, recover, activeCaptures } from './outbox.js';
+import { BitrateLadder } from './bitrate.js';
 
 export * from './oggopus.js';
 export { OpusEncoder, loadOpus, opusVersion, decodeOggOpus, OPUS_REQUEST } from './encoder.js';
 export { ShareResampler } from './resampler.js';
 export { ContributionClient, SharingError, sessionJson, parseUrls, requestCounts, utcDay, b64url, deletionMessage, INPUT_ROUTES, SDK_VERSION } from './uploader.js';
-export { Outbox, MemoryStorage, dirStorage, indexedDbStorage, defaultStorage, recover, markers, activeCaptures, sha256Hex, MAX_AGE_MS, FILES } from './outbox.js';
+export { Outbox, MemoryStorage, dirStorage, indexedDbStorage, defaultStorage, recover, markers, markerSeconds, activeCaptures, sha256Hex, MAX_AGE_MS, FILES } from './outbox.js';
+export { BitrateLadder, BITRATE_RUNGS, UP_STREAK, UP_MAX_BACKLOG_S, DOWN_BACKLOG_S, isNetworkFailure } from './bitrate.js';
 
 /** A failed or cancelled session is shared only from this long (seconds). */
 export const MINIMUM_PARTIAL_S = 2;
@@ -52,7 +54,8 @@ export function webDevice() {
  * @param {(() => Promise<{token: string, attested?: boolean}>) & {invalidate?: () => Promise<void>}} o.tokenProvider
  * @param {(() => object|null) | object | null} [o.flags]  the signed config's flags (or a getter)
  * @param {() => boolean} [o.enabled]  the app's `contributions` option AND the learner's consent
- * @param {string|null} [o.consentVersion]  the copy deck version the learner agreed to
+ * @param {string|null} [o.consentVersion]  the copy deck version the learner agreed to (custom-... for an app's own wording)
+ * @param {string|null} [o.consentTextSha256]  with an app's own wording: the hash of the text the learner agreed to
  * @param {string} [o.contributor]  the contributor id (32 hex) the app's controller keeps; default: one
  *        kept in this storage
  * @param {Uint8Array} [o.contributorKeyRaw]  the device key's public half, the 65-byte uncompressed point
@@ -66,12 +69,15 @@ export function webDevice() {
  * @param {(e: SharingError) => void} [o.onError]  contributor_revoked / contributor_key_mismatch (rotate
  *        the contributor, key and code), volume_limit, capped_limit
  * @param {() => Promise<object>} [o.opus]  a libopus module factory (default: the bundled module)
- * @param {number} [o.bitrate]  Opus bit/s, 6000 to 510000 (default SHARING_BITRATE_DEFAULT, 192000)
+ * @param {number} [o.bitrate]  a fixed Opus bit/s, 6000 to 510000, in place of the adaptive ladder (192, 96, 64,
+ *        32 kbit/s by how uploads go; bitrate.js). For tests and special cases; leave it out in apps.
  */
 export async function createSharing(o) {
   const storage = o.storage || await defaultStorage();
   const client = new ContributionClient({ api: o.api, fetch: o.fetch, headers: o.headers || {} });
   const opts = { ...o };
+  // one ladder per pipeline (page or process), in memory, from the top rung
+  const ladder = new BitrateLadder();
   const enabled = () => (opts.enabled ? !!opts.enabled() : true);
   const flags = () => (typeof opts.flags === 'function' ? opts.flags() : opts.flags || null);
   const device = () => opts.device || webDevice();
@@ -85,7 +91,7 @@ export async function createSharing(o) {
   tokenProvider.invalidate = async () => { if (opts.tokenProvider.invalidate) await opts.tokenProvider.invalidate(); };
   const outbox = new Outbox({ storage, client, tokenProvider, flags, enabled,
     turnstile: async () => (opts.turnstile ? opts.turnstile() : null), platform: o.platform || 'web', contributor, clock: o.clock,
-    onChange: (x) => opts.onChange && opts.onChange(x), onError: (e) => opts.onError && opts.onError(e), random: o.random });
+    onChange: (x) => opts.onChange && opts.onChange(x), onError: (e) => opts.onError && opts.onError(e), random: o.random, ladder });
   let opus = null;
   const opusModule = async () => { opus = opus || await loadOpus(o.opus); return opus; };
 
@@ -93,6 +99,8 @@ export async function createSharing(o) {
     storage,
     outbox,
     client,
+    /** The adaptive bitrate: `ladder.bitrate` is the bit rate the next segment opens at. */
+    ladder,
     /** Replace options later (the controller's new contributor and key, a new config, consent). */
     update(next) { Object.assign(opts, next); },
     /** The contributor id of this install (32 hex). */
@@ -127,10 +135,10 @@ export async function createSharing(o) {
       const m = await opusModule();
       if (opts.contributorKeyRaw && opts.contributorKeyRaw.length !== 65) throw new TypeError('contributorKeyRaw: the 65-byte uncompressed P-256 point');
       const key = opts.contributorKeyRaw ? b64url(opts.contributorKeyRaw) : null;
-      const bitrate = Number.isInteger(opts.bitrate) && opts.bitrate >= 6000 && opts.bitrate <= 510000 ? opts.bitrate : OPUS_SETTINGS.bitrate;
+      const fixed = Number.isInteger(opts.bitrate) && opts.bitrate >= 6000 && opts.bitrate <= 510000 ? opts.bitrate : null;
       return new ShareCapture({ storage, outbox, opus: m, enabled: () => enabled() && outbox.uploadAllowed().ok,
-        settings: { ...OPUS_SETTINGS, bitrate },
-        consentVersion: opts.consentVersion ?? null, contributor: await contributor(), contributorKey: key,
+        settings: { ...OPUS_SETTINGS, bitrate: fixed || ladder.bitrate }, ladder: fixed ? null : ladder,
+        consentVersion: opts.consentVersion ?? null, consentTextSha256: opts.consentTextSha256 ?? null, contributor: await contributor(), contributorKey: key,
         recoveryHash: opts.recoveryHash || null, device: device(), day: utcDay(o.clock ? o.clock() : Date.now()), ...s });
     },
   };
@@ -171,16 +179,23 @@ export function resetSharingForTests() { shared = null; }
 
 /** One session being shared: Ogg Opus segments written as the session runs, each closed segment
  * handed to the outbox at once (the Swift ShareCapture). push() is synchronous (it encodes at once);
- * storage writes are queued in order and awaited by finish() and abort(). */
+ * storage writes are queued in order and awaited by finish() and abort(). With a `ladder`, each segment
+ * is coded at the ladder's bitrate when it opens (segment 1: when the capture starts), recorded in
+ * capture.json as it opens (for recovery) and in the segment's marker. */
 export class ShareCapture {
-  constructor({ storage, outbox, opus, enabled, consentVersion, contributor, contributorKey = null, recoveryHash = null, device, day, inputSampleRate,
+  constructor({ storage, outbox, opus, enabled, consentVersion, consentTextSha256 = null, contributor, contributorKey = null, recoveryHash = null, device, day, inputSampleRate,
     inputRoute = 'unknown',
-    decode = {}, serial, plan = SEGMENT_PLAN, settings = OPUS_SETTINGS }) {
-    Object.assign(this, { storage, outbox, opus, enabled, plan, settings, serial });
+    decode = {}, serial, plan = SEGMENT_PLAN, settings = OPUS_SETTINGS, ladder = null }) {
+    Object.assign(this, { storage, outbox, opus, enabled, plan, settings, serial, ladder });
+    // segment 1 opens at the rung in force when the capture starts
+    if (ladder) this.settings = { ...settings, bitrate: ladder.bitrate };
+    /** segment number -> bit/s, as each segment opened */
+    this.bitrates = {};
+    this._closedGranule = 0;
     this.id = randomHex();
     this.inputRate = Math.round(inputSampleRate);
     this.session = sessionJson({ modelRevision: decode.modelRevision ?? null, backend: decode.backend || 'exact',
-      weightsSha256: decode.weightsSha256 ?? null, sdkVersion: decode.sdkVersion || SDK_VERSION, consentVersion, contributor,
+      weightsSha256: decode.weightsSha256 ?? null, sdkVersion: decode.sdkVersion || SDK_VERSION, consentVersion, consentTextSha256, contributor,
       day, deviceClass: device.deviceClass, osMajor: device.osMajor, inputSampleRate: this.inputRate, inputRoute,
       contributorKey, recoveryHash });
     this.writer = null;
@@ -204,17 +219,32 @@ export class ShareCapture {
     if (!this.writer) {
       this.encoder = new OpusEncoder(this.opus, { sampleRate: CODED_RATE, settings: this.settings });
       const id = this.id, s = this.storage;
+      const ladder = this.ladder;
       this.writer = new OggOpusWriter({
         encoder: this.encoder, resampler: this.inputRate === CODED_RATE ? null : new ShareResampler(this.inputRate),
         inputRate: this.inputRate, plan: this.plan, settings: this.settings, serial: this.serial,
         vendor: `QuranLab SDK ${SDK_VERSION} ${opusVersion(this.opus)}`,
+        // segment 1 keeps the bitrate the encoder was made with; later ones take the ladder's as they open
+        bitrate: (n) => (ladder && n > 1 ? ladder.bitrate : null),
+        onSegmentOpen: ({ n, bitrate }) => {
+          this.bitrates[n] = bitrate;
+          const bitrates = { ...this.bitrates };
+          this._queue(() => writeJson(s, id, FILES.capture, { preSkip: this.writer.preSkip, bitrates }));
+        },
         onPage: (n, bytes) => this._queue(() => s.append(id, segmentName(n) + '.opus', bytes)),
-        onSegment: (seg) => { this.segments = seg.n; this._queue(async () => { await mark(s, id, seg.n, seg.granule); this.outbox.drain().catch(() => {}); }); },
+        onSegment: (seg) => {
+          this.segments = seg.n;
+          // the backlog and the ladder at once, before the next segment opens
+          const seconds = Math.max(0, seg.granule - this._closedGranule) / 48000;
+          this._closedGranule = seg.granule;
+          if (typeof this.outbox.segmentClosed === 'function') this.outbox.segmentClosed(id, seg.n, seconds);
+          this._queue(async () => { await mark(s, id, seg.n, seg.granule, seg.bitrate); this.outbox.drain().catch(() => {}); });
+        },
       });
       const preSkip = this.writer.preSkip;
       // the session JSON and capture.json before the first page lands
       this.io = this.io.then(() => Promise.all([s.write(id, FILES.session, new TextEncoder().encode(this.session)),
-        writeJson(s, id, FILES.capture, { preSkip })]));
+        writeJson(s, id, FILES.capture, { preSkip, bitrates: {} })]));
     }
     this.writer.append(pcm instanceof Float32Array ? pcm : Float32Array.from(pcm));
   }

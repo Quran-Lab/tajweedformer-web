@@ -53,7 +53,9 @@ const opts = (api, extra = {}) => ({ key: 'qlk_v1_test_aaaaaaaaaaaaaaaaaaaaaa', 
 test('launch: unattested token, register (new install once), signed config verified and stored, ETag 304', async () => {
   const api = await mockApi();
   const st = memoryState();
-  const ql = await QuranLab.configure(opts(api, { state: st }));
+  let off = 0;
+  const clock = () => Date.now() + off;
+  const ql = await QuranLab.configure(opts(api, { state: st, clock, autoSend: false }));
   assert.equal(ql.lastError, undefined);
   assert.equal(ql.config.tajweed.preset, 'sensitive');
   const attest = api.log.find((x) => x.path === '/v1/attest');
@@ -61,17 +63,25 @@ test('launch: unattested token, register (new install once), signed config verif
   assert.equal(attest.headers.origin, 'https://app.example');
   const reg = api.log.find((x) => x.path === '/v1/register');
   assert.equal(reg.body.new_install, true);
-  assert.equal(reg.body.sdk_version, '2.0.0');
+  assert.equal(reg.body.sdk_version, '2.0.1');
   const cfgReq = api.log.find((x) => x.path === '/v1/config');
-  assert.match(cfgReq.query, /sdk=2\.0\.0/);
+  assert.match(cfgReq.query, /sdk=2\.0\.1/);
   assert.match(cfgReq.query, /bucket=\d+/);
-  // second launch on the same storage: not a new install; config answered 304 from the stored ETag
+  // second launch on the same storage and UTC day: no register (once per day); config answered 304 from the stored ETag
   api.log.length = 0;
-  const ql2 = await QuranLab.configure(opts(api, { state: st }));
-  assert.equal(api.log.find((x) => x.path === '/v1/register').body.new_install, false);
+  const ql2 = await QuranLab.configure(opts(api, { state: st, clock, autoSend: false }));
+  assert.equal(api.log.filter((x) => x.path === '/v1/register').length, 0, 'registered once today');
   assert.equal(api.log.find((x) => x.path === '/v1/config').headers['if-none-match'], '"v1"');
   assert.equal(ql2.config.tajweed.preset, 'sensitive');
   assert.equal(api.log.filter((x) => x.path === '/v1/attest').length, 0, 'the stored token is reused');
+  // the next UTC day: one register, not a new install
+  off = 86_400_000;
+  api.log.length = 0;
+  await QuranLab.configure(opts(api, { state: st, clock, autoSend: false }));
+  const regs = api.log.filter((x) => x.path === '/v1/register');
+  assert.equal(regs.length, 1);
+  assert.equal(regs[0].body.new_install, false);
+  off = 0;
   // the model source from the recommended model
   const src = await ql2.modelSource();
   assert.equal(src.url, 'https://cdn.quranlab.ai/models/Quran-Lab/tajweedformer-v4/abc123/sdk/v4.0/');
@@ -95,10 +105,15 @@ test('config: a tampered body, an unknown kid, an expired config are refused; th
   await assert.rejects(() => verifySignedConfig(enc.encode('{}'), null, 'x', [k]), (e) => e.code === 'signature_invalid');
 });
 
-test('telemetry v2: closed body, sent for completed days only, 202 drops, 400 drops, kill switch clears', async () => {
+test('telemetry v2 deltas: closed body with the 2.0.1 fields, sealed at a send point, 202 deletes, 400 drops, kill switch clears', async () => {
   const api = await mockApi();
   let now = Date.parse('2026-11-06T12:00:00Z');
-  const ql = await QuranLab.configure(opts(api, { clock: () => now }));
+  const ql = await QuranLab.configure(opts(api, { clock: () => now, autoSend: false }));
+  // the launch's own delta (launches 1) went at launch
+  const first = api.log.filter((x) => x.path === '/v1/events');
+  assert.equal(first.length, 1);
+  assert.equal(first[0].body.launches, 1);
+  assert.match(first[0].body.report_id, /^[0-9a-f]{32}$/);
   const fakeTf = { context: 'c16_l64', sampleRate: 16000, info: { chunkMs: 320 }, folder: { manifest: { model_id: 'v4.0', revision: 'abc' } },
     settings: { effective: () => ({ preset: 'balanced', sites: { vowel_sub: { enabled: true } }, madd: { enabled: true }, gemination: { enabled: false },
       qalqalah: { enabled: false }, lazim: { enabled: false } }), app: {}, remote: null, wordLevel: () => null } };
@@ -106,11 +121,12 @@ test('telemetry v2: closed body, sent for completed days only, 202 drops, 400 dr
   ql.telemetry.scored(fakeTf, { surah: 1, sites: [{ class: 'vowel_sub', flagged: true }, { class: 'cons_sub', flagged: false }], summary: { sites: 2, flagged: 1 },
     madd: [{ count: 2, flagged: false }], words: [{ score: 1, flagged: false }, { score: null, flagged: null }] });
   ql.telemetry.decoded(fakeTf, { tokens: [{ margin: 3, confidence: 0.97 }, { margin: 0.2, confidence: null }] });
-  assert.deepEqual(ql.telemetry.pending(), [], 'today is not sent');
-  now = Date.parse('2026-11-07T08:00:00Z');
+  assert.deepEqual(ql.telemetry.pending(), [], 'nothing is sealed before a send point');
+  assert.equal(ql.telemetry.seal(), 1);
   const [p] = ql.telemetry.pending();
-  assert.deepEqual(Object.keys(p), ['v', 'day', 'product', 'platform', 'sdk_version', 'app_version', 'device', 'cohorts', 'coverage']);
-  assert.equal(p.v, 2); assert.equal(p.product, 'web'); assert.equal(p.day, '2026-11-06');
+  assert.deepEqual(Object.keys(p), ['v', 'day', 'product', 'platform', 'sdk_version', 'app_version', 'device', 'cohorts', 'coverage',
+    'ayahs', 'words', 'surah_ayahs', 'rule_checks', 'rule_flags', 'report_id']);
+  assert.equal(p.v, 2); assert.equal(p.product, 'web'); assert.equal(p.day, '2026-11-06'); assert.equal(p.sdk_version, '2.0.1');
   const c = p.cohorts[0];
   assert.equal(c.sessions, 1); assert.equal(c.minutes, 0.5); assert.equal(c.chunks, 3);
   assert.deepEqual(c.latency_ms, { le_20: 1, le_40: 1, gt_320: 1 });
@@ -120,28 +136,33 @@ test('telemetry v2: closed body, sent for completed days only, 202 drops, 400 dr
   assert.deepEqual(c.confidence, { gt_0_95: 1 });
   assert.deepEqual(c.words, { scored: 1, flagged: 0 });
   assert.deepEqual(p.coverage, { 1: 1 });
+  assert.deepEqual(p.surah_ayahs, { 1: 1 });
+  assert.deepEqual(p.rule_checks, { vowel_sub: 1, cons_sub: 1, madd: 1, word: 1 });
+  assert.deepEqual(p.rule_flags, { vowel_sub: 1 });
   assert.equal(c.word_level, 'off');
   const json = JSON.stringify(p);
   assert.ok(!/https?:|qlk_|qlt_|contributor/.test(json), 'no identifiers, no URLs');
   assert.ok(json.length < 32 * 1024);
-  // sent and dropped on 202
+  // sent and deleted on 202
   assert.equal(await ql.flush(), 1);
   assert.deepEqual(ql.telemetry.pending(), []);
-  // a refused body (400) is dropped, never retried
+  // a refused body (400) is dropped, never retried, and reported as an issue
   ql.telemetry.session(fakeTf, { seconds: 1 });
-  now = Date.parse('2026-11-08T08:00:00Z');
   api.state.eventsStatus = 400;
-  await ql.flush();
+  await ql.sendTelemetry();
   assert.deepEqual(ql.telemetry.pending(), []);
+  assert.ok((ql.state.get('issues.queue') || []).some((i) => i.code.startsWith('telemetry:')) || api.log.some((x) => x.path === '/v1/issues'));
+  api.state.eventsStatus = 202;
   // kill switch: flags.analytics false in the signed config clears and stops it
   ql.telemetry.session(fakeTf, { seconds: 1 });
+  ql.telemetry.seal();
   api.state.flags = { analytics: false, issues: true, contributions: false };
   api.state.configVersion++;
   await ql.refreshConfig();
   assert.equal(ql.telemetry.enabled, false);
+  assert.deepEqual(ql.telemetry.pending(), [], 'sealed reports cleared too');
   ql.telemetry.session(fakeTf, { seconds: 1 });
-  now = Date.parse('2026-11-09T08:00:00Z');
-  assert.deepEqual(ql.telemetry.pending(), []);
+  assert.equal(ql.telemetry.seal(), 0);
   // analytics: 'off' in code: nothing recorded
   const off = new QuranLab(opts(api, { analytics: 'off' }));
   off.telemetry.session(fakeTf, { seconds: 1 });
@@ -194,11 +215,12 @@ test('sharing state: never before a session with feedback; first ask, two re-ask
   assert.throws(() => g.answer(true));
   assert.equal(g.answer(true, { guardianConfirmed: true }), 'granted');
   assert.equal(g.s.guardian, true);
-  // copy: the portal team's decks; RTL for Arabic and Urdu; the consent version; plural impact lines; {days}
+  // copy: Quran Lab's decks; RTL for Arabic and Urdu; the consent version; plural impact lines; {days}
   const ar = copyFor('ar-EG');
   assert.equal(ar.lang, 'ar'); assert.equal(ar.dir, 'rtl'); assert.equal(copyFor('ur').dir, 'rtl'); assert.equal(copyFor('en').dir, 'ltr');
   assert.equal(copyFor('xx').lang, 'en');
-  assert.equal(ar.consentVersion, 'share-2026-11-07');
+  assert.equal(ar.consentVersion, 'share-2026-11-09');
+  assert.equal(ar.version, '2026-11-09.1'); assert.equal(ar.deleteTiming, 'immediate');
   assert.ok(copyFor('en').t('sheet.hadith').length > 20 && copyFor('en').t('sheet.hadith_ref') === 'Sahih Muslim 1631');
   assert.match(copyFor('en').minutes(1), /1 minute of/);
   assert.match(copyFor('en').minutes(12), /12 minutes/);
@@ -246,7 +268,7 @@ test('contributor key material: recovery codes and hashes (the shared sharing ve
   assert.ok(n >= 3);
 });
 
-test('the portal team fixtures (quranlab-local e2e:client recordings): the recorded signed configs verify with the local key pinned; our telemetry, issue and register bodies use only the recorded fields', async () => {
+test('platform client fixtures (local stack e2e recordings): the recorded signed configs verify with the local key pinned; our telemetry, issue and register bodies use only the recorded fields', async () => {
   const fs = await import('node:fs');
   const fx = JSON.parse(fs.readFileSync(new URL('./platform_client_fixtures.json', import.meta.url), 'utf8'));
   assert.equal(await keyId(fx.local_public_key_hex), fx.local_key_id);
@@ -275,9 +297,12 @@ test('the portal team fixtures (quranlab-local e2e:client recordings): the recor
   ql.telemetry.scored(fakeTf, { surah: 1, sites: [{ class: 'vowel_sub', flagged: true }], summary: { sites: 1, flagged: 1 }, madd: [], words: [] });
   ql.telemetry.download({ revision: 'v4.0+abc', profile: 'web-cpu', bytes: 1, success: true, resumed: false });
   now = Date.parse('2026-11-07T12:00:00Z');
-  const ours = keysOf(ql.telemetry.pending()[0]);
+  ql.telemetry.seal();
+  const ours = keysOf(ql.telemetry.pending().at(-1));
   const theirs = rec('events v2 (web)');
-  const extra = [...ours].filter((k) => !theirs.has(k) && !/^cohorts\[\]\.(latency_ms|rtf|cold_start_ms|model_load_ms|session_flag_pct|margin|confidence|fallbacks|self_test|checks_on|classes)\./.test(k));
+  // the 2.0.1 fields are newer than the recording (the platform client doc, section 6)
+  const v201 = /^(report_id|launches|ayahs|words|surah_ayahs|rule_checks|rule_flags|share_asked|share_yes|share_no)(\.|$)/;
+  const extra = [...ours].filter((k) => !theirs.has(k) && !v201.test(k) && !/^cohorts\[\]\.(latency_ms|rtf|cold_start_ms|model_load_ms|session_flag_pct|margin|confidence|fallbacks|self_test|checks_on|classes)\./.test(k));
   assert.deepEqual(extra, [], 'telemetry fields the recording does not have');
   ql.reportIssue('model_load', 'x');
   const issue = keysOf(ql.state.get('issues.queue')[0]);
@@ -306,4 +331,18 @@ test('cdnFolderUrl: cdn.quranlab.ai/models by default, the bare cdn.quranlab.ai 
   assert.equal(cdnFolderUrl({ key: 'k', revision: 'r1', url: 'https://eeur.cdn.quranlab.ai/' }).url, 'https://eeur.cdn.quranlab.ai/hf/Quran-Lab/tajweedformer-v4/r1/sdk/v4.0/');
   assert.equal(modelFolderUrl('https://x.test/base/', 'A/b c', 'r', 'sdk/v4.0'), 'https://x.test/base/A/b%20c/r/sdk/v4.0/');
   assert.deepEqual(cdnFolderUrl({ key: 'k', revision: 'r1' }).headers, { 'x-qlab-key': 'k' });
+});
+
+test('the telemetry product follows the platform, as the server checks it: a desktop app in Node is native, a page web', async () => {
+  const { Telemetry, productOf } = await import('../web/platform/telemetry.js');
+  assert.equal(productOf('web'), 'web');
+  assert.equal(productOf('windows'), 'native');
+  assert.equal(productOf('linux'), 'native');
+  assert.equal(productOf('macos'), 'apple');
+  assert.equal(productOf('unknown-thing'), 'web');
+  const store = new Map();
+  const state = { get: (k) => (store.has(k) ? store.get(k) : null), set: (k, v) => store.set(k, v) };
+  const t = new Telemetry({ state, platform: 'linux', device: { class: 'x86_64', os_major: 6 }, clock: () => Date.parse('2026-11-10T10:00:00Z') });
+  assert.equal(t.product, 'native');
+  assert.equal(new Telemetry({ state, device: { class: 'browser', os_major: 13 } }).product, 'web');
 });

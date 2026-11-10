@@ -60,7 +60,7 @@ done
 emcc -c -O3 -I"$SRC/include" -Wall -Wextra -Werror "$here/src/opus_api.c" -o "$obj/opus_api.o"
 objs+=("$obj/opus_api.o")
 
-EXPORTS=_malloc,_free,_ow_enc_create,_ow_enc_get,_ow_enc_encode,_ow_enc_destroy,_ow_dec_create,_ow_dec_decode,_ow_dec_destroy,_ow_version
+EXPORTS=_malloc,_free,_ow_enc_create,_ow_enc_get,_ow_enc_set,_ow_enc_encode,_ow_enc_destroy,_ow_dec_create,_ow_dec_decode,_ow_dec_destroy,_ow_version
 mkdir -p "$OUTDIR"
 OUT="$OUTDIR/tajweedformer-opus.mjs"
 emcc -O3 "${objs[@]}" -o "$OUT" --closure=0 \

@@ -4,7 +4,7 @@
 // signed, valid 7 days); POST /v1/uploads/{id}/urls?from=n answers the next batch, or fresh URLs for
 // the same numbers. Segments go straight to R2 as plain PUTs. Nothing is sent at the end.
 
-export const SDK_VERSION = '2.0.0';
+export const SDK_VERSION = '2.0.1';
 export const INPUT_ROUTES = Object.freeze(['built_in', 'wired', 'usb', 'bluetooth', 'car', 'continuity', 'other', 'unknown']);
 const CONSENT_RE = /^[A-Za-z0-9._-]{1,32}$/;
 const DEVICE_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,23}$/;
@@ -14,9 +14,10 @@ const HEX64 = /^[0-9a-f]{64}$/;
 /** "2026-11-07": the UTC day. */
 export const utcDay = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 10);
 
-/** The session JSON sent at the start: exactly the fields of qlab-api's closed schema. */
+/** The session JSON sent at the start: exactly the fields of qlab-api's closed schema. consentTextSha256: the
+ * hash of an app's own wording the learner agreed to (2.0.1), sent next to consent_version only then. */
 export function sessionJson({ modelRevision = null, backend = 'exact', weightsSha256 = null, sdkVersion = SDK_VERSION,
-  consentVersion = null, contributor, day, deviceClass, osMajor, inputSampleRate, inputRoute = 'unknown',
+  consentVersion = null, consentTextSha256 = null, contributor, day, deviceClass, osMajor, inputSampleRate, inputRoute = 'unknown',
   contributorKey = null, recoveryHash = null }) {
   if (contributorKey !== null && !/^[A-Za-z0-9_-]{87}$/.test(contributorKey)) throw new TypeError('contributor_key: base64url of the 65-byte point');
   if (recoveryHash !== null && !HEX64.test(recoveryHash)) throw new TypeError('recovery_hash: 64 lowercase hex');
@@ -24,12 +25,16 @@ export function sessionJson({ modelRevision = null, backend = 'exact', weightsSh
   if (!DEVICE_RE.test(deviceClass)) throw new TypeError(`device_class ${deviceClass}`);
   if (!(Number.isInteger(osMajor) && osMajor >= 1 && osMajor <= 99)) throw new TypeError(`os_major ${osMajor}`);
   if (consentVersion !== null && !CONSENT_RE.test(consentVersion)) throw new TypeError('consent version: 1 to 32 of A-Z a-z 0-9 . _ -');
+  if (consentTextSha256 !== null && !(HEX64.test(consentTextSha256) && consentVersion === `custom-${consentTextSha256.slice(0, 24)}`)) {
+    throw new TypeError('consent_text_sha256: 64 lowercase hex, with the custom-<24 hex> consent version it derives');
+  }
   if (!INPUT_ROUTES.includes(inputRoute)) throw new TypeError(`input_route ${inputRoute}`);
   if (!['neuralEngine', 'exact', 'mock'].includes(backend)) throw new TypeError(`backend ${backend}`);
   const audio = { codec: 'opus', container: 'ogg', sample_rate: 48000, channels: 1, input_route: inputRoute };
   if (inputSampleRate >= 8000 && inputSampleRate <= 192000) audio.input_sample_rate = Math.round(inputSampleRate);
   const o = {
     audio,
+    consent_text_sha256: consentTextSha256,
     consent_version: consentVersion,
     contributor,
     contributor_key: contributorKey,
@@ -42,6 +47,8 @@ export function sessionJson({ modelRevision = null, backend = 'exact', weightsSh
     recovery_hash: recoveryHash,
   };
   if (consentVersion === null) delete o.consent_version;
+  // absent for the deck's own wording: a 2.0.0 server's closed schema refuses fields it does not know
+  if (consentTextSha256 === null) delete o.consent_text_sha256;
   if (contributorKey === null) delete o.contributor_key;
   if (recoveryHash === null) delete o.recovery_hash;
   // sorted keys, as the Swift SDK writes it

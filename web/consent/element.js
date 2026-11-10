@@ -1,13 +1,15 @@
 // <quranlab-consent> and <quranlab-sharing-settings>: the SDK's own sharing sheet and settings for
-// the browser (SHARING_EXPERIENCE.md, PLATFORM_CLIENT.md section 9). Themable with CSS custom
-// properties (--ql-bg, --ql-fg, --ql-muted, --ql-accent, --ql-accent-fg, --ql-radius, --ql-font) and
-// ::part(sheet|title|body|primary|secondary|guardian), RTL from the deck's direction, keyboard and
-// screen reader friendly (a modal <dialog>), two buttons of equal weight, nothing pre-ticked.
+// the browser (SHARING_EXPERIENCE.md, PLATFORM_CLIENT.md section 9). Themable with a `theme` (theme.js) or
+// the CSS custom properties it sets (--ql-bg, --ql-fg, --ql-muted, --ql-accent, --ql-accent-fg, --ql-radius,
+// --ql-font, --ql-title-font) and ::part(sheet|title|body|primary|secondary|guardian), RTL from the deck's
+// direction, keyboard and screen reader friendly (a modal <dialog>), two buttons of equal weight, nothing
+// pre-ticked. An app's own wording (wording.js) is shown in place of the deck's strings it replaces.
 //
 //   import '@quran-lab/tajweedformer/consent';         // defines the elements
-//   const yes = await QuranLabConsent.ask({ lang: 'ar', variant: 'first', guardian: false });
+//   const yes = await QuranLabConsent.ask({ lang: 'ar', variant: 'first', guardian: false, theme: { accent: '#0b6e4f' } });
 
 import { copyFor } from './copy.js';
+import { applyTheme } from './theme.js';
 
 const STYLE = `
 :host { all: initial; }
@@ -18,7 +20,7 @@ dialog { box-sizing: border-box; max-inline-size: min(34rem, calc(100vw - 2rem))
   box-shadow: 0 20px 60px rgb(0 0 0 / .25); }
 dialog::backdrop { background: rgb(0 0 0 / .45); }
 
-h2 { margin: 0 0 .75rem; font-size: 1.25rem; line-height: 1.3; font-weight: 650; }
+h2 { margin: 0 0 .75rem; font-size: 1.25rem; line-height: 1.3; font-weight: 650; font-family: var(--ql-title-font, inherit); }
 p { margin: 0 0 .75rem; }
 .muted { color: var(--ql-muted, inherit); opacity: .85; font-size: .95rem; }
 ul { margin: 0 0 1rem; padding-inline-start: 1.1rem; }
@@ -51,7 +53,8 @@ const Base = globalThis.HTMLElement || class {};
 export class QuranLabConsent extends Base {
   /**
    * Show the sheet and resolve with the learner's answer (true = share). Dismissing (Escape) is "Not now".
-   * @param {{ lang?: string, variant?: 'first'|'reask'|'version', guardian?: boolean, parent?: Element }} o
+   * @param {{ lang?: string, variant?: 'first'|'reask'|'version', guardian?: boolean, parent?: Element,
+   *           wording?: Record<string, string>|null, theme?: object|null }} o
    * @returns {Promise<{ yes: boolean, guardianConfirmed: boolean }>}
    */
   static ask(o = {}) {
@@ -60,8 +63,9 @@ export class QuranLabConsent extends Base {
     return el.show(o).finally(() => el.remove());
   }
 
-  show({ lang = (globalThis.navigator && navigator.language) || 'en', variant = 'first', guardian = false } = {}) {
-    const c = copyFor(lang);
+  show({ lang = (globalThis.navigator && navigator.language) || 'en', variant = 'first', guardian = false, wording = null, theme = null } = {}) {
+    const c = copyFor(lang, wording);
+    applyTheme(this, theme);
     const t = c.t;
     const root = this.shadowRoot || this.attachShadow({ mode: 'open' });
     const lines = (guardian ? ['sheet.what', 'sheet.who', 'sheet.control'] : ['sheet.mistakes', 'sheet.what', 'sheet.who', 'sheet.control'])
@@ -101,13 +105,14 @@ export class QuranLabConsent extends Base {
   }
 
   /** The one-time thank-you, as a small dismissable note. */
-  static thank({ lang, parent, ms = 6000 } = {}) {
-    const c = copyFor(lang || (globalThis.navigator && navigator.language) || 'en');
+  static thank({ lang, parent, ms = 6000, wording = null, theme = null } = {}) {
+    const c = copyFor(lang || (globalThis.navigator && navigator.language) || 'en', wording);
     const el = document.createElement('div');
     el.setAttribute('role', 'status');
     el.lang = c.lang; el.dir = c.dir;
     el.textContent = c.t('thanks');
-    el.style.cssText = 'position:fixed;inset-inline:1rem;inset-block-end:1rem;max-inline-size:32rem;margin-inline:auto;padding:1rem 1.25rem;border-radius:14px;background:var(--ql-accent,#2a3b8f);color:var(--ql-accent-fg,#fff);font:500 1rem/1.5 var(--ql-font,system-ui,sans-serif);z-index:2147483647;box-shadow:0 10px 30px rgb(0 0 0 / .25)';
+    el.style.cssText = 'position:fixed;inset-inline:1rem;inset-block-end:1rem;max-inline-size:32rem;margin-inline:auto;padding:1rem 1.25rem;border-radius:var(--ql-radius,14px);background:var(--ql-accent,#2a3b8f);color:var(--ql-accent-fg,#fff);font:500 1rem/1.5 var(--ql-font,system-ui,sans-serif);z-index:2147483647;box-shadow:0 10px 30px rgb(0 0 0 / .25)';
+    applyTheme(el, theme);
     (parent || document.body).appendChild(el);
     setTimeout(() => el.remove(), ms);
     return el;
@@ -124,7 +129,8 @@ export class QuranLabSharingSettings extends Base {
   connectedCallback() { this.render(); }
   render() {
     if (!this._c) return;
-    const c = copyFor(this.getAttribute('lang') || this._c.lang);
+    const c = copyFor(this.getAttribute('lang') || this._c.lang, this._c.wording || null);
+    applyTheme(this, this._c.theme || null);
     const t = c.t;
     const root = this.shadowRoot || this.attachShadow({ mode: 'open' });
     const on = this._c.state.sharing;
@@ -135,7 +141,7 @@ export class QuranLabSharingSettings extends Base {
     <input type="checkbox" role="switch" id="s" ${on ? 'checked' : ''} aria-checked="${on}"></div>
   ${this._c.state.guardianVariant ? `<label class="guardian"><input type="checkbox" id="g"> <span>${esc(t('sheet.guardian.confirm'))}</span></label>` : ''}
   <details><summary>${esc(t('settings.what'))}</summary><p>${esc(t('what.detail'))}</p></details>
-  ${code ? `<details id="rc"><summary>Recovery code</summary><p class="code" id="code"></p></details>` : ''}
+  ${code ? `<details id="rc"><summary>${esc(t('recovery.reveal'))}</summary><p class="code" id="code"></p><p class="muted">${esc(t('recovery.keep'))}</p><p class="muted">${esc(t('recovery.hint'))}</p></details>` : ''}
   <div class="row"><button class="secondary" id="del">${esc(t('settings.delete'))}</button></div>
   <p class="muted" id="msg" role="status"></p>
 </section>`;
@@ -151,7 +157,7 @@ export class QuranLabSharingSettings extends Base {
     root.querySelector('#del').addEventListener('click', async () => {
       if (!globalThis.confirm || globalThis.confirm(t('delete.confirm'))) {
         const ok = await this._c.deleteShared().then(() => true, () => false);
-        msg.textContent = ok ? t('delete.done') : t('delete.confirm');
+        msg.textContent = ok ? t('delete.done') : t('delete.failed.network');
         if (ok) this.render();
       }
     });

@@ -23,8 +23,14 @@ export function wholePages(bytes: Uint8Array): { keep: number; granule: number }
 export interface OpusEncoding {
   readonly preSkip: number;
   readonly finalGranulePosition: number;
-  encode(pcm: Float32Array): Uint8Array[];
-  flush(): Uint8Array[];
+  /** packets coded so far; or each handed to onPacket as it is coded */
+  encode(pcm: Float32Array, onPacket?: (p: Uint8Array) => void): Uint8Array[];
+  flush(onPacket?: (p: Uint8Array) => void): Uint8Array[];
+  /** the bit rate of the packets coded from now on (encoders that support it) */
+  setBitrate?(bps: number): void;
+  readonly bitrate?: number;
+  /** called before each packet is coded, with its index (encoders that support it) */
+  beforeFrame?: ((index: number) => void) | null;
 }
 export interface Resampling {
   process(x: Float32Array, sink: (y: Float32Array) => void): void;
@@ -35,8 +41,13 @@ export class OggOpusWriter {
     encoder: OpusEncoding; resampler?: Resampling | null; inputRate: number; plan?: readonly number[];
     settings?: OpusSettings; serial?: number; vendor?: string;
     onPage: (segment: number, bytes: Uint8Array) => void;
-    onSegment?: (s: { n: number; granule: number; last: boolean }) => void;
+    onSegment?: (s: { n: number; granule: number; last: boolean; bitrate: number | null }) => void;
+    /** the bit rate of segment n, asked as it opens (its first packet); null keeps the current one */
+    bitrate?: ((n: number) => number | null) | null;
+    onSegmentOpen?: (s: { n: number; bitrate: number | null }) => void;
   });
+  /** segment number -> the bit rate its packets were coded at */
+  readonly segmentBitrates: Map<number, number | null>;
   readonly preSkip: number;
   readonly duration: number;
   readonly inputFrames: number;
@@ -56,8 +67,12 @@ export class OpusEncoder implements OpusEncoding {
   readonly preSkip: number;
   readonly finalGranulePosition: number;
   get(request: number): number | null;
-  encode(pcm: Float32Array): Uint8Array[];
-  flush(): Uint8Array[];
+  readonly bitrate: number;
+  readonly packetCount: number;
+  beforeFrame: ((index: number) => void) | null;
+  setBitrate(bps: number): void;
+  encode(pcm: Float32Array, onPacket?: (p: Uint8Array) => void): Uint8Array[];
+  flush(onPacket?: (p: Uint8Array) => void): Uint8Array[];
   free(): void;
 }
 export function decodeOggOpus(m: OpusModule, pages: OggPageInfo[]): Float32Array;
@@ -75,7 +90,7 @@ export function b64url(bytes: Uint8Array): string;
 export function deletionMessage(f: { app: string; contributor: string; nonce: string; timestamp: number }): Uint8Array;
 export function sessionJson(o: {
   modelRevision?: string | null; backend?: 'neuralEngine' | 'exact' | 'mock'; weightsSha256?: string | null; sdkVersion?: string;
-  consentVersion?: string | null; contributor: string; day: string; deviceClass: string; osMajor: number;
+  consentVersion?: string | null; consentTextSha256?: string | null; contributor: string; day: string; deviceClass: string; osMajor: number;
   inputSampleRate?: number; inputRoute?: InputRoute; contributorKey?: string | null; recoveryHash?: string | null;
 }): string;
 export interface SegmentUrl { n: number; url: string; expiresAt: number }
@@ -123,6 +138,10 @@ export function dirStorage(root: string): Promise<SharingStorage>;
 export function indexedDbStorage(dbName?: string, idb?: IDBFactory): Promise<SharingStorage>;
 export function defaultStorage(): Promise<SharingStorage>;
 export function recover(storage: SharingStorage, id: string): Promise<boolean>;
+/** A closed segment's record (seg-NNNNN.json); bitrate is absent for segments recorded before 2.0.1. */
+export interface SegmentMarker { n: number; bytes: number; sha256: string; granule: number; bitrate?: number }
+export function markers(storage: SharingStorage, id: string): Promise<SegmentMarker[]>;
+export function markerSeconds(markers: SegmentMarker[]): number[];
 export function sha256Hex(bytes: Uint8Array): Promise<string>;
 export const MAX_AGE_MS: number;
 export const FILES: Readonly<{ session: string; capture: string; end: string; item: string }>;
@@ -130,6 +149,8 @@ export const activeCaptures: Set<string>;
 
 export interface ContributionItem {
   id: string; segments: number; bytes: number; durationMs: number; day: string; completed: boolean | null;
+  /** the bit rate each segment was coded at, in segment order (null for a segment recorded before 2.0.1) */
+  segmentBitrates: (number | null)[];
   status: 'queued' | 'uploaded' | 'failed'; capped: boolean; failCode: string | null; failMessage: string | null;
   attempts: number; lastError: string | null;
 }
@@ -149,7 +170,27 @@ export class Outbox {
   cancel(id: string): Promise<void>;
   drain(o?: { ignoringBackoff?: boolean }): Promise<void>;
   uploadAllowed(): { ok: boolean; why?: string; tier?: string };
+  /** seconds of audio in closed segments not yet uploaded, every session */
+  backlogSeconds(): number;
 }
+
+/** The adaptive Opus bitrate (SDK 2.0.1): 192, 96, 64, 32 kbit/s; one per pipeline, from the top. */
+export const BITRATE_RUNGS: readonly number[];
+export const UP_STREAK: 3;
+export const UP_MAX_BACKLOG_S: 30;
+export const DOWN_BACKLOG_S: 120;
+export class BitrateLadder {
+  constructor();
+  /** the bit rate the next segment opens at */
+  readonly bitrate: number;
+  readonly rung: number;
+  readonly streak: number;
+  uploadFailed(): void;
+  uploadOk(backlogS: number): void;
+  segmentClosed(backlogS: number): void;
+  onChange(f: (bitrate: number) => void): () => void;
+}
+export function isNetworkFailure(status: number): boolean;
 
 export interface SharingOptions {
   api: string;
@@ -157,6 +198,8 @@ export interface SharingOptions {
   flags?: SharingFlags | (() => SharingFlags | null) | null;
   enabled?: () => boolean;
   consentVersion?: string | null;
+  /** with an app's own wording: the hash of the text the learner agreed to (sent as consent_text_sha256) */
+  consentTextSha256?: string | null;
   contributor?: string;
   contributorKeyRaw?: Uint8Array;
   recoveryHash?: string;
@@ -170,6 +213,8 @@ export interface SharingOptions {
   onError?: (e: SharingError) => void;
   opus?: () => Promise<OpusModule>;
   clock?: () => number;
+  /** a fixed Opus bit/s in place of the adaptive ladder (tests and special cases) */
+  bitrate?: number;
 }
 export interface DecodeInfo { modelRevision?: string | null; backend?: 'neuralEngine' | 'exact' | 'mock'; weightsSha256?: string | null; sdkVersion?: string }
 export interface SharedSession {
@@ -186,6 +231,8 @@ export interface Sharing {
   storage: SharingStorage;
   outbox: Outbox;
   client: ContributionClient;
+  /** the adaptive bitrate of this pipeline */
+  ladder: BitrateLadder;
   update(next: Partial<SharingOptions>): void;
   contributorId(): Promise<string>;
   resetContributor(): Promise<string>;

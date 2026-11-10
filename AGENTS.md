@@ -58,7 +58,7 @@ Copy the setup prompt from [portal.quranlab.ai](https://portal.quranlab.ai) and 
 
 ## At a glance
 
-- **What it is:** the npm package `@quran-lab/tajweedformer` 2.0.0. It runs
+- **What it is:** the npm package `@quran-lab/tajweedformer` 2.0.1. It runs
   TajweedFormer V4 (Quran-Lab/tajweedformer-v4, served by cdn.quranlab.ai/models) on the
   [tajweedformer-engine](https://github.com/Quran-Lab/tajweedformer-engine) engine compiled to WebAssembly
   (SIMD128, no ONNX Runtime), bit for bit the same as the engine on every other platform.
@@ -80,7 +80,7 @@ One model, one engine, the same bits on every platform. Each SDK compiles the sa
 
 | Repository | What it is | Platforms | Install |
 | - | - | - | - |
-| [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+, desktop JVM | Maven `ai.quranlab:tajweedformer:2.0.0` |
+| [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+, desktop JVM | Maven `ai.quranlab:tajweedformer:2.0.1` |
 | [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+ | SwiftPM, product `TajweedFormer` |
 | [tajweedformer-web](https://github.com/Quran-Lab/tajweedformer-web) | WebAssembly SDK with SIMD128 | Browsers, Node | npm `@quran-lab/tajweedformer` |
 | [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake (`add_subdirectory`) |
@@ -192,32 +192,78 @@ ql.startRefresh();        // the portal's changes arrive within a minute while t
   key (`platform: 'linux'` or `'windows'`, `bundleId` your app id) or a web key with `origin`.
 - **Signed config:** Ed25519 over the exact bytes with Quran Lab's pinned key id, `expires_at` checked,
   ETag revalidation; a config that fails is ignored and the last good one stays.
-- **Telemetry:** on by default, anonymous by construction: daily sums and histograms only (sessions,
+- **Telemetry:** on by default, anonymous by construction: sums and histograms only (sessions,
   minutes, latency and real-time factor, load times, presets in force, flag rates, margins and
-  confidence, surah coverage). No audio, no text, no identifiers, no time finer than the day. The
-  portal can switch it off for your app (`flags.analytics`); you can with `analytics: 'off'`.
+  confidence, surah coverage; since 2.0.1 also launches, ayahs and words scored, ayahs per surah, how
+  often each tajweed rule was checked and flagged, and how often the sharing sheet was shown, accepted
+  and declined). No audio, no text, no identifiers, no time finer than the UTC day. Since 2.0.1 it is
+  sent as deltas during the day: every 15 minutes while the page is visible, when it is hidden or left
+  (keepalive requests), and at launch; each delta has a random `report_id`, so a retry is counted once.
+  The portal can switch it off for your app (`flags.analytics`); you can with `analytics: 'off'`.
+  With `autoSend: false` the SDK sets no timer or page listener: call `ql.foreground()`,
+  `ql.background()` and `ql.sendTelemetry()` yourself.
+- **Register:** once per UTC day per install (the first launch or return to the page of the day), so
+  the portal counts daily active installs.
 - **Issues:** kind and code only, never free text; one per kind and code per day.
+- **Newer SDK:** in development (`debug: true`, or `NODE_ENV` not `production`) the SDK logs once per load
+  when Quran Lab's signed config names a newer SDK: `Quran Lab SDK X is available (severity), you have Y: URL`.
+  Production stays silent.
+- What the SDK sends, when, and what your app can change: [docs/platform-client.md](docs/platform-client.md)
+  (the same page in every TajweedFormer SDK).
 
-## Recitation sharing (opt-in)
+## Recitation sharing (the learner opts in)
 
 ```js
 import { enableSharing } from '@quran-lab/tajweedformer/consent';
-const ql = await QuranLab.configure({ key, contributions: true });
-const sharing = enableSharing(ql);   // the SDK asks the learner at the right moment, in their language
+const ql = await QuranLab.configure({ key });
+const sharing = enableSharing(ql);   // optional: the SDK wires itself when the model attaches
 document.querySelector('quranlab-sharing-settings').controller = sharing;
 ```
 
-With `contributions: true` the SDK shows its own consent sheet (`<quranlab-consent>`, themable with
-CSS custom properties, right-to-left where the language is) after a session in which the learner saw
-feedback, never on first launch; "Not now" is asked again at most twice, seven sessions apart. A
-learner who agrees shares each whole session while the SDK listens (Ogg Opus, uploaded in the
-background, resumable). The settings element gives the switch, what is shared, and "Delete what I
-shared", which only this browser's non-extractable key can sign: no app key or token can delete a
-learner's recordings. Web uploads run at the platform's lower trust tier (the web key's origin lock,
-per-key and per-learner caps; sessions are marked unattested so training can weight them); the portal's
-upload-trust setting can turn them off. The bitrate is 192 kbit/s by default (`SHARING_BITRATE_DEFAULT`);
-pass `sharingBitrate` to change it. Browsers upload straight to storage, which needs the bucket's CORS
-rule for your origin (a Quran Lab launch step).
+Whether the sheet is offered is Quran Lab's decision, per app, in the signed config
+(`flags.contributions`); since 2.0.1 the `contributions` option is ignored. Where it is offered, the
+SDK shows its own consent sheet (`<quranlab-consent>`, right-to-left where the language is) after a
+session in which the learner saw feedback, never on first launch, and at most three times per install
+("Not now" is asked again at most twice, seven sessions apart; the count carries over from 2.0.0). A
+learner who said "Share", or who turned sharing off, is never asked again; a yes is kept, with the
+consent version agreed to, across copy decks, wording changes and SDK upgrades (also from 2.0.0).
+Offered is never consent: nothing is recorded for sharing before the learner answers "Share". A learner who agrees shares each whole session while the SDK listens (Ogg
+Opus, uploaded in the background, resumable). The settings element gives the switch, what is shared,
+the recovery code, and "Delete what I shared", which only this browser's non-extractable key can sign:
+no app key or token can delete a learner's recordings. Web uploads run at the platform's lower trust
+tier (the web key's origin lock, per-key and per-learner caps; sessions are marked unattested so
+training can weight them); the portal's upload-trust setting can turn them off. Browsers upload
+straight to storage, which needs the bucket's CORS rule for your origin (a Quran Lab launch step).
+
+Four ways to present it (details in [docs/platform-client.md](docs/platform-client.md)):
+
+1. **Default:** nothing to do; the SDK's sheet in the copy deck's words (deck `2026-11-09.1`, consent
+   version `share-2026-11-09`, eight languages).
+2. **Themed:** `enableSharing(ql, { theme: { accent, accentText, background, text, secondaryText,
+   cornerRadius, titleFont, bodyFont } })` or `sharing.setTheme(...)` (CSS values), or the CSS custom
+   properties `--ql-accent`, `--ql-accent-fg`, `--ql-bg`, `--ql-fg`, `--ql-muted`, `--ql-radius`,
+   `--ql-font`, `--ql-title-font`. The same theme applies to the consent, guardian, thanks and settings
+   sheets; the words and the consent version do not change.
+3. **Your own UI:** `enableSharing(ql, { ask: async (a) => ... })`. The SDK calls it when an ask is due
+   (`a.variant` first or reask; `a.guardian`; `a.copy.t(key)` the localized strings). Show your
+   UI and resolve with `{ yes, guardianConfirmed }`, or resolve with nothing and call
+   `sharing.answer(yes)` from the learner's tap. Asks and answers are counted and re-asked exactly as
+   with the default sheet.
+4. **Your own wording:** `enableSharing(ql, { wording: { 'sheet.title': '...', ... } })` or
+   `sharing.setWording({...})` (`null` restores the deck). Keys are the deck's (plural lines as
+   `impact.minutes.one`, ...); an unknown key or an empty text throws a `TypeError`. The learner then
+   agrees to your text: the grant is recorded under `custom-<24 hex>` and every shared session sends
+   `consent_text_sha256`. A later change of wording applies to learners who agree after it; a learner who
+   already agreed keeps the version recorded then and is not asked again. `sharing.consent` gives the version, the hash
+   and the canonical text, to send to Quran Lab for review. Keep it honest: what is sent, to whom, why,
+   how to stop and delete.
+
+**Bitrate on bad networks.** Opus starts at 192 kbit/s. Upload failures for network reasons (no
+connection, timeouts, HTTP 408 or 5xx) and a backed-up queue (120 s or more of closed audio waiting)
+step it down, 192, 96, 64, 32 kbit/s; three successful segment uploads with at most 30 s waiting step it
+back up. A change applies from the next segment, so the stream stays one valid Ogg Opus file; each
+segment's bitrate is in the outbox item's `segmentBitrates`. A new page starts at 192 kbit/s.
+`sharingBitrate` (or `bitrate`) still fixes one bitrate instead, for tests.
 
 ## Exactness
 

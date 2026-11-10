@@ -11,6 +11,7 @@ export const OPUS_REQUEST = Object.freeze({
   GET_APPLICATION: 4001, GET_BITRATE: 4003, GET_VBR: 4007, GET_BANDWIDTH: 4009, GET_COMPLEXITY: 4011,
   GET_INBAND_FEC: 4013, GET_DTX: 4017, GET_VBR_CONSTRAINT: 4021, GET_SIGNAL: 4025, GET_LOOKAHEAD: 4027,
   GET_SAMPLE_RATE: 4029, GET_LSB_DEPTH: 4037,
+  SET_BITRATE: 4002,
 });
 
 let modulePromise = null;
@@ -61,6 +62,21 @@ export class OpusEncoder {
     this.samplesIn = 0;
     this.nonFiniteSamples = 0;
     this.finished = false;
+    this.bitrate = settings.bitrate;
+    // packets coded so far; beforeFrame(index), when set, runs before each packet is coded (the Ogg writer
+    // opens a segment there and sets its bitrate, so a change lands exactly on the segment's first packet)
+    this.packetCount = 0;
+    this.beforeFrame = null;
+  }
+
+  /** The bit rate of the packets coded from now on (OPUS_SET_BITRATE; any packet may change it, the
+   * stream needs no new header). */
+  setBitrate(bps) {
+    if (!(Number.isInteger(bps) && bps >= 6000 && bps <= 510000)) throw new RangeError(`Opus bitrate 6000 to 510000 bit/s, not ${bps}`);
+    if (bps === this.bitrate) return;
+    const e = this.m._ow_enc_set(this.enc, OPUS_REQUEST.SET_BITRATE, bps);
+    if (e !== 0) throw new Error(`the Opus encoder refused bitrate ${bps} (${e})`);
+    this.bitrate = bps;
   }
 
   /** The granule position of the last page: pre-skip plus the input in 48 kHz samples. */
@@ -69,10 +85,12 @@ export class OpusEncoder {
   /** A GET request read back from libopus (OPUS_REQUEST.GET_*), for the tests. */
   get(request) { const v = this.m._ow_enc_get(this.enc, request); return v === -2147483648 ? null : v; }
 
-  /** Encodes samples; returns the packets completed so far (possibly none). */
-  encode(pcm) {
+  /** Encodes samples; returns the packets completed so far (possibly none), or hands each to `onPacket`
+   * as soon as it is coded (then the result is empty). */
+  encode(pcm, onPacket = null) {
     if (this.finished) throw new Error('the Opus encoder was flushed');
     const out = [];
+    const emit = onPacket || ((p) => out.push(p));
     let i = 0;
     while (i < pcm.length) {
       const n = Math.min(this.perFrame - this.filled, pcm.length - i);
@@ -85,7 +103,7 @@ export class OpusEncoder {
       this.nonFiniteSamples += bad;
       this.filled += n;
       i += n;
-      if (this.filled === this.perFrame) out.push(this._frame());
+      if (this.filled === this.perFrame) emit(this._frame());
     }
     this.samplesIn += Math.trunc(pcm.length / this.channels);
     return out;
@@ -93,21 +111,24 @@ export class OpusEncoder {
 
   /** Encodes what is buffered and the lookahead, padded with silence to whole packets. The encoder
    * cannot be used afterwards. */
-  flush() {
+  flush(onPacket = null) {
     if (this.finished) throw new Error('the Opus encoder was flushed');
     this.finished = true;
     const out = [];
+    const emit = onPacket || ((p) => out.push(p));
     let owed = Math.trunc(this.filled / this.channels) + Math.trunc(this.preSkip * this.sampleRate / 48000);
     while (owed > 0) {
       this.m.HEAPF32.fill(0, (this.framePtr >> 2) + this.filled, (this.framePtr >> 2) + this.perFrame);
       this.filled = this.perFrame;
-      out.push(this._frame());
+      emit(this._frame());
       owed -= this.frameSize;
     }
     return out;
   }
 
   _frame() {
+    if (this.beforeFrame) this.beforeFrame(this.packetCount);
+    this.packetCount += 1;
     const n = this.m._ow_enc_encode(this.enc, this.framePtr, this.frameSize, this.outPtr, 4000);
     this.filled = 0;
     if (n <= 0) throw new Error(`the Opus encoder failed (${n})`);

@@ -1,6 +1,6 @@
 // Types for @quran-lab/tajweedformer/platform: the Quran Lab platform client.
 
-export declare const SDK_VERSION: '2.0.0';
+export declare const SDK_VERSION: '2.0.1';
 export declare const API_URL: string;
 export declare const CDN_URL: string;
 
@@ -23,6 +23,8 @@ export interface SignedConfig {
   tajweed?: unknown;
   /** where model files are served (qlab-api signs it): {base}/{model}/{revision}/{folder}/ */
   base?: string;
+  /** the newest SDK for this platform (2.0.1); other unknown fields are ignored too */
+  sdk_latest?: { version: string; severity: string; url: string };
 }
 
 export interface QuranLabOptions {
@@ -39,7 +41,8 @@ export interface QuranLabOptions {
   /** telemetry: on by default, anonymous; 'off' is the one developer opt-out (never a prompt) */
   analytics?: 'on' | 'off';
   issues?: boolean;
-  /** recitation sharing (the SDK asks the learner first; see @quran-lab/tajweedformer/consent) */
+  /** @deprecated ignored since 2.0.1: Quran Lab decides per app whether the sharing sheet is offered (signed
+   * config, flags.contributions); the SDK still asks the learner before anything is recorded for upload */
   contributions?: boolean;
   audience?: 'general' | 'children';
   state?: StateStore;
@@ -52,7 +55,22 @@ export interface QuranLabOptions {
   cdnUrl?: string;
   fetch?: typeof fetch;
   clock?: () => number;
+  /** a development build: logs "Quran Lab SDK X is available" once per launch when the signed config's sdk_latest is
+   * newer (default: process.env.NODE_ENV !== 'production' where it resolves; a plain browser page stays silent) */
+  debug?: boolean;
+  /** telemetry deltas on the SDK's schedule (default true): every 15 minutes while visible, when hidden or left */
+  autoSend?: boolean;
+  /** where visibilitychange and pagehide come from (default the page's document and window) */
+  lifecycle?: { document?: EventTarget & { visibilityState?: string }; window?: EventTarget | null };
 }
+export declare const DELTA_INTERVAL_MS: number;
+/** -1, 0 or 1 for dotted numeric versions; null for a pre-release or junk */
+export declare function compareVersions(a: string, b: string): -1 | 0 | 1 | null;
+/** the signed config's sdk_latest when well formed, else null */
+export declare function sdkLatestOf(cfg: unknown): { version: string; severity: string; url: string } | null;
+export declare function isDevelopment(debug?: boolean): boolean;
+export declare function noticeSdkLatest(cfg: unknown, current: string, o?: { debug?: boolean; warn?: (m: string) => void }): boolean;
+export declare function resetSdkLatestNoticeForTests(): void;
 
 export declare class QuranLab {
   constructor(o: QuranLabOptions);
@@ -67,13 +85,21 @@ export declare class QuranLab {
   readonly telemetry: Telemetry;
   token(): Promise<string>;
   launch(): Promise<void>;
-  register(): Promise<{ ok: boolean; app_id: string; store_status: string }>;
+  /** at most once per UTC day per install; null when this install already registered today */
+  register(): Promise<{ ok: boolean; app_id: string; store_status: string } | null>;
+  /** the app came back to the foreground: a launch counted, register on a new day */
+  foreground(): void;
+  /** the app goes to the background: the delta sealed and sent (keepalive) */
+  background(): Promise<number>;
+  /** a send point: seal the delta and send the reports due */
+  sendTelemetry(reason?: string, o?: { keepalive?: boolean }): Promise<number>;
+  stopSchedule(): void;
   refreshConfig(): Promise<SignedConfig | null>;
   /** refresh every ms (60 s) while the app is in use */
   startRefresh(ms?: number): void;
   stopRefresh(): void;
   modelSource(): Promise<{ url: string; headers: Record<string, string> }>;
-  flush(): Promise<number>;
+  flush(o?: { keepalive?: boolean }): Promise<number>;
   reportIssue(kind: string, code: string, frames?: string[]): boolean;
   contributor(): string;
   resetContributor(): void;
@@ -88,10 +114,18 @@ export declare function keyId(rawPublicKey: string | Uint8Array): Promise<string
 
 export declare class Telemetry {
   enabled: boolean;
-  /** completed days as wire payloads (v2) */
+  /** +n on a 2.0.1 counter: launches, ayahs, words, share_asked, share_yes, share_no */
+  count(field: string, n?: number): void;
+  /** seal what was counted since the last send point (one report per UTC day, a fresh report_id each) */
+  seal(): number;
+  /** the sealed reports not yet accepted, oldest first, with the exact bytes sent */
+  reports(): { report_id: string; day: string; body: string; attempts: number; next: number }[];
+  /** the sealed reports as payloads (v2 with the 2.0.1 fields) */
   pending(): object[];
   clear(): void;
 }
+export declare const COUNTERS: readonly string[];
+export declare function newReportId(): string;
 export declare function bucket(kind: string, value: number): string;
 export declare function utcDay(t?: number): string;
 export declare function deviceInfo(): { class: string; soc?: string; os_major: number; ram_tier?: string };

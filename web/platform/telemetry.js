@@ -1,6 +1,12 @@
 // Telemetry v2 (PLATFORM_CLIENT.md section 6): on by default, anonymous by construction. Only sums
 // and histograms per UTC day: no audio, no text or phonemes, no identifiers, no time finer than the
-// day. One payload per completed day, at most 7 days kept, sent at the next launch.
+// day. Since 2.0.1 it goes as deltas during the day: what was counted since the last send point is
+// sealed into a report with a fresh random report_id (kept in storage before it is sent, so a retry sends
+// the same bytes and the server counts it once), one report per UTC day it covers, at most 7 days kept.
+// The send points (every 15 minutes while the app is in use, when it goes to the background, at launch)
+// are the platform client's (client.js).
+// Tried and rejected: sending the whole day again with a day-scoped id (the server would have to diff
+// days); one report spanning midnight (a delta belongs to one day, as the server's points do).
 
 import { CLASSES, CHECKS } from '../tajweed/settings.js';
 
@@ -22,13 +28,32 @@ export const utcDay = (t = Date.now()) => new Date(t).toISOString().slice(0, 10)
 
 const FALLBACKS = ['non_finite', 'deadline', 'ane_unavailable', 'npu_unavailable', 'model_load', 'thermal', 'memory', 'other'];
 const CAP = 10_000_000;
+const DAY_MS = 86_400_000;
+/** The 2.0.1 counters at the top level of a report (each left out when zero). */
+export const COUNTERS = Object.freeze(['launches', 'ayahs', 'words', 'share_asked', 'share_yes', 'share_no']);
+/** At most this many rule keys per report (the server's limit). */
+export const MAX_RULE_KEYS = 32;
+const RULE_KEY = /^[a-z][a-z0-9_]{0,23}$/;
+/** A fresh report id: 16 random bytes, 32 lower-case hex. */
+export function newReportId() {
+  const b = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(b);
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+// a verdict or a check that ran: its status is not off and it is not disabled (absent settings: ran)
+const ran = (x) => x === undefined || x === null || (x.status !== 'off' && x.enabled !== false);
 
 /**
  * The day's counters, persisted in `state` under "telemetry.days" ({ day: payload-in-progress }).
- * `device` is { class, soc?, os_major, ram_tier? }, `product` 'web', `platform` the token app's.
+ * `device` is { class, soc?, os_major, ram_tier? }, `product` the platform's (productOf), `platform` the token app's.
  */
+// The telemetry product of a platform, as the server checks it (PRODUCT_OF): a desktop app running this SDK in Node
+// reports as the native product of its platform, a page as web.
+export const PRODUCT_OF = Object.freeze({ web: 'web', windows: 'native', linux: 'native', macos: 'apple', ios: 'apple', android: 'android' });
+export const productOf = (platform) => PRODUCT_OF[platform] || 'web';
+
 export class Telemetry {
-  constructor({ state, product = 'web', platform = 'web', sdkVersion = '2.0.0', appVersion = '0', device, clock = Date.now, enabled = true }) {
+  constructor({ state, platform = 'web', product = productOf(platform), sdkVersion = '2.0.1', appVersion = '0', device, clock = Date.now, enabled = true }) {
     Object.assign(this, { state, product, platform, sdkVersion, appVersion, device, clock });
     this.enabled = enabled;
     this.coldStartDone = false;
@@ -120,9 +145,33 @@ export class Telemetry {
     });
   }
 
-  /** A scored ayah: per class sites and flags, the session's flag %, madd counts, words, coverage. */
+  /** A scored ayah: per class sites and flags, the session's flag %, madd counts, words, coverage; and the 2.0.1
+   * counters: ayahs, surah_ayahs, words, rule_checks / rule_flags (a verdict counts only when its check ran). */
   scored(tf, r) {
     this._edit((d) => {
+      d.ayahs = Math.min(CAP, (d.ayahs || 0) + 1);
+      if (Number.isInteger(r.surah) && r.surah >= 1 && r.surah <= 114) {
+        d.surah_ayahs = d.surah_ayahs || {};
+        d.surah_ayahs[String(r.surah)] = (d.surah_ayahs[String(r.surah)] || 0) + 1;
+      }
+      const eff = r.settings || {};
+      const rule = (key, checked, flagged) => {
+        if (!checked || !RULE_KEY.test(key)) return;
+        d.rule_checks = d.rule_checks || {};
+        d.rule_flags = d.rule_flags || {};
+        if (!(key in d.rule_checks) && Object.keys(d.rule_checks).length >= MAX_RULE_KEYS) return;
+        d.rule_checks[key] = Math.min(CAP, (d.rule_checks[key] || 0) + 1);
+        if (flagged) d.rule_flags[key] = Math.min(d.rule_checks[key], (d.rule_flags[key] || 0) + 1);
+      };
+      for (const s of r.sites || []) rule(s.class, ran(s) && ran(eff.sites && eff.sites[s.class]), s.flagged);
+      for (const m of r.madd || []) rule('madd', ran(m) && ran(eff.madd), m.flagged);
+      for (const q of r.qalqalah || []) rule('qalqalah', ran(q) && ran(eff.qalqalah), q.flagged);
+      for (const g of r.gemination || []) rule('gemination', ran(g) && ran(eff.gemination), g.flagged);
+      for (const w of r.words || []) {
+        if (w.score === null || w.score === undefined) continue;
+        d.words = Math.min(CAP, (d.words || 0) + 1);
+        rule('word', true, w.flagged === true);
+      }
       const c = this._cohort(d, Telemetry.cohortKey(tf));
       for (const s of r.sites) {
         const k = (c.classes[s.class] = c.classes[s.class] || { sites: 0, flagged: 0 });
@@ -154,16 +203,74 @@ export class Telemetry {
     });
   }
 
-  /** Completed days (before today), oldest first, as wire payloads (16 cohorts at most). */
-  pending() {
-    const today = utcDay(this.clock());
-    return Object.entries(this._days()).filter(([day]) => day < today).sort().map(([, p]) => Telemetry.wire(p));
+  /** +n on a 2.0.1 counter (COUNTERS: launches, share_asked, share_yes, share_no, ...). */
+  count(field, n = 1) {
+    if (!COUNTERS.includes(field)) throw new RangeError(`telemetry counter ${field}`);
+    this._edit((d) => { d[field] = Math.min(CAP, (d[field] || 0) + n); });
   }
 
-  /** Drop a day (sent, or refused with 400). */
+  /**
+   * A send point: what was counted since the last one is sealed, one report per UTC day it covers, each with a
+   * fresh report_id and its exact body, stored before anything is sent. Reports older than 7 days are deleted.
+   * Returns the number of reports sealed.
+   */
+  seal() {
+    const days = this._days();
+    const sealed = this._sealed();
+    let n = 0;
+    for (const day of Object.keys(days).sort()) {
+      const body = Telemetry.wire(days[day]);
+      delete days[day];
+      if (!Telemetry.hasContent(body)) continue;
+      const reportId = newReportId();
+      sealed.push({ report_id: reportId, day, body: JSON.stringify({ ...body, report_id: reportId }), attempts: 0, next: 0 });
+      n++;
+    }
+    this._putSealed(this._fresh(sealed));
+    this._save(days);
+    return n;
+  }
+
+  _sealed() { return this.state.get('telemetry.sealed') || []; }
+  _putSealed(s) { this.state.set('telemetry.sealed', s.length ? s : null); }
+  _fresh(s) {
+    const oldest = utcDay(this.clock() - 7 * DAY_MS);
+    return s.filter((r) => r.day >= oldest).sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+  }
+
+  /** Sealed reports not yet accepted, oldest first: { report_id, day, body (the exact JSON sent), attempts, next }. */
+  reports() { return this._fresh(this._sealed()); }
+  /** The sealed reports as payloads (what is sent), oldest first. */
+  pending() { return this.reports().map((r) => JSON.parse(r.body)); }
+  /** A report was accepted (202) or refused for good (400, 413): deleted. */
+  dropReport(id) { this._putSealed(this._sealed().filter((r) => r.report_id !== id)); }
+  /** A report to retry later with the same bytes: 1 min, then 10 min, then the next launch. */
+  deferReport(id) {
+    const s = this._sealed();
+    const r = s.find((x) => x.report_id === id);
+    if (!r) return;
+    r.attempts += 1;
+    r.next = r.attempts === 1 ? this.clock() + 60_000 : r.attempts === 2 ? this.clock() + 600_000 : -1; // -1: the next launch
+    this._putSealed(s);
+  }
+  /** At launch: reports waiting for the next launch are due again. */
+  launched() {
+    const s = this._sealed();
+    for (const r of s) if (r.next === -1) r.next = 0;
+    this._putSealed(s);
+  }
+  /** Reports due now. */
+  due() { const now = this.clock(); return this.reports().filter((r) => r.next !== -1 && r.next <= now); }
+
+  /** Drop a day's open counts (kept for 2.0.0 callers). */
   drop(day) { const d = this._days(); delete d[day]; this._save(d); }
-  /** Drop everything (flags.analytics false). */
-  clear() { this.state.set('telemetry.days', null); }
+  /** Drop everything, open counts and sealed reports (flags.analytics false). */
+  clear() { this.state.set('telemetry.days', null); this.state.set('telemetry.sealed', null); }
+
+  /** Whether a report body carries anything (a delta with no count is not sent). */
+  static hasContent(b) {
+    return b.cohorts.length > 0 || !!b.coverage || !!b.downloads || COUNTERS.some((k) => b[k] > 0) || !!b.surah_ayahs || !!b.rule_checks;
+  }
 
   /** The closed v2 body: empty optional parts removed, cohorts beyond 16 merged into the largest. */
   static wire(p) {
@@ -175,8 +282,16 @@ export class Telemetry {
     }
     const out = { v: 2, day: p.day, product: p.product, platform: p.platform, sdk_version: p.sdk_version, app_version: p.app_version,
       device: p.device, cohorts };
-    if (Object.keys(p.coverage).length) out.coverage = p.coverage;
-    if (p.downloads.length) out.downloads = p.downloads;
+    if (Object.keys(p.coverage || {}).length) out.coverage = p.coverage;
+    if ((p.downloads || []).length) out.downloads = p.downloads;
+    // the 2.0.1 fields, each left out when zero or empty
+    for (const k of COUNTERS) if (p[k] > 0) out[k] = p[k];
+    if (p.surah_ayahs && Object.keys(p.surah_ayahs).length) out.surah_ayahs = p.surah_ayahs;
+    if (p.rule_checks && Object.keys(p.rule_checks).length) {
+      out.rule_checks = p.rule_checks;
+      const flags = Object.fromEntries(Object.entries(p.rule_flags || {}).filter(([k, v]) => v > 0 && k in p.rule_checks));
+      if (Object.keys(flags).length) out.rule_flags = flags;
+    }
     return out;
   }
 }

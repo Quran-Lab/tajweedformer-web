@@ -175,9 +175,14 @@ export function wholePages(bytes) {
  * @param {{ process(x: Float32Array, sink: Function): void, flush(sink: Function): void } | null} o.resampler
  *        input rate to 48 kHz (resampler.js), null when the input is 48 kHz
  * @param {number} o.inputRate  the capture rate (8000 to 384000, whole Hz)
+ * @param {(n: number) => number|null} [o.bitrate]  the bit rate of segment n, asked when the segment opens
+ *        (just before its first packet is coded; the previous segment is closed by then); null keeps the
+ *        current one. Needs an encoder with setBitrate and beforeFrame (encoder.js).
+ * @param {(s: {n: number, bitrate: number|null}) => void} [o.onSegmentOpen]  a segment opened (its first packet)
  */
 export class OggOpusWriter {
-  constructor({ encoder, resampler = null, inputRate, plan = SEGMENT_PLAN, settings = OPUS_SETTINGS, serial, vendor, onPage, onSegment = () => {} }) {
+  constructor({ encoder, resampler = null, inputRate, plan = SEGMENT_PLAN, settings = OPUS_SETTINGS, serial, vendor, onPage, onSegment = () => {},
+    bitrate = null, onSegmentOpen = () => {} }) {
     if (!(inputRate >= 8000 && inputRate <= 384000 && Number.isInteger(inputRate))) throw new RangeError(`unsupported input rate ${inputRate} Hz`);
     if (inputRate !== CODED_RATE && !resampler) throw new TypeError('a resampler is needed for input that is not 48 kHz');
     this.encoder = encoder;
@@ -201,7 +206,17 @@ export class OggOpusWriter {
     this.paged = 0;
     this.lastGranule = 0;
     this._clean = new Float32Array(0);
-    this._sink = (x) => { for (const p of this.encoder.encode(x)) this.packets.push(p); };
+    this.bitrateFor = bitrate;
+    this.onSegmentOpen = onSegmentOpen;
+    /** segment number -> the bit rate its packets were coded at */
+    this.segmentBitrates = new Map();
+    this._openN = 1; // the next segment to open
+    this._openAt = 0; // the index of its first packet
+    // packets reach the writer one by one as they are coded, so a segment can be closed and the next one's
+    // bitrate set between two packets (an encoder seam without the hook hands them over per call)
+    this._push = (p) => { this.packets.push(p); };
+    this._sink = (x) => { const r = this.encoder.encode(x, this._push); if (r) for (const p of r) this.packets.push(p); };
+    if (encoder && 'beforeFrame' in encoder) encoder.beforeFrame = () => this._beforePacket(this.paged + this.packets.length);
     this._page([opusHead(encoder.preSkip, inputRate)], 0, 0x02, false);
     this._page([opusTags(vendor || 'QuranLab SDK')], 0, 0, false);
   }
@@ -232,7 +247,8 @@ export class OggOpusWriter {
     if (!this.ended) {
       this.ended = true;
       if (this.resampler) this.resampler.flush(this._sink);
-      for (const p of this.encoder.flush()) this.packets.push(p);
+      const r = this.encoder.flush(this._push);
+      if (r) for (const p of r) this.packets.push(p);
       this._writePages(true);
       this._close(true);
     }
@@ -241,6 +257,21 @@ export class OggOpusWriter {
 
   /** Stops without finishing (the caller removes what was written). */
   abandon() { this.ended = true; this.open = false; }
+
+  // Before packet k is coded: at the first packet of a segment, close the previous one (all its packets are
+  // coded, so its last page can be written now) and set the new segment's bitrate.
+  _beforePacket(k) {
+    if (k !== this._openAt) return;
+    const n = this._openN;
+    if (n > 1) this._writePages(false);
+    const want = this.bitrateFor ? this.bitrateFor(n) : null;
+    if (want && typeof this.encoder.setBitrate === 'function') this.encoder.setBitrate(want);
+    const used = this.encoder.bitrate ?? this.settings.bitrate ?? null;
+    this.segmentBitrates.set(n, used);
+    this._openN = n + 1;
+    this._openAt += this._segmentLimit(n);
+    this.onSegmentOpen({ n, bitrate: used });
+  }
 
   _segmentLimit(n) {
     return this.plan.length ? Math.round(segmentSeconds(n, this.plan) * 1000 / this.settings.frameMs) : Infinity;
@@ -272,7 +303,7 @@ export class OggOpusWriter {
   _close(last) {
     if (!this.open) return;
     this.open = false;
-    this.onSegment({ n: this.segment, granule: this.lastGranule, last });
+    this.onSegment({ n: this.segment, granule: this.lastGranule, last, bitrate: this.segmentBitrates.get(this.segment) ?? null });
   }
 
   _page(packets, granule, flags, audio) {

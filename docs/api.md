@@ -1,4 +1,4 @@
-# @quran-lab/tajweedformer 2.0.0: API
+# @quran-lab/tajweedformer 2.0.1: API
 
 Every type is in [`web/tajweed/index.d.ts`](../web/tajweed/index.d.ts),
 [`web/platform/index.d.ts`](../web/platform/index.d.ts) and
@@ -38,7 +38,7 @@ tf.free();
 ```
 
 A folder is refused when its manifest is not format 2 with `engine_format` 2, when its
-`min_sdk_version` is above 2.0.0, when a signature does not verify (folders from the Quran Lab CDN must
+`min_sdk_version` is above 2.0.1, when a signature does not verify (folders from the Quran Lab CDN must
 be signed), or when a file it needs does not match its size and SHA-256. A file the manifest does not
 list is never read.
 

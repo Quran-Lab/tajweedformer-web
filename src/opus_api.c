@@ -40,6 +40,12 @@ OW_EXPORT int32_t ow_enc_get(OpusEncoder *enc, int request) {
   return opus_encoder_ctl(enc, request, &v) == OPUS_OK ? v : INT32_MIN;
 }
 
+/* A SET request (OPUS_SET_*_REQUEST) with one integer value, at any time after creation (the sharing
+ * pipeline sets the bitrate when a segment opens); returns OPUS_OK or the libopus error. */
+OW_EXPORT int ow_enc_set(OpusEncoder *enc, int request, int value) {
+  return opus_encoder_ctl(enc, request, (opus_int32)value);
+}
+
 /* One frame of float PCM (frame_size samples per channel) to one packet; returns its bytes or a
  * negative libopus error. */
 OW_EXPORT int ow_enc_encode(OpusEncoder *enc, const float *pcm, int frame_size, unsigned char *out, int max) {
