@@ -1,0 +1,67 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>TajweedFormer web: model-backed proof</title>
+<!-- Run by scripts/proof.mjs in a headless browser (never by hand on a site): the conformance clips through a
+     public Session and the sample clips through listen(), with the engine in a module Worker. The server of
+     scripts/proof.mjs mounts the model folder at /model30/ and the audio at /audio/. The result is
+     window.__proof; the comparison itself is test/helpers/conformance_core.mjs, the code the Node test runs. -->
+<pre id="out">running</pre>
+<script type="module">
+import { openModel } from '/web/api/model.js';
+import { HEAD_NAMES } from '/web/api/heads.js';
+import { checkClip, CONTEXTS } from '/test/helpers/conformance_core.mjs';
+
+const out = { host: null, version: null, build: null, clips: 0, chunks: 0, values: 0, mismatches: 0, bad: [], sampleClips: 0, sampleClipMismatches: 0,
+  wallS: 0, peakJsHeapMB: 0, error: null };
+const t0 = performance.now();
+const say = (s) => { document.getElementById('out').textContent = s; };
+const heap = () => { if (performance.memory) out.peakJsHeapMB = Math.max(out.peakJsHeapMB, Math.round(performance.memory.usedJSHeapSize / 1048576)); };
+const get = async (url) => {
+  const r = await fetch(url);
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+  return new Uint8Array(await r.arrayBuffer());
+};
+const gunzip = async (b) => new Uint8Array(await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+
+try {
+  // the public key the local model folders are signed with: the throwaway key their own index names, never
+  // Quran Lab's
+  const key = (await (await fetch('/model30/local30.json')).json()).public_key_hex;
+  const base = '/model30/full/sdk/v4.0/';
+  const model = await openModel({ reader: { fresh: true, read: (p) => get(base + p) }, folder: { trustedKeys: [key] } });
+  out.host = model._x.host.kind; // 'worker': the engine runs in a module Worker
+  out.version = model.version;
+  out.build = model.build;
+  for (const C of CONTEXTS) {
+    const rows = (await (await fetch('/test/tajweed/conformance/' + C.expected)).text()).split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    for (const e of rows) {
+      const b = await get(`/audio/${e.clip}.pcm`);
+      const r = await checkClip(model, new Float32Array(b.buffer, b.byteOffset, b.byteLength >> 2), e, C, HEAD_NAMES);
+      out.clips++;
+      out.chunks += r.chunks;
+      out.values += r.values;
+      if (r.why) { out.mismatches++; out.bad.push(`${C.context} ${e.clip} (${r.why})`); }
+      heap();
+      say(`${C.context}: ${out.clips} clips, ${out.mismatches} mismatches`);
+    }
+  }
+  for (const context of ['c16_l64', 'c8_l64']) {
+    const exp = JSON.parse(new TextDecoder().decode(await gunzip(await get(`${base}selftest/expected_${context}.json.gz`))));
+    for (const clip of model.sampleClips) {
+      const s = await model.listen({ from: clip, pace: 'fast', context });
+      for await (const ev of s.events) { if (ev.type === 'ended') break; }
+      const heads = await s.finish();
+      out.sampleClips++;
+      if (JSON.stringify(heads.greedy().map((x) => x.id)) !== JSON.stringify(exp.clips[clip.name].tokens)) { out.sampleClipMismatches++; out.bad.push(`${context} sample clip ${clip.name}`); }
+      heap();
+    }
+  }
+  await model.close();
+} catch (e) {
+  out.error = String(e && e.stack ? e.stack : e).slice(0, 600);
+}
+out.wallS = Math.round((performance.now() - t0) / 1000);
+say(JSON.stringify(out));
+window.__proof = out;
+</script>

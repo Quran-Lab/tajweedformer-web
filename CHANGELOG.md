@@ -1,5 +1,88 @@
 # Changelog
 
+## 3.0.0
+
+A breaking release: the SDK is a pure inference SDK with a new, smaller API. How to move an app from 2.x is in
+[docs/migrating-to-3.md](docs/migrating-to-3.md).
+
+- **No scorer.** `tf.score()`, the verdict types, the tajweed settings and presets, the expected-ayah calls, the
+  scoring-only build (`./scorer`, `dist/tajweedformer-scorer.*`) and the handling of the signed config's tajweed
+  block are removed. The SDK gives the model's output; a judge is the app's own. The calibration
+  (`model.calibration`) and the expected units of each ayah (`model.reference`) ship as read-only data for it; the
+  SDK applies neither.
+- **Five concepts, the same names in every TajweedFormer SDK:** `TajweedClient`, `TajweedModel`,
+  `TajweedSession`, `TajweedHeads`, `TajweedBackend`. Call order: Client, model, listen, read. The package has one
+  entry point (and `./node` for the folder reader); `./platform`, `./consent` and `./sharing` are folded into it,
+  `./scorer` and `./tajweed` are gone, and everything else is internal. `TajweedFormer`, `TajweedStream` and
+  `QuranLab` are no longer exported.
+- **One call from the microphone to the output.** `await model.listen()` asks for the permission, captures at
+  the device's rate with an AudioWorklet and carries that rate to the Session. A refused permission is the error
+  `microphone_denied`; an interruption pauses the take (`interrupted`, `resumed`); a device change reopens the
+  microphone and the take goes on; a hidden or left page ends the take (`ended: hidden`). `Microphone` is public
+  for apps that want samples only.
+- **Without a microphone.** `model.sampleClips` lists the model's sample clips, and `listen({ from })` takes a
+  clip or samples in place of the microphone, at real-time pace or as fast as possible.
+- **Speech started, speech ended.** Each chunk says whether it holds speech; `session.events` raises
+  `speechStarted` and `speechEnded` from the model's own output, and the `endOnSilenceMs` option ends the take
+  when the learner stops.
+- **Settled output.** Each chunk carries the decoded layer of the take so far, with `settled` (the count of
+  leading tokens that will not change) and `isFinal` on the last one.
+- **Off the main thread.** In browsers the engine runs in a Worker (2.x ran it on the page's main thread).
+  `push` posts the audio; chunks, events and the take's Heads come back as messages. Node runs it in the calling
+  thread.
+- **Models by version and build.** A model has a version (`model.version`, "4.0.0") and each upload of it is a
+  build (`model.build`). The SDK downloads by the build's URL, checks the signed version, refuses a manifest
+  without one, and reports the version and the build in telemetry. `client.model('4.0.0')` pins a version.
+- **Ready before the learner taps.** `client.prefetch()` (progress in bytes, resumable, unmetered only on
+  request), `client.model()` opens and warms the engine, `await client.storage()`, `client.removeModels()`. A first
+  run with no network fails at once with `needs_connection`.
+- **`client.diagnose()`**: one report (SDK version, key, config, model, context, backend, microphone, storage,
+  last error) with no audio, text or identifier in it.
+- **Bounds.** A take holds at most 20 minutes of audio: there it ends by itself (`ended: limit`) with its
+  Heads kept. `chunks` keeps at most 256 chunks and `events` 64 events waiting for a reader, the oldest
+  dropped first; `client.diagnose()` counts the dropped chunks. A microphone take whose device decodes slower
+  than real time ends with `engine_failed` once 30 s of audio wait.
+- **`npm run proof`**: with a 3.0 model folder, the 35 conformance clips bit for bit and every sample clip
+  through the public API, in Node and in headless Chrome with the engine in a Worker.
+- **One definition of speech.** A frame is speech when the recognition head or the timing head shows a sound
+  on it, so a held vowel does not end a take; `speechEnded` comes when the window has passed after the last
+  such frame. `endOnSilenceMs` is off or 500 to 60000. The same frames give the speech and silence seconds
+  of the usage statistics.
+- **`vite build` with no line of config.** Nothing a bundler follows from the browser entry imports a Node
+  built-in (Node has its own entry under the `node` condition of `exports`), and the Worker is written in
+  the form bundlers find. `examples/vite` is a plain Vite project; `npm run example:build` builds it.
+- **A refusal says what to do.** `server_rejected` carries the message and the fix of the server's reason.
+  A page whose origin is not on its key (which gets no answer from the API) is told so, through Quran Lab's
+  origin check, asked once per page load and only when a request got no answer.
+- **`runtime_unsupported`** for a browser or a Node without something the SDK needs (it was
+  `model_incompatible` for a runtime without Ed25519).
+- **`diagnose()`** has `droppedChunks` and `connection`; `prefetch({ unmeteredOnly })` waits on a metered
+  connection and with none, and downloads where the runtime cannot tell.
+- **`npm run check:package`**: what `npm publish` would ship holds the README, AGENTS.md, the CHANGELOG, the
+  type declarations and every file the `exports` map names.
+- **Errors.** One type, `TajweedError`, with `code`, `message`, `fix` and `docs`; 24 codes shared by the four
+  SDKs.
+- **One Client per page.** A second one while the first is open is the error `client_exists`.
+- **Telemetry.** The cohort is the model version, its build, the context and the backend; the fields that came
+  from scoring are gone. New, measured by the SDK: takes, seconds of audio, speech and silence, tokens per head,
+  compute seconds. New, reported by the app if it wants them: `session.reportRecited(surah, ayahFrom, ayahTo)`
+  and `client.analytics.reportChecks(rule, checked, flagged)`.
+- **Recitation sharing** is reached through `client.sharing` (`isAvailable`, `isOn`, `setOn`, `ask`, `feed`,
+  `items()`, `summary`, `delete`, `recoveryCode`, `setWording`); the settings element takes the Client. Its rules
+  are unchanged: Quran Lab decides whether it is offered, at most three asks, a yes is never asked again.
+  New: `sharing.feed(samples, sampleRate)` gives shared recordings a lead-in of up to 1 s and a tail of up to
+  0.5 s from audio the app captures outside takes; the session record carries a per-install count of recordings
+  and the gap since the previous one; a take list the server refuses as a bad request stays queued and is
+  retried instead of being dropped.
+- Takes in a row share one recording: when a take ends, the shared recording stays open for a join window (3 s, or
+  the signed config's `flags.share_join_ms`), and a take that starts in it at the same sample rate continues the
+  same Ogg stream. The take boundaries are sent after the last segment. A recording never holds more than 20
+  minutes: where its audio reaches that, also inside a take, it closes as a whole recording and the take goes
+  on in a new one.
+- After every take a shared recording stays open 1.5 s for a tail from `sharing.feed`; only fed audio is
+  recorded in that time.
+- The developer site is sdk.quranlab.ai.
+
 ## 2.0.2
 
 - Fixed: model manifests with a `golden_tolerance` field did not verify. `verifyManifestSignature` (and `ModelFolder.open`, `TajweedFormer.load`) built the signed text without the

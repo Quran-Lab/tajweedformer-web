@@ -1,20 +1,17 @@
 // The Quran Lab platform client for the web product: the
 // developer key, an unattested app token, register, the signed config (Ed25519 over the exact bytes,
-// pinned key ids, ETag, 60 s refresh while in use), the tajweed block into the model's settings,
-// telemetry v2 (on by default, anonymous), issues, and the learner's sharing routes. Nothing here sits
-// in the recognition path: a failing network never stops recognition.
+// pinned key ids, ETag, 60 s refresh while in use), where the model's build is served, telemetry v2 (on by
+// default, anonymous), issues, and the learner's sharing routes. Nothing here sits in the recognition path:
+// a failing network never stops recognition.
 //
-//   import { QuranLab } from '@quran-lab/tajweedformer/platform';
-//   const ql = await QuranLab.configure({ key: 'qlk_v1_...', appVersion: '1.4.0' });
-//   const tf = await TajweedFormer.load({ platform: ql });   // the recommended model, settings, telemetry
+// SDK internals since 3.0.0: the public object is TajweedClient (web/api/client.js), which owns one of these.
 
 import { Telemetry, deviceInfo, utcDay, productOf } from './telemetry.js';
 import { localState } from './storage.js';
 import { QURANLAB_PUBLIC_KEY_HEX, hexToBytes, bytesToHex } from '../tajweed/manifest.js';
-import { decode } from '../tajweed/decode.js';
 import { noticeSdkLatest } from './update-notice.js';
 
-export const SDK_VERSION = '2.0.2';
+export const SDK_VERSION = '3.0.0';
 export const API_URL = 'https://api.quranlab.ai';
 export const CDN_URL = 'https://cdn.quranlab.ai';
 /** Where model files are served: {base}/{owner}/{repo}/{revision}/{path}. The signed config's `base`
@@ -27,6 +24,16 @@ const ISSUE_KINDS = ['engine_failed', 'model_load', 'checksum_mismatch', 'signat
 /** Codes after which the client stops all network calls until the next launch (error table). */
 const STOP_CODES = new Set(['invalid_key', 'unauthorized', 'developer_not_approved', 'not_a_member', 'key_type_mismatch',
   'origin_not_allowed', 'app_not_allowed', 'app_blocked', 'environment_mismatch', 'sdk_too_old']);
+/** The origin check's `why` (allowed false) as the refusal it stands for: the status and code a 4xx would have
+ * carried. `listed` is allowed; a `why` that is not here is a refusal with the `why` as its code. */
+const ORIGIN_CHECK = Object.freeze({
+  not_listed: { status: 403, code: 'origin_not_allowed' },
+  local_needs_development_key: { status: 403, code: 'local_needs_development_key' },
+  key_unknown: { status: 401, code: 'invalid_key' },
+  key_revoked: { status: 401, code: 'invalid_key' },
+  key_not_approved: { status: 403, code: 'developer_not_approved' },
+  not_a_web_key: { status: 403, code: 'key_type_mismatch' },
+});
 /** A telemetry delta every this long while the app is in use (2.0.1: Quran Lab's choice, 15 minutes). */
 export const DELTA_INTERVAL_MS = 15 * 60_000;
 /** How often the schedule looks at the clock. */
@@ -77,7 +84,7 @@ export async function verifySignedConfig(body, sigHeader, kid, trustedKeys, now 
 }
 
 /**
- * One configured client. Use QuranLab.configure(...).
+ * One configured platform client (SDK internals; TajweedClient owns one).
  */
 export class QuranLab {
   /**
@@ -135,6 +142,7 @@ export class QuranLab {
     this._lastSend = null;
     this._hidden = false;
     this.stopped = null; // the code that stopped the network this launch
+    this.refusedError = null;
     this.config = null;
     this._token = null;
     this._timer = null;
@@ -166,13 +174,27 @@ export class QuranLab {
     if (body !== null) h['content-type'] = 'application/json';
     const init = { method, headers: h, body: body === null ? undefined : typeof body === 'string' ? body : JSON.stringify(body) };
     if (keepalive) init.keepalive = true; // a page being hidden or left: the request outlives it
-    const r = await this.fetch(this.apiUrl + path, init);
+    let r;
+    try { r = await this.fetch(this.apiUrl + path, init); } catch (e) {
+      // no HTTP answer. On a page that can be the browser refusing the answer of an origin that is not on the
+      // key: the origin check tells (once per page load); else the failure stays what it was
+      const refused = await this.originCheck();
+      if (refused) throw refused;
+      throw e;
+    }
+    if (r.status < 400 && auth !== 'none') { this.keyAccepted = true; this.refusedError = null; } // the server answered a call made with this key or its token
     if (raw) return r;
     if (r.status >= 400) {
       let e = {};
       try { e = await r.json(); } catch (_) { /* no body */ }
       const err = new PlatformError(r.status, e.error || 'http_' + r.status, e.message || '');
-      if (STOP_CODES.has(err.code)) this.stopped = err.code;
+      if (typeof e.min_sdk === 'string') err.minSdk = e.min_sdk; // 403 sdk_too_old: the version this key needs
+      // the check that refused (a 401 invalid_key names it: app_not_allowed, origin_not_allowed, key_type_mismatch);
+      // the error raised to the app reads it first, what the client does with the network follows `error`
+      if (typeof e.reason === 'string') err.reason = e.reason;
+      // the last refusal of this key or app (401 or 403; not a token that ran out), for diagnose()
+      if ((r.status === 401 || r.status === 403) && err.code !== 'invalid_token') this.refusedError = err;
+      if (STOP_CODES.has(err.code)) { this.stopped = err.code; this.stoppedError = err; }
       if (err.code === 'invalid_token' && auth === 'token' && !headers['x-retried']) {
         this._token = null; this.state.set('token', null);
         return this._call(method, path, { body, auth, headers: { ...headers, 'x-retried': '1' }, keepalive }).catch((e2) => { throw e2; });
@@ -194,6 +216,33 @@ export class QuranLab {
   }
 
   // ---- launch ----
+  /**
+   * The web's origin check (NAMING section 7): asked when a request to the API got no HTTP answer, once per page
+   * load. GET /v1/origin-check?key=<the web key> is a simple request (no custom header) that answers every
+   * origin with { origin, allowed, why }. Returns the PlatformError the answer stands for, or null when the
+   * origin is allowed or the check could not be reached (no answer, or any status but 200): then the failure
+   * is what it would have been. A second failure returns the first answer's error without asking again.
+   */
+  async originCheck() {
+    if (this.platform !== 'web') return null;
+    if (this._originAsked) return this._originError;
+    this._originAsked = true;
+    this._originError = null;
+    try {
+      const r = await this.fetch(`${this.apiUrl}/v1/origin-check?key=${encodeURIComponent(this.key)}`);
+      if (r.status !== 200) return null;
+      const a = await r.json();
+      if (!a || a.allowed !== false) return null;
+      const why = typeof a.why === 'string' ? a.why : 'refused';
+      const known = ORIGIN_CHECK[why];
+      const err = known ? new PlatformError(known.status, known.code, `the origin check: ${why}`) : new PlatformError(403, why, 'the origin check');
+      if (typeof a.origin === 'string') err.origin = a.origin;
+      if (STOP_CODES.has(err.code)) { this.stopped = err.code; this.stoppedError = err; }
+      this._originError = err;
+    } catch (_) { /* the check was not reached either */ }
+    return this._originError;
+  }
+
   /** The launch sequence: a launch counted, register (once per UTC day), the signed config, the telemetry
    * reports left from earlier runs and this launch's delta, queued issues; then the delta schedule. */
   async launch() {
@@ -239,14 +288,25 @@ export class QuranLab {
   foreground() {
     this._hidden = false;
     this.telemetry.count('launches');
+    this._sharingLife('foreground');
     if (!this.stopped) this.register().catch((e) => { this.lastError = e; });
   }
 
   /** The app goes to the background (the page is hidden or left): the delta since the last send point is
-   * sealed and sent with keepalive requests. */
+   * sealed and sent with keepalive requests, and the shared recording that takes in a row keep open closes
+   * (2.0.3). */
   background() {
     this._hidden = true;
+    this._sharingLife('background');
     return this.sendTelemetry('background', { keepalive: true });
+  }
+
+  // the sharing controller hears of the app's life (never in the way of the telemetry)
+  _sharingLife(what) {
+    try {
+      const f = this.sharing && this.sharing[what];
+      if (typeof f === 'function') Promise.resolve(f.call(this.sharing)).catch(() => {});
+    } catch (_) { /* sharing's own problem */ }
   }
 
   /** A send point: seal what was counted since the last one and send every report due (oldest first). */
@@ -297,15 +357,22 @@ export class QuranLab {
     const saved = this.state.get('config');
     const nearExpiry = saved && saved.cfg && saved.cfg.expires_at * 1000 - this.clock() < 3600_000;
     const q = new URLSearchParams({ bucket: String(this.state.get('bucket')), sdk: SDK_VERSION });
+    // a model pinned by version (SPEC 2a): the server answers that version's build for this SDK, or its
+    // normal choice with pin.status "unavailable". A stored config made for another pin is not reused.
+    const pin = this.modelVersionPin || null;
+    if (pin) q.set('model_version', pin);
+    const samePin = saved && (saved.pin || null) === pin;
     const headers = {};
-    if (saved && saved.etag && !nearExpiry) headers['if-none-match'] = saved.etag;
+    if (saved && saved.etag && !nearExpiry && samePin) headers['if-none-match'] = saved.etag;
     const r = await this._call('GET', `/v1/config?${q}`, { headers, raw: true });
-    if (r.status === 304 && saved) { this.config = saved.cfg; this._noticeSdkLatest(); return this.config; }
+    this.configCheckedAt = this.clock();
+    if (r.status === 304 && saved) { this.config = saved.cfg; this.configFresh = true; this._noticeSdkLatest(); return this.config; }
     if (r.status >= 400) {
       let e = {};
       try { e = await r.json(); } catch (_) { /* none */ }
       const err = new PlatformError(r.status, e.error || 'http_' + r.status, e.message);
-      if (STOP_CODES.has(err.code)) this.stopped = err.code;
+      if (typeof e.min_sdk === 'string') err.minSdk = e.min_sdk;
+      if (STOP_CODES.has(err.code)) { this.stopped = err.code; this.stoppedError = err; }
       throw err;
     }
     const body = new Uint8Array(await r.arrayBuffer());
@@ -317,10 +384,10 @@ export class QuranLab {
       throw e;
     }
     this.config = cfg;
-    this.state.set('config', { cfg, etag: r.headers.get('etag'), sig: r.headers.get('x-qlab-signature'), kid: r.headers.get('x-qlab-key-id') });
+    this.configFresh = true;
+    this.state.set('config', { cfg, pin, etag: r.headers.get('etag'), sig: r.headers.get('x-qlab-signature'), kid: r.headers.get('x-qlab-key-id') });
     if (cfg.flags && cfg.flags.analytics === false) this.telemetry.clear();
     this.telemetry.enabled = this.analyticsOn && !(cfg.flags && cfg.flags.analytics === false);
-    for (const tf of this._models || []) tf.setRemoteConfig(cfg);
     this._noticeSdkLatest();
     return cfg;
   }
@@ -337,63 +404,70 @@ export class QuranLab {
   }
   stopRefresh() { if (this._timer) clearInterval(this._timer); this._timer = null; }
 
-  /** Where the recommended model lives on the CDN: { url, headers } for TajweedFormer.load. */
+  /**
+   * Where the model for this app lives on the CDN (SPEC 2a): the config names a version and a build; the files
+   * are fetched by the build's URL, which never changes content. Returns { url, headers, version, build,
+   * modelId, pin } (pin: the config's answer to a pinned version it could not serve, or null).
+   */
   async modelSource() {
-    const cfg = this.config || (await this.refreshConfig().catch(() => null));
+    const pinned = this.modelVersionPin || null;
+    const stored = this.state.get('config');
+    const usable = this.config && (!stored || (stored.pin || null) === pinned);
+    const cfg = usable ? this.config : (await this.refreshConfig().catch((e) => { this.lastError = e; return null; }));
     const rec = cfg && cfg.recommended;
-    if (!rec || !rec.revision) throw new PlatformError(0, 'no_model', 'the config recommends no model for this app and SDK');
+    if (!cfg) {
+      // the server refused this client for the launch: that answer, not a network failure
+      if (this.stoppedError) throw this.stoppedError;
+      throw this.lastError instanceof PlatformError && this.lastError.status ? this.lastError : new PlatformError(0, 'offline', 'no signed config could be fetched');
+    }
+    // a config with no model entry: Quran Lab has no build for this SDK generation yet (the next config may)
+    if (!rec || !rec.revision) throw new PlatformError(0, 'model_unavailable', 'the config offers no model build to this SDK');
     const enc = (p) => p.split('/').map(encodeURIComponent).join('/');
-    this.modelRevision = `${rec.model_id || 'v4.0'}+${rec.revision}`.slice(0, 64);
+    this.modelRevision = typeof rec.version === 'string' ? rec.version : null;
+    this.modelBuild = String(rec.revision);
     // the base: the app's modelsUrl, else the signed config's base, else the app's cdnUrl (old /hf/ path), else
     // cdn.quranlab.ai/models. A bare cdn.quranlab.ai base always means the /hf/ path.
     const signed = typeof cfg.base === 'string' && SAFE_BASE.test(cfg.base) ? cfg.base.replace(/\/+$/, '') : null;
     let base = this.modelsUrl || signed || (this.legacyCdn ? this.cdnUrl + '/hf' : MODELS_URL);
     if (REGIONAL_CDN.test(base)) base += '/hf';
+    const pin = cfg.pin && typeof cfg.pin === 'object' && typeof cfg.pin.version === 'string' ? { version: cfg.pin.version, status: String(cfg.pin.status || '') } : null;
     return { url: `${base}/${enc(rec.model)}/${enc(rec.revision)}/${enc(rec.folder || 'sdk/' + rec.model_id)}/`,
-      headers: { 'x-qlab-key': this.key, ...(this.origin ? { origin: this.origin } : {}) } };
+      headers: { 'x-qlab-key': this.key, ...(this.origin ? { origin: this.origin } : {}) },
+      version: this.modelRevision, build: this.modelBuild, modelId: rec.model_id || null, pin };
   }
 
-  /** Called by TajweedFormer.load({ platform }): the portal's settings and the telemetry hooks. */
-  attach(tf) {
-    this._models = (this._models || []).filter((x) => x._eng);
-    this._models.push(tf);
-    if (this.config) tf.setRemoteConfig(this.config);
-    tf._telemetry = this;
-    // the sharing sheet is offered where the signed config says so, whether or not the app called
-    // enableSharing (2.0.0 needed that call and the contributions option): in a page, the SDK wires its own
-    // sheet here. Nothing is captured before the learner answers "Share" on it.
-    if (!this.sharing && !this._sharingWiring && typeof globalThis.document !== 'undefined') {
-      this._sharingWiring = import('../consent/index.js').then((m) => { if (!this.sharing) m.enableSharing(this); }).catch(() => {});
-    }
-    this.telemetry.modelLoaded(tf, tf.loadMs || 0);
-    if (tf.delivery) {
-      this.telemetry.download({ revision: this.modelRevision || 'unknown', profile: 'web-cpu', bytes: tf.delivery.bytesDownloaded,
-        success: true, resumed: tf.delivery.rangesResumed > 0 });
+  /** A model was opened for this client: its load time, and what its delivery downloaded. */
+  modelOpened(cohort, { loadMs = 0, delivery = null } = {}) {
+    this.modelRevision = cohort.revision;
+    this.modelBuild = cohort.build;
+    this.telemetry.modelLoaded(cohort, loadMs);
+    if (delivery && delivery.bytesDownloaded > 0) {
+      this.telemetry.download({ revision: cohort.revision, build: cohort.build, profile: 'web-cpu', bytes: delivery.bytesDownloaded, success: true, resumed: delivery.rangesResumed > 0 });
     }
   }
 
-  // hooks the model calls (tajweedformer.js)
-  streamStarted(tf, s) {
-    const self = this;
-    const timings = [];
-    let samples = 0, firstAt = null;
-    const t0 = this.clock();
-    const push = s.pushAudio.bind(s), finish = s.finish.bind(s), reset = s.reset.bind(s), free = s.free.bind(s);
-    const timed = (fn, n) => { const a = performance.now(); const k = fn(); const ms = performance.now() - a; if (k > 0) for (let i = 0; i < k; i++) timings.push(ms / k); return k; };
-    const end = (aborted) => {
-      if (!samples) return;
-      self.telemetry.session(tf, { seconds: samples / tf.sampleRate, chunkMs: timings.splice(0), aborted, firstMs: firstAt });
-      try { self.telemetry.decoded(tf, decode(s.heads(), {})); } catch (_) { /* freed */ }
-      samples = 0;
-    };
-    s.pushAudio = (pcm) => { if (firstAt === null) firstAt = self.clock() - t0; samples += pcm.length; return timed(() => push(pcm)); };
-    s.finish = () => { const k = timed(finish); end(false); return k; };
-    s.reset = () => { end(true); return reset(); };
-    s.free = () => { end(true); return free(); };
-    if (this.sharing && typeof this.sharing.streamStarted === 'function') this.sharing.streamStarted(tf, s);
-  }
-  scored(tf, result) { this.telemetry.scored(tf, result); }
+  /** The sharing controller (web/consent). TajweedClient makes it when the Client is created (3.0.0; 2.x made it
+   * here on first use, with a dynamic import that a bundler could not place). */
+  wireSharing() { return Promise.resolve(this.sharing); }
 
+  /**
+   * A take starts (a Session): the object the Session feeds with the take's audio, so a learner who agreed
+   * shares it (web/consent wraps its pushAudio, finish and free). Never in the way of the take.
+   */
+  takeStarted({ sampleRate }) {
+    const tap = { pushAudio() { return 0; }, finish() { return 0; }, free() {} };
+    try {
+      if (this.sharing && typeof this.sharing.streamStarted === 'function') this.sharing.streamStarted({ sampleRate }, tap);
+    } catch (_) { /* sharing's own problem */ }
+    return tap;
+  }
+
+  /** A take with speech finished: the moment the sharing sheet may ask (when an ask is due and the app is idle). */
+  takeFinished() {
+    try {
+      if (this.sharing && typeof this.sharing.sessionCompleted === 'function') this.sharing.sessionCompleted({ feedback: true }).catch(() => {});
+    } catch (_) { /* sharing's own problem */ }
+  }
   // ---- telemetry and issues ----
   /** Send the sealed telemetry reports that are due, oldest first, each with its stored bytes (202 deletes, 400 and
    * 413 drop, 401 renews the token once then keeps, 429 / 5xx / 503 / network keep it with backoff: 1 min, 10 min,

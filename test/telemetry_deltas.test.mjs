@@ -5,6 +5,7 @@
 // client's clock; the new fields from a scored result; the share counters from the SDK's sheet and an app's own UI;
 // register once per UTC day.
 import test from 'node:test';
+import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
 import { QuranLab, memoryState, Telemetry, DELTA_INTERVAL_MS } from '../web/platform/index.js';
 import { enableSharing } from '../web/consent/index.js';
@@ -23,44 +24,32 @@ async function setup({ flags = { analytics: true, contributions: true }, autoSen
 }
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
-// a scored result as the model returns it (only the fields telemetry reads)
-const result = (o = {}) => ({
-  surah: 36, ayah: 1,
-  settings: { sites: { vowel_sub: { status: 'validated', enabled: true }, cons_sub: { status: 'validated', enabled: true }, insertion: { status: 'experimental', enabled: false } },
-    madd: { status: 'validated', enabled: true }, qalqalah: { status: 'off', enabled: false }, gemination: { status: 'experimental', enabled: true } },
-  sites: [{ class: 'vowel_sub', status: 'validated', flagged: true }, { class: 'vowel_sub', status: 'validated', flagged: false },
-    { class: 'cons_sub', status: 'validated', flagged: false }, { class: 'insertion', status: 'experimental', flagged: false }],
-  madd: [{ count: 2, status: 'validated', flagged: true }, { count: 4, status: 'validated', flagged: false }],
-  qalqalah: [{ status: 'off', flagged: false }],
-  gemination: [{ status: 'experimental', flagged: true }],
-  words: [{ score: 2.1, flagged: true }, { score: 0.3, flagged: false }, { score: null, flagged: null }],
-  summary: { sites: 4, flagged: 1 },
-  ...o,
-});
-const fakeTf = { context: 'c16_l64', sampleRate: 16000, info: { chunkMs: 320 }, folder: { manifest: { model_id: 'v4.0', revision: 'abc' } },
-  settings: { effective: () => ({ preset: 'balanced', sites: { vowel_sub: { enabled: true } }, madd: { enabled: true }, gemination: { enabled: true },
-    qalqalah: { enabled: false }, lazim: { enabled: false } }), app: {}, remote: null, wordLevel: () => null } };
-
-test('the new fields from a scored result: ayahs, surah_ayahs, words, rule checks and flags (only checks that ran; flags <= checks)', async () => {
+test('the app-reported fields (SDK 3.0): ayahs, surah_ayahs, coverage, words, rule checks and flags (flags <= checks; at most 32 rules), marked in `reported`', async () => {
   const { ql } = await setup();
-  ql.telemetry.scored(fakeTf, result());
-  ql.telemetry.scored(fakeTf, result({ surah: 1 }));
+  ql.telemetry.recited(36, 1);
+  ql.telemetry.recited(1, 1);
+  for (const [rule, checked, flagged] of [['vowel_sub', 4, 2], ['cons_sub', 2, 0], ['madd', 4, 2], ['gemination', 2, 2], ['word', 4, 2]]) ql.telemetry.checks(rule, checked, flagged);
   ql.telemetry.seal();
   const p = ql.telemetry.pending().at(-1);
   assert.equal(p.ayahs, 2);
   assert.deepEqual(p.surah_ayahs, { 1: 1, 36: 1 });
-  assert.equal(p.words, 4, 'words scored (not the unscored one)');
-  assert.deepEqual(p.rule_checks, { vowel_sub: 4, cons_sub: 2, madd: 4, gemination: 2, word: 4 }, 'insertion (disabled) and qalqalah (off) not counted');
+  assert.deepEqual(p.coverage, { 1: 1, 36: 1 });
+  assert.equal(p.words, 4, 'rule "word" also counts words');
+  assert.deepEqual(p.rule_checks, { vowel_sub: 4, cons_sub: 2, madd: 4, gemination: 2, word: 4 });
   assert.deepEqual(p.rule_flags, { vowel_sub: 2, madd: 2, gemination: 2, word: 2 });
   for (const [k, v] of Object.entries(p.rule_flags)) assert.ok(v <= p.rule_checks[k], `${k}: flags <= checks`);
   for (const k of Object.keys(p.rule_checks)) assert.match(k, /^[a-z][a-z0-9_]{0,23}$/);
-  // at most 32 keys
-  const many = result({ sites: Array.from({ length: 40 }, (_, i) => ({ class: `rule_${i}`, flagged: true })), settings: undefined });
-  ql.telemetry.scored(fakeTf, many);
+  assert.deepEqual(p.reported, ['ayahs', 'surah_ayahs', 'coverage', 'words', 'rule_checks', 'rule_flags']);
+  // at most 32 rules a day: a later one is dropped
+  const kept = Array.from({ length: 40 }, (_, i) => ql.telemetry.checks(`rule_${i}`, 1, 1));
   ql.telemetry.seal();
-  assert.equal(Object.keys(ql.telemetry.pending().at(-1).rule_checks).length, 32);
+  assert.equal(Object.keys(ql.telemetry.pending().at(-1).rule_checks).length, 27, "32 distinct rules a day, 5 were used before");
+  assert.deepEqual([kept.filter(Boolean).length, kept[26], kept[27]], [27, true, false]);
+  // a delta with nothing reported lists nothing
+  ql.telemetry.count('launches');
+  ql.telemetry.seal();
+  assert.equal(ql.telemetry.pending().at(-1).reported, undefined);
 });
-
 test('sealing: a fresh report_id per delta, stored before sending; 503 keeps the same bytes and id, then 202 deletes; 400 drops', async () => {
   const { api, ql, t } = await setup();
   assert.equal(api.state.events.length, 1, 'the launch delta');

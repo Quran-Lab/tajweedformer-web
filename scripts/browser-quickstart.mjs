@@ -2,14 +2,21 @@
 // model's output: headless Chrome plays a recitation clip as its microphone (its fake capture device), the page
 // asks for the microphone, runs the AudioWorklet and prints what the model heard.
 //
-//   TAJWEED_V4_UPLOAD=<sdk/v4.0 as served: manifest.json signed by Quran Lab, gzip files> node scripts/browser-quickstart.mjs
+//   TAJWEED_MODEL_30=<the folder that holds full/sdk/v4.0 and local30.json> node scripts/browser-quickstart.mjs
 //   CHROME=<path to chrome>   PORT=8799   SECONDS=20
+//   BUILT=1   open a Vite build of examples/vite instead of the source page (after `npm run example:build`): the
+//             build is made here through Vite's API with one alias, the package's name to a module that makes
+//             the Client with this script's test seams; the chunks, the Worker bundle and the wasm are Vite's
+// Without TAJWEED_MODEL_30 (the model is gated and not in this repository) it says so and exits 0.
 //
-// What is real: the page's script (only its configure call is pointed at this script's local API, with the SDK's
-// test options), the package's modules and engine (web/ and dist/ of this checkout), the model folder and its
-// verification with Quran Lab's key, getUserMedia, the AudioWorklet. What is a stand-in: the API (it answers a
-// config that recommends the folder, signed with a throwaway key made here) and the microphone's sound (a clip
-// of the folder's self-test set, or TAJWEED_QUICKSTART_WAV, a 48 kHz mono wav).
+// What is real: the page's script (only its import line is pointed at a module that makes the Client with the
+// SDK's test seams: this script's local API and the keys below), the package's modules and engine (web/ and
+// dist/ of this checkout, the engine in a module Worker), the model folder and its verification, getUserMedia,
+// the AudioWorklet. What is a stand-in: the API (it answers a config that names the folder's version and build,
+// signed with a throwaway key made here), the key the folder is signed with (a throwaway key, named by the
+// folders' local30.json, not Quran Lab's) and the microphone's sound (a clip of the folder's self-test set, or TAJWEED_QUICKSTART_WAV, a
+// 48 kHz mono wav). After the microphone take the page's sample clip button runs the same path with no
+// microphone.
 // Needs dist/tajweedformer.mjs (npm run build) and puppeteer-core (a dev dependency). Exits 1 on failure.
 import { createServer } from 'node:http';
 import { createReadStream, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -17,13 +24,13 @@ import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const UPLOAD = process.env.TAJWEED_V4_UPLOAD || '';
+const UPLOAD = process.env.TAJWEED_MODEL_30 ? path.join(process.env.TAJWEED_MODEL_30, 'full', 'sdk', 'v4.0') : '';
 const PORT = Number(process.env.PORT || 8799);
 const SECONDS = Number(process.env.SECONDS || 20);
-if (!existsSync(path.join(UPLOAD, 'manifest.json'))) { console.error('set TAJWEED_V4_UPLOAD to a served V4 folder'); process.exit(2); }
+if (!UPLOAD || !existsSync(path.join(UPLOAD, 'manifest.json'))) { console.log('browser quick start: skipped (set TAJWEED_MODEL_30 to a folder that holds full/sdk/v4.0)'); process.exit(0); }
 if (!existsSync(path.join(root, 'dist/tajweedformer.mjs'))) { console.error('dist/tajweedformer.mjs is missing: npm run build'); process.exit(2); }
 
 // the microphone's sound: a 48 kHz mono 16-bit wav
@@ -48,10 +55,41 @@ const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 const rawPublic = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
 const kid = createHash('sha256').update(rawPublic).digest('hex').slice(0, 16);
 const example = readFileSync(path.join(root, 'examples/quickstart.html'), 'utf8');
-const call = "QuranLab.configure({ key: 'qlk_v1_...' })";
-if (!example.includes(call)) { console.error('examples/quickstart.html no longer has the configure call this script replaces'); process.exit(1); }
-const page = example.replace(call, `QuranLab.configure({ key: 'qlk_v1_test_aaaaaaaaaaaaaaaaaaaaaa', apiUrl: '${base}', modelsUrl: '${base}/models', `
-  + `trustedKeys: [Uint8Array.from(atob('${rawPublic.toString('base64')}'), (c) => c.charCodeAt(0))] })`);
+const importLine = "import { TajweedClient } from '@quran-lab/tajweedformer';";
+if (!example.includes(importLine)) { console.error('examples/quickstart.html no longer has the import line this script replaces'); process.exit(1); }
+const page = example.replace(importLine, "import { TajweedClient } from '/quickstart-client.mjs';");
+// the model: its version from the manifest, its build id the first 40 hex of the manifest's SHA-256
+const manifestBytes = readFileSync(path.join(UPLOAD, 'manifest.json'));
+const modelVersion = JSON.parse(manifestBytes.toString('utf8')).version;
+const modelBuild = createHash('sha256').update(manifestBytes).digest('hex').slice(0, 40);
+// the key the local folder is signed with: the throwaway key the folders' own index names, passed through the
+// test seam only
+const modelKey = JSON.parse(readFileSync(path.join(process.env.TAJWEED_MODEL_30, 'local30.json'), 'utf8')).public_key_hex;
+const shim = "import { createClient } from '/web/api/client.js';\n"
+  + `const seams = { apiUrl: '${base}', modelsUrl: '${base}/models', modelKeys: ['${modelKey}'], `
+  + `trustedKeys: [Uint8Array.from(atob('${rawPublic.toString('base64')}'), (c) => c.charCodeAt(0))] };\n`
+  + "export const TajweedClient = { create: (o) => createClient({ ...o, key: 'qlk_v1_test_aaaaaaaaaaaaaaaaaaaaaa' }, seams) };\n";
+
+// BUILT=1: the page is a Vite build of examples/vite
+const BUILT = process.env.BUILT === '1';
+let builtDir = null;
+if (BUILT) {
+  const ex = path.join(root, 'examples', 'vite');
+  const pkgDir = path.join(ex, 'node_modules', '@quran-lab', 'tajweedformer');
+  const viteEntry = path.join(ex, 'node_modules', 'vite', 'dist', 'node', 'index.js');
+  if (!existsSync(viteEntry) || !existsSync(path.join(pkgDir, 'web', 'index.js'))) { console.error('BUILT=1 needs the example installed: npm run example:build'); process.exit(2); }
+  const slash = (f) => f.split(path.sep).join('/');
+  const rel = slash(path.relative(work, pkgDir));
+  const seamsFile = path.join(work, 'client-with-seams.js');
+  writeFileSync(seamsFile, `import { createClient } from '${rel}/web/api/client.js';\nexport * from '${rel}/web/index.js';\n`
+    + `const seams = { apiUrl: '${base}', modelsUrl: '${base}/models', modelKeys: ['${modelKey}'], `
+    + `trustedKeys: [Uint8Array.from(atob('${rawPublic.toString('base64')}'), (c) => c.charCodeAt(0))] };\n`
+    + "export const TajweedClient = { create: (o) => createClient({ ...o, key: 'qlk_v1_test_aaaaaaaaaaaaaaaaaaaaaa' }, seams) };\n");
+  builtDir = path.join(work, 'built');
+  const { build } = await import(pathToFileURL(viteEntry).href);
+  await build({ root: ex, configFile: false, logLevel: 'warn', build: { outDir: builtDir, emptyOutDir: true },
+    resolve: { alias: [{ find: /^@quran-lab\/tajweedformer$/, replacement: slash(seamsFile) }] } });
+}
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json' };
 function file(res, f, req) {
@@ -71,12 +109,15 @@ const server = createServer((req, res) => {
   req.resume();
   const json = (status, o, h = {}) => res.writeHead(status, { 'content-type': 'application/json', ...h }).end(JSON.stringify(o));
   if (u.pathname === '/examples/quickstart.html') return res.writeHead(200, { 'content-type': TYPES['.html'] }).end(page);
+  if (u.pathname === '/quickstart-client.mjs') return res.writeHead(200, { 'content-type': TYPES['.mjs'] }).end(shim);
+  if (BUILT && u.pathname === '/built.html') return file(res, path.join(builtDir, 'index.html'), req);
+  if (BUILT && u.pathname.startsWith('/assets/') && !u.pathname.includes('..')) return file(res, path.join(builtDir, u.pathname), req);
   if (u.pathname === '/v1/attest') return json(200, { token: 'qlt_v1.t.s', expires_in: 86400, attested: false });
   if (u.pathname === '/v1/register') return json(200, { ok: true, app_id: `web:${base}`, store_status: 'pending' });
   if (u.pathname === '/v1/config') {
     const now = Math.floor(Date.now() / 1000);
     const body = Buffer.from(JSON.stringify({ v: 1, app: `web:${base}`, channel: 'stable', issued_at: now, expires_at: now + 86400, models: {},
-      recommended: { model: 'Quran-Lab/tajweedformer-v4', model_id: 'v4.0', folder: 'sdk/v4.0', revision: 'quickstart', source: 'stable' },
+      recommended: { model: 'Quran-Lab/tajweedformer-v4', model_id: 'v4.0', folder: 'sdk/v4.0', revision: modelBuild, version: modelVersion, source: 'stable' },
       denylist: [], flags: { analytics: false, issues: false, contributions: false } }));
     return res.writeHead(200, { 'content-type': 'application/json', 'x-qlab-signature': `ed25519=${sign(null, body, privateKey).toString('base64url')}`,
       'x-qlab-key-id': kid, etag: '"1"' }).end(body);
@@ -102,10 +143,19 @@ try {
   const errors = [];
   tab.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   tab.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
-  await tab.goto(`${base}/examples/quickstart.html`, { waitUntil: 'load' });
+  await tab.goto(`${base}${BUILT ? '/built.html' : '/examples/quickstart.html'}`, { waitUntil: 'load' });
   if (!(await tab.evaluate(() => isSecureContext))) failed = 'the page is not a secure context';
+  // the page makes its Client and downloads the model before it wires the buttons: wait for that (the tap of a
+  // person comes later still)
+  const ready = Date.now();
+  while (!failed && !(await tab.evaluate(() => typeof document.querySelector('#listen').onclick === 'function'))) {
+    if (errors.length) failed = errors.join('; ');
+    else if (Date.now() - ready > 120000) failed = `the page was not ready after 120 s (requests: ${[...new Set(requests)].slice(-12).join(', ')})`;
+    else await new Promise((r) => setTimeout(r, 250));
+  }
+  console.log(`ready (Client, model downloaded, verified and warm) in ${((Date.now() - ready) / 1000).toFixed(1)} s`);
   const t0 = Date.now();
-  await tab.click('#listen');
+  if (!failed) await tab.click('#listen');
   let last = '', quiet = 0;
   while (!failed && Date.now() - t0 < SECONDS * 1000 && quiet < 8) {
     await new Promise((r) => setTimeout(r, 500));
@@ -114,14 +164,41 @@ try {
     last = heard;
     if (errors.length) failed = errors.join('; ');
   }
-  const tokens = heard.split(' ').filter(Boolean).length;
-  console.log(`heard ${tokens} tokens in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+  const count = (s) => s.split(' ').filter((x) => x && x !== '|').length;
+  const tokens = count(heard);
+  console.log(`microphone: heard ${tokens} tokens in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   if (!failed && tokens < 10) failed = `the model heard ${tokens} tokens, at least 10 expected`;
   if (!failed && !requests.includes('GET /v1/config')) failed = 'the page never fetched its config';
+  if (!failed && !BUILT && !requests.includes('GET /web/api/worker.js')) failed = 'the engine did not run in a Worker (web/api/worker.js was never fetched)';
+  if (!failed && BUILT) {
+    // the Worker bundle and the engine's wasm came from the build; the main-thread copy of the engine (a chunk
+    // the SDK imports only when a Worker cannot start) was never asked for
+    const got = (re) => requests.some((r) => re.test(r));
+    if (!got(/^GET \/assets\/worker-[^/]*\.js$/)) failed = 'the built Worker was never fetched';
+    else if (!got(/^GET \/assets\/tajweedformer-[^/.]*\.wasm$/)) failed = 'the built wasm of the engine was never fetched';
+    else if (got(/^GET \/assets\/tajweedformer-[^/.]*\.js$/)) failed = 'the engine ran on the page\'s thread: the built Worker did not start';
+  }
+  // the sample clip button: the same path with no microphone
+  if (!failed) {
+    await tab.evaluate(() => { document.querySelector('#heard').textContent = ''; });
+    const t1 = Date.now();
+    await tab.click('#clip');
+    let clip = '';
+    last = ''; quiet = 0;
+    while (!failed && Date.now() - t1 < SECONDS * 1000 && quiet < 8) {
+      await new Promise((r) => setTimeout(r, 500));
+      clip = await tab.evaluate(() => document.querySelector('#heard').textContent);
+      quiet = clip && clip === last ? quiet + 1 : 0;
+      last = clip;
+      if (errors.length) failed = errors.join('; ');
+    }
+    console.log(`sample clip: heard ${count(clip)} tokens in ${((Date.now() - t1) / 1000).toFixed(1)} s`);
+    if (!failed && count(clip) < 10) failed = `from the sample clip the model heard ${count(clip)} tokens, at least 10 expected`;
+  }
 } finally {
   await browser.close();
   server.close();
   rmSync(work, { recursive: true, force: true });
 }
 if (failed) { console.error('FAILED:', failed); process.exit(1); }
-console.log('OK: key, model, microphone, AudioWorklet, model output');
+console.log(`OK${BUILT ? ' (the Vite build of examples/vite)' : ''}: key, model, microphone, AudioWorklet, the engine in a Worker, model output; and the sample clip`);

@@ -14,6 +14,8 @@ export const OPUS_REQUEST = Object.freeze({
   SET_BITRATE: 4002,
 });
 
+import { wasmArgs } from '../platform/node-hook.js';
+
 let modulePromise = null;
 /**
  * The libopus module, instantiated once per page or process. `factory` replaces the bundled module
@@ -22,7 +24,7 @@ let modulePromise = null;
 export function loadOpus(factory) {
   if (factory) return factory();
   if (!modulePromise) {
-    modulePromise = import('../../dist/tajweedformer-opus.mjs').then((m) => m.default());
+    modulePromise = import('../../dist/tajweedformer-opus.mjs').then(async (m) => m.default(await wasmArgs('tajweedformer-opus.wasm')));
   }
   return modulePromise;
 }

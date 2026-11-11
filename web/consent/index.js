@@ -3,12 +3,8 @@
 // WHOLE session while the SDK listens once the learner said yes (the 2.0.0 design; the upload itself is
 // web/sharing/, loaded lazily so it costs nothing until sharing is on).
 //
-//   import { QuranLab } from '@quran-lab/tajweedformer/platform';
-//   import { enableSharing } from '@quran-lab/tajweedformer/consent';
-//   const ql = await QuranLab.configure({ key });
-//   const sharing = enableSharing(ql, { lang: 'ar' });     // asks by itself after a session with feedback, where
-//                                                          // the signed config offers sharing (flags.contributions)
-//   document.querySelector('quranlab-sharing-settings').controller = sharing;
+// SDK internals since 3.0.0: TajweedClient makes the controller (enableSharing) and puts client.sharing in
+// front of it; the settings element takes the Client.
 //
 // Since 2.0.1 the sheets take a theme (`theme`, or CSS custom properties), an app can show its own UI
 // (`ask: fn`, then the learner's answer through the return value or `sharing.answer(yes)`), and an app can
@@ -17,6 +13,10 @@
 //
 // The sheet is shown at most three times per install; a yes is kept, with the version the learner agreed to, across
 // copy decks, wordings and SDK upgrades (also from 2.0.0), and is never asked about again.
+//
+// Since 2.0.3 takes in a row share one recording (web/sharing/takes.js): each take the SDK listens to still starts
+// and ends a shared session here, and the sharing pipeline joins it to the recording the previous take left open.
+// The ask after a finished take does not close that recording.
 
 import { SharingState } from './state.js';
 import { copyFor, registerDeck, languages, EN } from './copy.js';
@@ -29,6 +29,12 @@ export { SharingState, MAX_ASKS, REASK_GAP, LEGACY_CONSENT_VERSION, SHARING_STAT
 export { copyFor, registerDeck, languages, EN } from './copy.js';
 export { validateWording, deriveConsent, canonicalConsentText, wordingKeys, sha256HexSync, CONSENT_TEXT_FORMAT, PLURAL_CATEGORIES } from './wording.js';
 export { THEME_PROPERTIES, themeProperties, applyTheme } from './theme.js';
+
+/** A take's audio that may wait for the sharing session to start (ms); past it the take is not shared. */
+export const START_WAIT_MS = 30000;
+/** The longest buffer the feed takes, and the most fed audio on its way to the pipeline (seconds). */
+export const FEED_MAX_S = 10;
+export const FEED_WAIT_S = 2;
 
 /**
  * Turn on the sharing experience for a configured platform client.
@@ -97,8 +103,8 @@ export function enableSharing(ql, o = {}) {
       return r;
     },
     /** The ask to show after a session (null when none is due); auto mode shows it. */
-    async sessionCompleted({ feedback = true } = {}) {
-      const ask = state.sessionCompleted({ feedback });
+    async sessionCompleted({ feedback = true, now = false } = {}) {
+      const ask = now ? state.askNow() : state.sessionCompleted({ feedback });
       if (!ask) return null;
       const own = typeof o.ask === 'function';
       const show = own ? o.ask : async (a) => {
@@ -115,11 +121,25 @@ export function enableSharing(ql, o = {}) {
       if (pending === full) ctl.answer(a.yes, { guardianConfirmed: !!a.guardianConfirmed });
       return a;
     },
-    /** The settings switch: off stops uploads at once and deletes the unsent queue. */
+    /** Ask now, at the app's own moment, if an ask is still allowed (three at most; never after a yes). Resolves
+     * with the learner's answer, or null when no ask is allowed or an app's own UI answers later. */
+    askNow() { return ctl.sessionCompleted({ now: true }); },
+    /** The settings switch: off stops uploads at once and deletes the unsent queue (the open recording with it). */
     setSharing(on, opts) {
       state.setSharing(on, opts);
       if (!on && ctl.outbox) ctl.outbox.stop();
+      // on again in the same page: the pipeline that off stopped takes sessions again (before 2.0.3 it stayed
+      // stopped until the next page load, so nothing was shared after off and on)
+      else if (on && ctl.outbox) Promise.resolve(ctl.outbox.resume()).catch(() => {});
     },
+    /** The app went to the background (2.0.3): the shared recording that takes in a row keep open closes now.
+     * The platform client calls it when the page is hidden; call it yourself where the app knows better. */
+    async background() { if (ctl.outbox && ctl.outbox.background) await ctl.outbox.background(); },
+    /** The app is in the foreground again. */
+    async foreground() { if (ctl.outbox && ctl.outbox.foreground) await ctl.outbox.foreground(); },
+    /** No take follows (the learner left the recitation screen): the open recording closes now instead of at
+     * the end of its join window. */
+    async closeRecording() { if (ctl.outbox && ctl.outbox.closeRecording) await ctl.outbox.closeRecording(); },
     /** "Delete what I shared": challenge-response signed with this install's contributor key (P2.11). */
     async deleteShared() {
       const contributor = ql.contributor();
@@ -129,7 +149,9 @@ export function enableSharing(ql, o = {}) {
       await forgetContributorKey(contributor);
       ql.resetContributor();
       ql.state.set('sharing.recovery', null);
-      if (ctl.outbox) ctl.outbox.stop();
+      // the count of shared recordings starts again with the new contributor
+      ql.state.set('sharing.install', null);
+      if (ctl.outbox) { ctl.outbox.stop(); if (ctl.outbox.forgetInstall) ctl.outbox.forgetInstall().catch(() => {}); }
       return r;
     },
     /** "Show my recovery code": for the learner's eyes only (call it from a confirm step in your UI). */
@@ -149,9 +171,49 @@ export function enableSharing(ql, o = {}) {
   };
   ql.sharing = ctl;
   // every session the SDK listens to, shared in full while consent is on (P2.9)
+  // what the sharing pipeline of this page needs (made once, updated at every take)
+  const pipelineOptions = async () => {
+    const tokenProvider = async () => {
+      const token = await ql.token();
+      return { token, attested: !!(ql._token && ql._token.attested) };
+    };
+    tokenProvider.invalidate = async () => { ql._token = null; ql.state.set('token', null); };
+    return { api: ql.apiUrl, fetch: ql.fetch, tokenProvider, headers: ql.origin ? { origin: ql.origin } : {},
+      flags: () => ql.flags, enabled: () => state.sharing, onIssue: (kind, code) => ql.reportIssue(kind, code),
+      install: { get: async () => ql.state.get('sharing.install'), set: (v) => ql.state.set('sharing.install', v.seq || v.prevEnd !== null ? v : null) },
+      ...(ql.sharingStorage ? { storage: ql.sharingStorage } : {}), ...(ql.sharingSeams || {}) };
+  };
+  let takes = 0; // takes running now (a buffer fed while a take runs is dropped)
+  let feedWaiting = 0; // fed samples on their way to the pipeline
+  /** Fed samples that have not reached the pipeline yet (at most FEED_WAIT_S of audio). */
+  ctl.feedWaiting = () => feedWaiting;
+  /**
+   * (3.0.0) Audio the app already captures outside takes (SPEC 11.2). Without a yes, or with sharing off or not
+   * offered, it is dropped at once and nothing of it is kept. The recognizer never sees it.
+   */
+  ctl.feed = (samples, sampleRate) => {
+    if (!(samples instanceof Float32Array) || !(sampleRate >= 8000 && sampleRate <= 192000)) throw new TypeError('feed takes a Float32Array and its sample rate');
+    if (!state.sharing) { if (ctl.outbox && ctl.outbox.feed) ctl.outbox.feed(new Float32Array(0), sampleRate).catch(() => {}); return; }
+    if (takes > 0 || !samples.length) return;
+    // the feed is live audio: a buffer over FEED_MAX_S is not, and at most FEED_WAIT_S of audio is on its way
+    // to the pipeline at a time; what comes on top of that is dropped
+    if (samples.length > FEED_MAX_S * sampleRate || (feedWaiting > 0 && feedWaiting + samples.length > FEED_WAIT_S * sampleRate)) return;
+    const copy = samples.slice(), at = ql.clock();
+    feedWaiting += copy.length;
+    import('../sharing/index.js').then(async (mod) => {
+      const pipe = await mod.outbox.configure(await pipelineOptions());
+      ctl.outbox = mod.outbox;
+      if (state.sharing) pipe.feed(copy, sampleRate, at);
+    }).catch(() => {}).then(() => { feedWaiting -= copy.length; });
+  };
   ctl.streamStarted = (tf, s) => {
     if (!state.sharing) return;
     let session = null, starting = null;
+    const startedAt = ql.clock();
+    let counted = false;
+    // audio that waits for the sharing session to start (its key, its storage, the encoder): at most
+    // START_WAIT_MS of it; a take that outruns a start this slow is not shared (never in part)
+    let waiting = 0, gaveUp = false;
     const begin = () => starting || (starting = import('../sharing/index.js').then(async (mod) => {
       const key = await contributorKey(ql.contributor());
       let code = ql.state.get('sharing.recovery');
@@ -169,7 +231,8 @@ export function enableSharing(ql, o = {}) {
       session = await mod.createSharingSession({
         api: ql.apiUrl, fetch: ql.fetch, tokenProvider, headers: ql.origin ? { origin: ql.origin } : {},
         contributor: ql.contributor(), contributorKeyRaw: key.publicKeyRaw, recoveryHash: await recoveryHash(code), inputSampleRate: tf.sampleRate, inputRoute: 'unknown',
-        decodeInfo: { modelRevision: ql.modelRevision || null, backend: 'exact', weightsSha256: null, sdkVersion: SDK_VERSION },
+        decodeInfo: { modelRevision: ql.modelRevision || null, modelBuild: ql.modelBuild || null, backend: 'exact', weightsSha256: null, sdkVersion: SDK_VERSION },
+        startedAt,
         // the version the learner agreed to, as recorded then (not the deck or wording in force now) and, for an
         // app's own wording, the hash of that text
         consentVersion: state.grantVersion, consentTextSha256: state.grantTextSha256,
@@ -177,7 +240,13 @@ export function enableSharing(ql, o = {}) {
         // read at every pass: the signed config in force now, and the learner's answer now (a withdrawal
         // or a config that turned sharing off stops the next PUT, not only the next session)
         flags: () => ql.flags, enabled: () => state.sharing,
+        // a take list the server refused as a bad request goes to the issue reports
+        onIssue: (kind, code) => ql.reportIssue(kind, code),
         ...(ql.sharingBitrate ? { bitrate: ql.sharingBitrate } : {}),
+        // where the outbox keeps its files when the Client was given a storage folder (Node), and the Client's
+        // test seams (a libopus module, a clock, timers, the page's life)
+        ...(ql.sharingStorage ? { storage: ql.sharingStorage } : {}),
+        ...(ql.sharingSeams || {}),
       });
       ctl.outbox = mod.outbox || ctl.outbox;
       return session;
@@ -185,20 +254,35 @@ export function enableSharing(ql, o = {}) {
     const push = s.pushAudio, finish = s.finish, free = s.free;
     s.pushAudio = (pcm) => {
       const k = push(pcm);
-      if (state.sharing) { const copy = pcm.slice(); begin().then((x) => x && x.push(copy)); }
+      if (!counted) { counted = true; takes++; }
+      if (state.sharing && !gaveUp) {
+        if (!session) {
+          waiting += pcm.length;
+          if (waiting > (START_WAIT_MS / 1000) * tf.sampleRate) { gaveUp = true; begin(); return k; }
+        }
+        const copy = pcm.slice();
+        begin().then((x) => x && !gaveUp && x.push(copy));
+      }
       return k;
     };
     s.finish = () => {
       const k = finish();
-      if (starting) begin().then((x) => x && x.finish()).then(() => { if (state.takeThanks() && typeof o.ask !== 'function') import('./element.js').then((m) => m.QuranLabConsent.thank({ lang, wording, theme })); });
+      if (counted) { counted = false; takes--; }
+      const endedAt = ql.clock();
+      if (starting) begin().then((x) => x && x.finish({ endedAt })).then(() => { if (state.takeThanks() && typeof o.ask !== 'function') import('./element.js').then((m) => m.QuranLabConsent.thank({ lang, wording, theme })); });
       starting = null;
       return k;
     };
-    s.free = () => { if (starting) begin().then((x) => x && x.finish()); starting = null; return free(); };
+    s.free = () => {
+      if (counted) { counted = false; takes--; }
+      const endedAt = ql.clock();
+      if (starting) begin().then((x) => x && x.finish({ endedAt }));
+      starting = null;
+      return free();
+    };
   };
-  // the moment to ask: after a scored session (the learner saw feedback)
-  const scored = ql.scored.bind(ql);
-  ql.scored = (tf, r) => { scored(tf, r); ctl.sessionCompleted({ feedback: true }).catch(() => {}); };
+  // the moment to ask: after a finished take in which the model heard speech (the platform client's
+  // takeFinished calls ctl.sessionCompleted), or when the app calls sharing.ask()
   return ctl;
 }
 

@@ -1,42 +1,24 @@
 // The JS side of the TajweedFormer engine binding: calls the wasm module's zft_* exports
 // (src/zft_api.c, thin wrappers over the engine's zf_tajweed.h) and turns its structs into JS objects.
+// Inference only: the model, a stream, its heads, top-2 and top-K, and the reference table lookup.
 //
 // The module must export, besides the zft_* functions: _malloc, _free, HEAPU8, HEAP32, HEAPF32,
 // HEAPF64, UTF8ToString, stringToNewUTF8 and FS (mkdir, writeFile, unlink, rmdir). Heap views are
 // read fresh on every access because memory can grow during any call.
 //
-// STATUS: scoring is checked against the reference verdicts with the engine's real scorer built
-// by Emscripten (dist/tajweedformer-scorer, test/tajweed_vectors.test.mjs); streams only against a
-// mock engine compiled for wasm32 with clang (test/tajweed_engine.test.mjs), since the full engine
-// build with the V4 streaming engine does not exist yet.
+// Tested against the real engine built by Emscripten (test/conformance.test.mjs, bit-exact) and against a
+// mock engine compiled for wasm32 with clang (test/engine_binding.test.mjs: layout and marshalling).
 
-import { HEAD_SPECS, VOCAB, MADD_CLASSES } from './heads.js';
+import { HEAD_SPECS, VOCAB } from './heads.js';
 import { decode, decodeFrames, topK, RANKED_HEADS } from './decode.js';
-import { CLASSES, CHECKS, PRESETS, ITEM_CHECK } from './settings.js';
-
-const STATUSES = ['off', 'experimental', 'validated'];
-const SOURCES = ['calibration', 'remote', 'app'];
 
 // zft_layout(): field names in the order src/zft_api.c lists them, each block led by the struct's size
 const LAYOUT = [
   ['heads', ['n40', 'n20', 'vocab', ...HEAD_SPECS.map((s) => s.name)]],
-  ['site', ['cls', 'status', 'pos', 'word', 'expected', 'alt', 'llr_final', 'llr_inter1', 'llr', 'threshold', 'flagged',
-    'frame_lo', 'frame_hi']],
-  ['madd', ['pos', 'word', 'token', 'madd_class', 'status', 'ratio', 'count', 'display_count', 'allowed_lo', 'allowed_hi',
-    'flagged', 'frame_lo', 'frame_hi']],
-  ['letter', ['pos', 'word', 'token', 'status', 'score', 'threshold', 'flagged', 'frame_lo', 'frame_hi']],
-  ['summary', ['n_sites', 'n_flagged', 'n_madd', 'n_madd_flagged', 'n_qalqalah', 'n_qalqalah_flagged', 'n_gemination',
-    'n_gemination_flagged', 'short_vowel_frames', 'madd_unit_ok']],
-  ['effective', ['preset', 'preset_source', 'class_enabled', 'class_status', 'class_threshold', 'class_source',
-    'check_enabled', 'check_status', 'check_source', 'context', 'context_source']],
-  ['wordsettings', ['struct_size', 'available', 'status', 'enabled', 'enabled_source', 'preset', 'preset_source', 'threshold',
-    'floor', 'custom_lo', 'custom_hi', 'preset_tau']],
-  ['word', ['word', 'tok_lo', 'tok_hi', 'has_score', 'score', 'threshold', 'flagged', 'cls', 'edit', 'edit_pos', 'expected', 'alt',
-    'llr_final', 'llr_inter1']],
   ['top2', ['token', 'runner_up', 'log_prob', 'runner_up_log_prob', 'margin']],
   ['openoptions', ['context', 'batch', 'no_pin']],
 ];
-const LAYOUT_VERSION = 3;
+const LAYOUT_VERSION = 4;
 /** ZF_TAJWEED_HEAD_* bits by graph name (zf_tajweed.h API 3): the heads a stream computes. */
 export const HEAD_BITS = Object.freeze({ log_probs: 1, inter1_log_probs: 2, inter4_log_probs: 4, id_log_probs: 8, timing_log_probs: 16,
   gem: 32, attr_tafkheem: 64, attr_ghunna: 128, attr_qalqalah: 256, attr_face: 512, boundary: 1024, conf: 2048 });
@@ -48,8 +30,6 @@ export function headsMask(keep) {
   for (const n of keep) m |= HEAD_BITS[n] || 0;
   return m;
 }
-const WORD_PRESET_NAMES = ['strict', 'general', 'beginner'];
-const EDITS = ['sub', 'del', 'ins'];
 
 /** Whether an instantiated module carries the V4 engine binding. */
 export function hasTajweedEngine(m) {
@@ -101,17 +81,15 @@ export class TajweedEngine {
 
   // -- the model folder in the module's file system -----------------------------------------------
   /**
-   * Write the folder's files the engine reads into the module's in-memory file system: the root
-   * files (tokens, calibration, the expected table) and, unless engineFiles is false (a scoring-only
-   * model), the chosen context's folder. Every file goes
-   * through folder.read, so it is a listed file whose size and SHA-256 were checked. The files stay
-   * while the model is open (the engine opens its graph when a stream is made).
+   * Write model files into the module's in-memory file system, under a staging directory: `files` is
+   * [{ path, bytes }] with the manifest's paths. The caller hands over only listed files whose size and
+   * SHA-256 were checked. Files can be added to the same staging later (another context, the reference
+   * table); they stay until unstage.
+   * @param {{dir: string, files: string[], dirs: string[]}|null} staged  an earlier staging to add to, or null
    */
-  async stage(folder, context, { engineFiles = true, paths: only = null } = {}) {
-    const dir = `/tajweedformer/${++stageSeq}`;
-    const paths = (only || folder.paths).filter((p) => p !== 'manifest.json' &&
-      (!p.includes('/') || (engineFiles && (only ? true : p.startsWith(context + '/')))));
-    const made = new Set();
+  stage(staged, files) {
+    const st = staged || { dir: `/tajweedformer/${++stageSeq}`, files: [], dirs: [] };
+    const made = new Set(st.dirs);
     const mkdirs = (full) => {
       let cur = '';
       for (const part of full.split('/').filter(Boolean)) {
@@ -121,14 +99,15 @@ export class TajweedEngine {
         made.add(cur);
       }
     };
-    const written = [];
-    for (const p of paths) {
-      const full = `${dir}/${p}`;
+    for (const f of files) {
+      const full = `${st.dir}/${f.path}`;
+      if (st.files.includes(full)) continue;
       mkdirs(full.slice(0, full.lastIndexOf('/')));
-      this.m.FS.writeFile(full, await folder.read(p));
-      written.push(full);
+      this.m.FS.writeFile(full, f.bytes);
+      st.files.push(full);
     }
-    return { dir, files: written, dirs: [...made].filter((d) => d.startsWith(dir)).sort((a, b) => b.length - a.length) };
+    st.dirs = [...made].filter((d) => d.startsWith(st.dir)).sort((a, b) => b.length - a.length);
+    return st;
   }
 
   unstage(staged) {
@@ -137,29 +116,47 @@ export class TajweedEngine {
     for (const d of staged.dirs) { try { this.m.FS.rmdir(d); } catch (_) { /* not empty or gone */ } }
   }
 
-  openModel(dir, { context = null, loadEngine = true, threads = 0, sampleRate = 0 } = {}) {
-    const p = this.withStrings([dir, context], (d, c) => this.m._zft_model_open(d, c, loadEngine ? 1 : 0, threads | 0,
+  openModel(dir, { context = null, threads = 0, sampleRate = 0 } = {}) {
+    const p = this.withStrings([dir, context], (d, c) => this.m._zft_model_open(d, c, threads | 0,
       sampleRate === 16000 ? 0 : sampleRate | 0));
     if (!p) throw new Error(`zf_tajweed_model_open: ${this.error()}`);
     return p;
   }
   closeModel(p) { if (p) this.m._zft_model_close(p); }
   modelContext(p) { return this.str(this.m._zft_model_context(p)); }
-  modelId(p) { return this.str(this.m._zft_model_id(p)); }
   chunkMs(p) { return this.m._zft_model_chunk_ms(p); }
-  ayahCount(p, surah) { return this.m._zft_ayah_count(p, surah); }
 
-  expected(p, surah, ayah) {
-    const n = this.m._zft_expected(p, surah, ayah);
-    if (n < 0) throw new RangeError(`${surah}:${ayah}: ${this.error()}`);
-    const t = this.m._zft_expected_tokens_ptr() >> 2, w = this.m._zft_expected_words_ptr() >> 2;
-    return {
-      tokens: Int32Array.from(this.m.HEAP32.subarray(t, t + n)),
-      wordOfToken: Int32Array.from(this.m.HEAP32.subarray(w, w + n)),
-      words: this.m._zft_expected_n_words(),
-    };
+  // -- the reference table (the expected units of each ayah; data, no link to the model) ----------
+  /**
+   * Open the reference table from its verified bytes (the engine copies them). Returns the SHA-256 (hex) of
+   * the tokens.txt the table's ids refer to.
+   */
+  referenceOpen(bytes) {
+    const m = this.m;
+    const p = this.alloc(bytes.length);
+    let rc;
+    try { m.HEAPU8.set(bytes, p); rc = m._zft_reference_open(p, bytes.length); } finally { m._free(p); }
+    if (rc !== 0) throw new Error(`zf_tajweed_reference_open_memory: ${this.error()}`);
+    this.referenceIsOpen = true;
+    const s = m._zft_reference_tokens_sha256();
+    return s ? Array.from(m.HEAPU8.subarray(s, s + 32), (b) => b.toString(16).padStart(2, '0')).join('') : null;
   }
-
+  /**
+   * One ayah's units from the open table: { units: Int32Array, words: Int32Array (each unit's word), nWords },
+   * or null for an ayah the table does not have.
+   */
+  referenceUnits(surah, ayah) {
+    const m = this.m;
+    if (!this.referenceIsOpen) throw new Error('the reference table is not open');
+    const n = m._zft_reference_units(surah, ayah);
+    if (n < 0) return null;
+    const u = m._zft_reference_units_ptr() >> 2, w = m._zft_reference_words_ptr() >> 2;
+    return { units: Int32Array.from(m.HEAP32.subarray(u, u + n)), words: Int32Array.from(m.HEAP32.subarray(w, w + n)), nWords: m._zft_reference_n_words() };
+  }
+  referenceClose() {
+    if (this.referenceIsOpen) this.m._zft_reference_close();
+    this.referenceIsOpen = false;
+  }
   // -- heads <-> ZfTajweedHeads --------------------------------------------------------------------
   /** Copy a ZfTajweedHeads at `p` (frames [from40, from40 + n40) of it, and the matching 20 ms rows). */
   readHeads(p, from40 = 0, n40 = null, keep = null) {
@@ -197,110 +194,6 @@ export class TajweedEngine {
     return { ptr: p, free: () => { for (const q of ptrs) this.m._free(q); } };
   }
 
-  // -- config --------------------------------------------------------------------------------------
-  configCreate(model) {
-    const c = this.m._zft_config_create(model);
-    if (!c) throw new Error(`zf_tajweed_config_create: ${this.error()}`);
-    return c;
-  }
-  configDestroy(c) { if (c) this.m._zft_config_destroy(c); }
-
-  /**
-   * Put the JS settings' layers into an engine config: the debug flag, the remote block exactly as
-   * the portal sent it, then the app layer. Returns what the engine would not take (an app setting
-   * API version 1 has no setter for, such as a madd/qalqalah/gemination preset), as strings.
-   */
-  configSync(c, settings) {
-    const m = this.m;
-    const refused = [];
-    m._zft_config_clear_app(c);
-    m._zft_config_set_debug_build(c, settings.debug ? 1 : 0);
-    // API 2: the heads' backend picks calibration's backend_overrides
-    if (typeof m._zft_config_set_backend === 'function' && this.apiVersion >= 2) {
-      this.withStrings([settings.backend], (p) => { if (m._zft_config_set_backend(c, p) !== 0) refused.push(`backend ${settings.backend}`); });
-    } else if (settings.backend !== 'int8') {
-      refused.push(`backend ${settings.backend} (an API 1 engine has no backend)`);
-    }
-    const remote = settings.remote;
-    const rj = remote === null || remote === undefined ? null : JSON.stringify(remote);
-    this.withStrings([rj], (p) => m._zft_config_set_remote(c, p));
-    const app = settings.app;
-    const call = (what, rc) => { if (rc !== 0) refused.push(what); };
-    if (app.context) this.withStrings([app.context], (p) => call(`context ${app.context}`, m._zft_config_set_context(c, p)));
-    if (app.preset) this.withStrings([app.preset], (p) => call(`preset ${app.preset}`, m._zft_config_set_preset(c, p)));
-    for (const [cls, o] of Object.entries(app.overrides || {})) {
-      if (Object.prototype.hasOwnProperty.call(o, 'threshold')) {
-        this.withStrings([cls], (k) => call(`overrides.${cls}.threshold`, m._zft_config_set_class_threshold(c, k, o.threshold)));
-      } else {
-        this.withStrings([cls, o.preset], (k, v) => call(`overrides.${cls}.preset`, m._zft_config_set_class_preset(c, k, v)));
-      }
-    }
-    for (const [check, on] of Object.entries(app.checks || {})) {
-      this.withStrings([check], (k) => call(`checks.${check}`, m._zft_config_set_check(c, k, on ? 1 : 0)));
-    }
-    // API 3: the word level
-    if (app.word) {
-      if (typeof m._zft_config_set_word_preset !== 'function') refused.push('word (the engine has no API 3)');
-      else if (Object.prototype.hasOwnProperty.call(app.word, 'threshold')) call('word.threshold', m._zft_config_set_word_threshold(c, app.word.threshold));
-      else this.withStrings([app.word.preset], (p) => call('word.preset', m._zft_config_set_word_preset(c, p)));
-    }
-    return refused;
-  }
-
-  /** The engine's resolved settings as its zf_tajweed_config_json (API 2: TAJWEED_SETTINGS.md rev 2's
-   * layout), parsed; null when it is not JSON. */
-  configJson(c) {
-    const t = this.str(this.m._zft_config_json(c));
-    try { return t ? JSON.parse(t) : null; } catch (_) { return null; }
-  }
-
-  /** The engine's resolved settings (ZfTajweedEffective) with names spelled out. */
-  configEffective(c) {
-    const L = this.layout.effective;
-    const p = this.alloc(L.size);
-    try {
-      if (this.m._zft_config_effective(c, p) !== 0) throw new Error(`zf_tajweed_config_effective: ${this.error()}`);
-      const ints = (off, n) => Array.from(this.m.HEAP32.subarray((p + off) >> 2, ((p + off) >> 2) + n));
-      const dbl = (off, n) => Array.from(this.m.HEAPF64.subarray((p + off) >> 3, ((p + off) >> 3) + n));
-      const nc = CLASSES.length, nk = CHECKS.length;
-      const en = ints(L.class_enabled, nc), st = ints(L.class_status, nc), th = dbl(L.class_threshold, nc), so = ints(L.class_source, nc);
-      const ce = ints(L.check_enabled, nk), cs = ints(L.check_status, nk), cso = ints(L.check_source, nk);
-      const ctxBytes = this.m.HEAPU8.subarray(p + L.context, p + L.context + 16);
-      const z = ctxBytes.indexOf(0);
-      return {
-        preset: PRESETS[this.i32(p + L.preset)] || null,
-        presetSource: SOURCES[this.i32(p + L.preset_source)] || null,
-        classes: Object.fromEntries(CLASSES.map((cls, i) => [cls, { enabled: en[i] !== 0, status: STATUSES[st[i]] || null,
-          threshold: th[i], source: SOURCES[so[i]] || null }])),
-        checks: Object.fromEntries(CHECKS.map((k, i) => [k, { enabled: ce[i] !== 0, status: STATUSES[cs[i]] || null,
-          source: SOURCES[cso[i]] || null }])),
-        context: new TextDecoder().decode(ctxBytes.subarray(0, z < 0 ? 16 : z)),
-        contextSource: SOURCES[this.i32(p + L.context_source)] || null,
-      };
-    } finally {
-      this.m._free(p);
-    }
-  }
-
-  /** API 3: the engine's word level (ZfTajweedWordSettings), names spelled out; null without API 3. */
-  configWord(c) {
-    if (typeof this.m._zft_config_word !== 'function') return null;
-    const L = this.layout.wordsettings;
-    const p = this.alloc(L.size);
-    try {
-      if (this.m._zft_config_word(c, p) !== 0) return null;
-      const g = (k) => this.i32(p + L[k]);
-      if (!g('available')) return { available: false };
-      const pr = g('preset');
-      return { available: true, status: STATUSES[g('status')] || null, enabled: g('enabled') !== 0, enabledSource: SOURCES[g('enabled_source')] || null,
-        preset: pr < 0 ? 'custom' : WORD_PRESET_NAMES[pr] || null, source: SOURCES[g('preset_source')] || null, tau: this.f64(p + L.threshold),
-        floor: this.f64(p + L.floor), customLo: this.f64(p + L.custom_lo), customHi: this.f64(p + L.custom_hi),
-        presetTau: Object.fromEntries(WORD_PRESET_NAMES.map((n, i) => [n, this.f64(p + L.preset_tau + 8 * i)])) };
-    } finally {
-      this.m._free(p);
-    }
-  }
-
   /** P2.16: zf_tajweed_stream_topk for a kept head, shaped as decode.js topK (margins as doubles from the
    * float values: the engine is asked one rank deeper than k so the last margin has its partner). */
   streamTopK(stream, head, k, tokens) {
@@ -331,107 +224,6 @@ export class TajweedEngine {
     } finally {
       m._free(ip); m._free(vp);
     }
-  }
-
-  // -- scoring -------------------------------------------------------------------------------------
-  /** Score; returns the typed result (names spelled out) and the engine's JSON, then frees it. */
-  score(model, config, heads, surah, ayah, tokens) {
-    const hp = this.writeHeads(heads);
-    let r = 0;
-    try {
-      r = this.m._zft_score(model, config, hp.ptr, surah, ayah);
-      if (!r) throw new Error(`zf_tajweed_score ${surah}:${ayah}: ${this.error()}`);
-      return this.readResult(r, tokens);
-    } finally {
-      if (r) this.m._zft_result_free(r);
-      hp.free();
-    }
-  }
-
-  readResult(r, tokens) {
-    const unit = (id) => (Number.isInteger(id) && id >= 0 && id < tokens.length ? tokens[id] : null);
-    const rows = (count, ptr, L, fn) => {
-      const out = [];
-      for (let i = 0; i < count; i++) out.push(fn(ptr + i * L.size, L));
-      return out;
-    };
-    const S = this.layout.site, M = this.layout.madd, T = this.layout.letter, U = this.layout.summary;
-    const ns = this.m._zft_result_sites(r);
-    const sites = ns < 0 ? [] : rows(ns, this.m._zft_result_sites_ptr(), S, (p, L) => {
-      const cls = CLASSES[this.i32(p + L.cls)] || null;
-      const expected = this.i32(p + L.expected), alt = this.i32(p + L.alt);
-      return {
-        class: cls, check: ITEM_CHECK[cls] || null, status: STATUSES[this.i32(p + L.status)] || null,
-        pos: this.i32(p + L.pos), word: this.i32(p + L.word),
-        expected, expectedUnit: unit(expected), alternative: alt, alternativeUnit: unit(alt),
-        llr: { final: this.f64(p + L.llr_final), inter1: this.f64(p + L.llr_inter1) },
-        fusedLlr: this.f64(p + L.llr), threshold: this.f64(p + L.threshold), flagged: this.i32(p + L.flagged) !== 0,
-        frameLo: this.i32(p + L.frame_lo), frameHi: this.i32(p + L.frame_hi),
-      };
-    });
-    const nm = this.m._zft_result_madd(r);
-    const madd = nm < 0 ? [] : rows(nm, this.m._zft_result_madd_ptr(), M, (p, L) => {
-      const token = this.i32(p + L.token);
-      return {
-        pos: this.i32(p + L.pos), word: this.i32(p + L.word), token, unit: unit(token),
-        maddClass: MADD_CLASSES[this.i32(p + L.madd_class)] || null, status: STATUSES[this.i32(p + L.status)] || null,
-        ratio: this.f64(p + L.ratio), count: this.i32(p + L.count), displayCount: this.f64(p + L.display_count),
-        allowedLo: this.i32(p + L.allowed_lo), allowedHi: this.i32(p + L.allowed_hi), flagged: this.i32(p + L.flagged) !== 0,
-        frameLo: this.i32(p + L.frame_lo), frameHi: this.i32(p + L.frame_hi),
-      };
-    });
-    const letters = (n, ptr) => (n < 0 ? [] : rows(n, ptr, T, (p, L) => {
-      const token = this.i32(p + L.token);
-      return {
-        pos: this.i32(p + L.pos), word: this.i32(p + L.word), token, unit: unit(token),
-        status: STATUSES[this.i32(p + L.status)] || null, score: this.f64(p + L.score), threshold: this.f64(p + L.threshold),
-        flagged: this.i32(p + L.flagged) !== 0, frameLo: this.i32(p + L.frame_lo), frameHi: this.i32(p + L.frame_hi),
-      };
-    }));
-    const nq = this.m._zft_result_qalqalah(r);
-    const qalqalah = letters(nq, this.m._zft_result_qalqalah_ptr());
-    const ng = this.m._zft_result_gemination(r);
-    const gemination = letters(ng, this.m._zft_result_gemination_ptr());
-    const sp = this.alloc(U.size);
-    let summary;
-    try {
-      if (this.m._zft_result_summary(r, sp) !== 0) throw new Error(`zf_tajweed_result_summary: ${this.error()}`);
-      const g = (k) => this.i32(sp + U[k]);
-      summary = {
-        sites: g('n_sites'), flagged: g('n_flagged'), madd: g('n_madd'), maddFlagged: g('n_madd_flagged'),
-        qalqalah: g('n_qalqalah'), qalqalahFlagged: g('n_qalqalah_flagged'), gemination: g('n_gemination'),
-        geminationFlagged: g('n_gemination_flagged'), shortVowelFrames: this.f64(sp + U.short_vowel_frames),
-        maddUnitOk: g('madd_unit_ok') !== 0,
-      };
-    } finally {
-      this.m._free(sp);
-    }
-    // API 3: the scored path and the words (none when the word check is off or calibration has no block)
-    let path = null, words = [];
-    if (typeof this.m._zft_result_words === 'function') {
-      const np = this.m._zft_result_path(r);
-      if (np > 0) {
-        const t = this.m._zft_result_path_ptr() >> 2, w = this.m._zft_result_path_words_ptr() >> 2;
-        path = { tokens: Int32Array.from(this.m.HEAP32.subarray(t, t + np)), wordOfToken: Int32Array.from(this.m.HEAP32.subarray(w, w + np)) };
-      }
-      const W = this.layout.word;
-      const nw = this.m._zft_result_words(r);
-      if (nw > 0) words = rows(nw, this.m._zft_result_words_ptr(), W, (p, L) => {
-        const cls = this.i32(p + L.cls), has = this.i32(p + L.has_score) !== 0;
-        const expected = this.i32(p + L.expected), alt = this.i32(p + L.alt);
-        return {
-          word: this.i32(p + L.word), tokLo: this.i32(p + L.tok_lo), tokHi: this.i32(p + L.tok_hi), hasScore: has,
-          score: has ? this.f64(p + L.score) : null, threshold: this.f64(p + L.threshold), flagged: this.i32(p + L.flagged) !== 0,
-          class: has ? CLASSES[cls] || null : null, edit: has ? EDITS[this.i32(p + L.edit)] || null : null, editPos: this.i32(p + L.edit_pos),
-          expected, expectedUnit: unit(expected), alternative: alt, alternativeUnit: unit(alt),
-          llr: { final: has ? this.f64(p + L.llr_final) : null, inter1: has ? this.f64(p + L.llr_inter1) : null },
-        };
-      });
-    }
-    const rawText = this.str(this.m._zft_result_json(r));
-    let raw = null;
-    try { raw = rawText ? JSON.parse(rawText) : null; } catch (_) { raw = null; }
-    return { sites, madd, qalqalah, gemination, summary, raw, rawText, path, engineWords: words };
   }
 
   // -- streams -------------------------------------------------------------------------------------
@@ -474,7 +266,7 @@ export class EngineStream {
     this._applyHeads();
   }
 
-  /** API 3: the engine computes only the heads asked for (a new stream computes the scorer's). */
+  /** The engine computes only the heads asked for. */
   _applyHeads() {
     const m = this.eng.m;
     if (typeof m._zft_stream_set_heads === 'function' && m._zft_stream_set_heads(this.s, this.mask) !== 0) {

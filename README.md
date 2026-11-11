@@ -13,7 +13,7 @@
 <p align="center">
   <img alt="platform: browsers, Node" src="https://img.shields.io/badge/platform-browsers%20%7C%20Node-1c1b19?style=flat-square">
   <img alt="bit-exact: 35 of 35 conformance clips" src="https://img.shields.io/badge/bit--exact-35%2F35%20clips-2a3b8f?style=flat-square">
-  <img alt="status: preview" src="https://img.shields.io/badge/status-preview-2a3b8f?style=flat-square">
+  <img alt="version: 3.0.0" src="https://img.shields.io/badge/version-3.0.0-2a3b8f?style=flat-square">
   <img alt="model licence: NPL-1.2" src="https://img.shields.io/badge/model%20licence-NPL--1.2-1c1b19?style=flat-square">
 </p>
 
@@ -50,15 +50,11 @@
 </td>
 <td valign="top">
 
-**Tajweed scoring in SDK 2.x**<br>For a known ayah, SDK 2.x also scores the take: letters and vowels, madd held too short or too long, a score for every word. Qalqalah checks are experimental.
+**Data for your own judge**<br>The SDK scores nothing. The model's thresholds and the expected units of each ayah come with it as read-only data, so your app can judge a recitation its own way.
 
 </td>
 </tr>
 </table>
-
-### Tajweed scoring in SDK 2.x
-
-Scoring has four presets. **Strict** almost never flags a correct recitation. **Balanced** is the default. **Sensitive** catches more, and **Very sensitive** catches the most, for a teacher who reviews every flag first. The word level follows your learners: **strict** for huffaz and advanced students, **general** for most apps, **beginner** for children and classes. You set them in the portal and your app picks them up without a new build. Scoring is part of SDK 2.x; SDK 3.0 is inference only, so build new judging on the model's output.
 
 ## Why TajweedFormer
 
@@ -69,7 +65,7 @@ Scoring has four presets. **Strict** almost never flags a correct recitation. **
 
 ## Built for AI developers
 
-Copy the setup prompt from [portal.quranlab.ai](https://portal.quranlab.ai) and paste it into your coding assistant. That one prompt sets everything up: the package, your key, and the settings for the learners your app is for. [AGENTS.md](AGENTS.md), beside this README, gives the assistant the complete API, so the code it writes uses names that exist. Prefer to do it by hand? Get a key in the portal and start below.
+Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai) and paste it into your coding assistant. That one prompt sets everything up: the package, your key, and the first calls. [AGENTS.md](AGENTS.md), beside this README, gives the assistant the complete API, so the code it writes uses names that exist. Prefer to do it by hand? Get a key in the portal and start below.
 
 ## Install
 
@@ -77,59 +73,61 @@ Copy the setup prompt from [portal.quranlab.ai](https://portal.quranlab.ai) and 
 npm install @quran-lab/tajweedformer
 ```
 
-With a bundler (Vite, webpack and the like) the imports in the quick start resolve as they are written. Without one, import the same two modules by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@2.0.2/web/index.js` and `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@2.0.2/web/platform/index.js`.
+With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.0.0/web/index.js`. The package has one entry point; in Node, `@quran-lab/tajweedformer/node` adds the reader for a model folder on disk.
 
 ## Before you start
 
 | | |
 | - | - |
-| **Key** | A web key from [portal.quranlab.ai](https://portal.quranlab.ai), locked to your site's origins. Add `http://localhost:<port>` there for development. |
+| **Key** | A web key from [sdk.quranlab.ai](https://sdk.quranlab.ai), locked to your site's origins. For local work (`vite dev`) use the app's development key, with `http://localhost:*` among its origins; a production key does not work on a local address. |
 | **Page** | A secure context: `https`, or `http://localhost`. A browser gives the microphone and WebCrypto to nothing else, and starts audio only after a tap or a click. |
 | **Browser** | WebAssembly with SIMD, AudioWorklet, and Ed25519 in WebCrypto (Chrome 137, Firefox 129, Safari 17, or later). In Node: version 20 or later. |
 | **Download** | The first visit downloads the model: 56.5 MB, then the browser's cache serves it (73.5 MB stored). |
-| **Streams** | One live stream per page at a time. |
+| **Takes** | A Model has one open Session (one take) at a time; the next take is a new Session. A take holds at most 20 minutes of audio. |
+| **Threads** | In a browser the engine runs in a module Worker, off the page's main thread (2.x ran it on the main thread); a page whose content security policy forbids Workers runs it on the main thread. In Node it runs on the calling thread. |
 
 ## Quick start
 
-From your key to what the model hears from the microphone, on a page with `<button id="listen">` and
-`<pre id="heard">`:
-
 ```js
-import { TajweedFormer } from '@quran-lab/tajweedformer';
-import { QuranLab } from '@quran-lab/tajweedformer/platform';
+import { TajweedClient } from '@quran-lab/tajweedformer';
 
-document.querySelector('#listen').onclick = async () => {   // the microphone needs a tap
-  const ql = await QuranLab.configure({ key: 'qlk_v1_...' });   // your web key from portal.quranlab.ai
-  const audio = new AudioContext({ sampleRate: 48000 });
-  const tf = await TajweedFormer.load({ platform: ql, sampleRate: 48000 });   // downloads the model once, then cached
-  const stream = tf.createStream({ onChunk: () => {             // every 320 ms: what the model heard so far
-    document.querySelector('#heard').textContent = stream.decoded().tokens.map((t) => t.unit).join(' ');
-  } });
-
-  const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-  const worklet = `registerProcessor('mic', class extends AudioWorkletProcessor {
-    process(inputs) { if (inputs[0][0]) this.port.postMessage(inputs[0][0].slice()); return true; } });`;
-  await audio.audioWorklet.addModule(URL.createObjectURL(new Blob([worklet], { type: 'text/javascript' })));
-  const node = new AudioWorkletNode(audio, 'mic', { numberOfOutputs: 0 });
-  node.port.onmessage = (e) => stream.pushAudio(e.data);        // Float32Array, mono, 48 kHz
-  audio.createMediaStreamSource(mic).connect(node);
-};
+const client = await TajweedClient.create({ key: 'qlk_v1_...' });   // your web key from sdk.quranlab.ai
+const model = await client.model();                                  // downloads the model once, then cached
+async function take(from) {                                          // one take: the microphone, or a clip
+  const session = await model.listen({ from, endOnSilenceMs: 1500 });   // ends when the learner stops
+  for await (const chunk of session.chunks) document.querySelector('#heard').textContent = chunk.decoded.text;
+}
+document.querySelector('#listen').onclick = () => take();            // the microphone needs a tap
 ```
 
-This is [`examples/quickstart.html`](examples/quickstart.html), a whole page you can open; the tests keep the two
-equal and run it. `stream.decoded()` is what the model heard so far: each token with its confidence, runner-up and
-times. `onChunk` also gets the chunk itself, with every head of the network you selected. To end the take, stop
-feeding audio and call `stream.finish()`, then `stream.free()` before the next `createStream()`.
+That is the whole path from the microphone to the output: `listen()` asks for the permission, captures at
+the device's own rate (usually 48 kHz) and tells the Session that rate, so no sample rate appears in your
+code. `endOnSilenceMs: 1500` ends the take by itself after 1.5 s of silence. In a noisy room a take may not
+end on silence, so keep a Stop button (`session.finish()`); the 20-minute limit ends it in any case. Values
+under 1000 can end a take in a breath pause between two words (at the minimum, 500, the margin on the longest
+pause of the 35 conformance clips is one frame); 1500 is the default of the quick starts.
 
-In SDK 2.x a finished take of a known ayah can also be scored: `await tf.score(stream.heads(), surah, ayah)` gives
-verdicts per site and per word ("The three layers" below).
+The page it comes from is [examples/quickstart.html](examples/quickstart.html): it also plays a sample clip
+of the model with no microphone, and starts a new take when the learner comes back to the page. The same in a
+Vite project, which builds with no line of config: [examples/vite](examples/vite/README.md). For `vite dev`,
+use the app's development key with `http://localhost:*` among its origins; a production key does not work on
+a local address, and the SDK says so (`server_rejected`, with what to do).
 
-A longer page with scoring and sharing is [`examples/browser.html`](examples/browser.html), a Node script is
-[`examples/node.mjs`](examples/node.mjs), and the full API, with every field, is in [`docs/api.md`](docs/api.md).
+From Node, or with audio you already have, replace `listen()` with `model.session()` and
+`session.push(samples)`; everything else is the same ([examples/node.mjs](examples/node.mjs)).
 
 ## More
 
-The full reference (every layer of the API, backends, what a device downloads, platform settings, recording sharing, building and testing) is in [AGENTS.md](AGENTS.md), written for coding assistants and just as readable for you. Guides: [portal.quranlab.ai/docs](https://portal.quranlab.ai/docs).
+The full reference (every layer of the API, backends, what a device downloads, platform settings, recording sharing, building and testing) is in [AGENTS.md](AGENTS.md), written for coding assistants and just as readable for you. Guides: [sdk.quranlab.ai/docs](https://sdk.quranlab.ai/docs).
+
+## Problems and wishes
+
+Something does not work, something is missing, or you want to tell us how it went:
+[open an issue](https://github.com/Quran-Lab/tajweedformer-web/issues/new/choose). There is a form for a bug, one for a
+wish and one for a word of feedback. Issues are public, so leave out keys and anything that came from a learner.
+A security problem does not go into an issue: use "Report a vulnerability" on the
+[Security tab](https://github.com/Quran-Lab/tajweedformer-web/security). A coding assistant can file an issue for you; it
+shows you the text first.
 
 ## Licence
 
@@ -140,6 +138,6 @@ Quran-Lab No-Profit License 1.2 ([NPL-1.2](LICENSE)): use, copy, modify and buil
 but never charge for them, for access to them, or for any feature they power. The weights are not
 stored in this repository; Quran Lab hosts them itself and serves them to apps by
 `cdn.quranlab.ai/models` under the same licence. Get access at
-[portal.quranlab.ai](https://portal.quranlab.ai).
+[sdk.quranlab.ai](https://sdk.quranlab.ai).
 
 Third-party components keep their own licences, listed in their folders under `third_party/`.

@@ -1,8 +1,9 @@
 // The platform client (web/platform) against a mock qlab-api that follows the platform client spec:
-// token, register, the signed config (pinned kid, exact bytes, tamper, expiry, ETag/304), the tajweed
-// block into a model's settings, telemetry v2 (closed body, 202/400 handling, kill switch), issues
+// token, register, the signed config (pinned kid, exact bytes, tamper, expiry, ETag/304), where the model's
+// build is served, telemetry v2 (closed body, 202/400 handling, kill switch), issues
 // (no free text, deduped), the error table's stop codes, and the sharing state machine.
 import test from 'node:test';
+import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
 import { QuranLab, verifySignedConfig, keyId, memoryState, Telemetry, bucket } from '../web/platform/index.js';
 import { SharingState, MAX_ASKS, REASK_GAP, copyFor } from '../web/consent/index.js';
@@ -33,7 +34,7 @@ async function mockApi({ base = undefined, tamper = false, expired = false, flag
       if (h['if-none-match'] === etag) return new Response(null, { status: 304 });
       const now = Math.floor(Date.now() / 1000);
       const cfg = { v: 1, app: 'web:https://app.example', channel: 'stable', issued_at: now, expires_at: expired ? now - 10 : now + 86400,
-        models: {}, recommended: { model: 'Quran-Lab/tajweedformer-v4', model_id: 'v4.0', folder: 'sdk/v4.0', revision: 'abc123', source: 'stable' },
+        models: {}, recommended: { model: 'Quran-Lab/tajweedformer-v4', model_id: 'v4.0', folder: 'sdk/v4.0', revision: 'abc123', version: '4.0.0', source: 'stable' },
         denylist: [], flags: state.flags, tajweed: state.tajweed, ...(base === undefined ? {} : { base }) };
       const bytes = enc.encode(JSON.stringify(cfg));
       const sig = new Uint8Array(await crypto.subtle.sign({ name: 'Ed25519' }, kp.privateKey, bytes));
@@ -57,22 +58,22 @@ test('launch: unattested token, register (new install once), signed config verif
   const clock = () => Date.now() + off;
   const ql = await QuranLab.configure(opts(api, { state: st, clock, autoSend: false }));
   assert.equal(ql.lastError, undefined);
-  assert.equal(ql.config.tajweed.preset, 'sensitive');
+  assert.equal(ql.config.recommended.version, '4.0.0');
   const attest = api.log.find((x) => x.path === '/v1/attest');
   assert.deepEqual(attest.body, { platform: 'web', bundle_id: 'https://app.example' });
   assert.equal(attest.headers.origin, 'https://app.example');
   const reg = api.log.find((x) => x.path === '/v1/register');
   assert.equal(reg.body.new_install, true);
-  assert.equal(reg.body.sdk_version, '2.0.2');
+  assert.equal(reg.body.sdk_version, '3.0.0');
   const cfgReq = api.log.find((x) => x.path === '/v1/config');
-  assert.match(cfgReq.query, /sdk=2\.0\.2/);
+  assert.match(cfgReq.query, /sdk=3\.0\.0/);
   assert.match(cfgReq.query, /bucket=\d+/);
   // second launch on the same storage and UTC day: no register (once per day); config answered 304 from the stored ETag
   api.log.length = 0;
   const ql2 = await QuranLab.configure(opts(api, { state: st, clock, autoSend: false }));
   assert.equal(api.log.filter((x) => x.path === '/v1/register').length, 0, 'registered once today');
   assert.equal(api.log.find((x) => x.path === '/v1/config').headers['if-none-match'], '"v1"');
-  assert.equal(ql2.config.tajweed.preset, 'sensitive');
+  assert.equal(ql2.config.recommended.version, '4.0.0');
   assert.equal(api.log.filter((x) => x.path === '/v1/attest').length, 0, 'the stored token is reused');
   // the next UTC day: one register, not a new install
   off = 86_400_000;
@@ -114,32 +115,35 @@ test('telemetry v2 deltas: closed body with the 2.0.1 fields, sealed at a send p
   assert.equal(first.length, 1);
   assert.equal(first[0].body.launches, 1);
   assert.match(first[0].body.report_id, /^[0-9a-f]{32}$/);
-  const fakeTf = { context: 'c16_l64', sampleRate: 16000, info: { chunkMs: 320 }, folder: { manifest: { model_id: 'v4.0', revision: 'abc' } },
-    settings: { effective: () => ({ preset: 'balanced', sites: { vowel_sub: { enabled: true } }, madd: { enabled: true }, gemination: { enabled: false },
-      qalqalah: { enabled: false }, lazim: { enabled: false } }), app: {}, remote: null, wordLevel: () => null } };
-  ql.telemetry.session(fakeTf, { seconds: 30, chunkMs: [12, 30, 400], firstMs: 900 });
-  ql.telemetry.scored(fakeTf, { surah: 1, sites: [{ class: 'vowel_sub', flagged: true }, { class: 'cons_sub', flagged: false }], summary: { sites: 2, flagged: 1 },
-    madd: [{ count: 2, flagged: false }], words: [{ score: 1, flagged: false }, { score: null, flagged: null }] });
-  ql.telemetry.decoded(fakeTf, { tokens: [{ margin: 3, confidence: 0.97 }, { margin: 0.2, confidence: null }] });
+  const cohort = { revision: '4.0.0', build: 'abc123', context: 'c16_l64', backend: 'cpu' };
+  ql.telemetry.take(cohort, { samples: 480000, sampleRate: 16000, chunkUs: [12000, 30000, 400000], chunkLenMs: 320, firstMs: 900, margins: [3, 0.2], confidences: [0.97],
+    tokens: { log_probs: 21, inter1_log_probs: 19 }, speechFrames: 530, silenceFrames: 220 });
+  ql.telemetry.recited(1, 1);
+  ql.telemetry.checks('vowel_sub', 1, 1);
+  ql.telemetry.checks('cons_sub', 1, 0);
+  ql.telemetry.checks('madd', 1, 0);
+  ql.telemetry.checks('word', 1, 0);
   assert.deepEqual(ql.telemetry.pending(), [], 'nothing is sealed before a send point');
   assert.equal(ql.telemetry.seal(), 1);
   const [p] = ql.telemetry.pending();
   assert.deepEqual(Object.keys(p), ['v', 'day', 'product', 'platform', 'sdk_version', 'app_version', 'device', 'cohorts', 'coverage',
-    'ayahs', 'words', 'surah_ayahs', 'rule_checks', 'rule_flags', 'report_id']);
-  assert.equal(p.v, 2); assert.equal(p.product, 'web'); assert.equal(p.day, '2026-11-06'); assert.equal(p.sdk_version, '2.0.2');
+    'ayahs', 'words', 'surah_ayahs', 'rule_checks', 'rule_flags', 'reported', 'report_id']);
+  assert.equal(p.v, 2); assert.equal(p.product, 'web'); assert.equal(p.day, '2026-11-06'); assert.equal(p.sdk_version, '3.0.0');
   const c = p.cohorts[0];
   assert.equal(c.sessions, 1); assert.equal(c.minutes, 0.5); assert.equal(c.chunks, 3);
   assert.deepEqual(c.latency_ms, { le_20: 1, le_40: 1, gt_320: 1 });
-  assert.deepEqual(c.classes, { vowel_sub: { sites: 1, flagged: 1 }, cons_sub: { sites: 1, flagged: 0 } });
-  assert.deepEqual(c.session_flag_pct, { gt_20: 1 });
   assert.deepEqual(c.margin, { le_4: 1, le_0_5: 1 });
   assert.deepEqual(c.confidence, { gt_0_95: 1 });
-  assert.deepEqual(c.words, { scored: 1, flagged: 0 });
+  // SDK 3.0: the cohort is the model version, its build, the context and the backend; no scoring field is left
+  assert.deepEqual([c.revision, c.build, c.context, c.backend], ['4.0.0', 'abc123', 'c16_l64', 'cpu']);
+  for (const k of ['preset', 'word_level', 'word_bucket', 'site_overrides', 'checks_on', 'classes', 'session_flag_pct', 'madd', 'words']) assert.ok(!(k in c), k);
+  assert.deepEqual([c.takes, c.audio_s, c.speech_s, c.silence_s, c.compute_s], [1, 30, 21.2, 8.8, 0.442]);
+  assert.deepEqual(c.tokens, { log_probs: 21, inter1_log_probs: 19 });
   assert.deepEqual(p.coverage, { 1: 1 });
   assert.deepEqual(p.surah_ayahs, { 1: 1 });
   assert.deepEqual(p.rule_checks, { vowel_sub: 1, cons_sub: 1, madd: 1, word: 1 });
   assert.deepEqual(p.rule_flags, { vowel_sub: 1 });
-  assert.equal(c.word_level, 'off');
+  assert.deepEqual(p.reported, ['ayahs', 'surah_ayahs', 'coverage', 'words', 'rule_checks', 'rule_flags']);
   const json = JSON.stringify(p);
   assert.ok(!/https?:|qlk_|qlt_|contributor/.test(json), 'no identifiers, no URLs');
   assert.ok(json.length < 32 * 1024);
@@ -147,25 +151,25 @@ test('telemetry v2 deltas: closed body with the 2.0.1 fields, sealed at a send p
   assert.equal(await ql.flush(), 1);
   assert.deepEqual(ql.telemetry.pending(), []);
   // a refused body (400) is dropped, never retried, and reported as an issue
-  ql.telemetry.session(fakeTf, { seconds: 1 });
+  ql.telemetry.take(cohort, { samples: 16000 });
   api.state.eventsStatus = 400;
   await ql.sendTelemetry();
   assert.deepEqual(ql.telemetry.pending(), []);
   assert.ok((ql.state.get('issues.queue') || []).some((i) => i.code.startsWith('telemetry:')) || api.log.some((x) => x.path === '/v1/issues'));
   api.state.eventsStatus = 202;
   // kill switch: flags.analytics false in the signed config clears and stops it
-  ql.telemetry.session(fakeTf, { seconds: 1 });
+  ql.telemetry.take(cohort, { samples: 16000 });
   ql.telemetry.seal();
   api.state.flags = { analytics: false, issues: true, contributions: false };
   api.state.configVersion++;
   await ql.refreshConfig();
   assert.equal(ql.telemetry.enabled, false);
   assert.deepEqual(ql.telemetry.pending(), [], 'sealed reports cleared too');
-  ql.telemetry.session(fakeTf, { seconds: 1 });
+  ql.telemetry.take(cohort, { samples: 16000 });
   assert.equal(ql.telemetry.seal(), 0);
   // analytics: 'off' in code: nothing recorded
   const off = new QuranLab(opts(api, { analytics: 'off' }));
-  off.telemetry.session(fakeTf, { seconds: 1 });
+  off.telemetry.take(cohort, { samples: 16000 });
   assert.equal(off.state.get('telemetry.days'), null);
   assert.equal(bucket('rtf', 0.3), 'le_0_5');
 });
@@ -290,19 +294,18 @@ test('platform client fixtures (local stack e2e recordings): the recorded signed
   const api = await mockApi();
   let now = Date.parse('2026-11-06T12:00:00Z');
   const ql = await QuranLab.configure(opts(api, { clock: () => now, appName: 'Client e2e' }));
-  const fakeTf = { context: 'c16_l64', sampleRate: 16000, info: { chunkMs: 320 }, folder: { manifest: { model_id: 'v4.0', revision: 'abc' } },
-    settings: { effective: () => ({ preset: 'balanced', sites: { vowel_sub: { enabled: true } }, madd: { enabled: true }, gemination: { enabled: false },
-      qalqalah: { enabled: false }, lazim: { enabled: false } }), app: {}, remote: null, wordLevel: () => null } };
-  ql.telemetry.session(fakeTf, { seconds: 30, chunkMs: [12], firstMs: 900 });
-  ql.telemetry.scored(fakeTf, { surah: 1, sites: [{ class: 'vowel_sub', flagged: true }], summary: { sites: 1, flagged: 1 }, madd: [], words: [] });
+  const cohort = { revision: '4.0.0', build: 'abc', context: 'c16_l64', backend: 'cpu' };
+  ql.telemetry.take(cohort, { samples: 480000, chunkUs: [12000], firstMs: 900, margins: [3], confidences: [0.9], tokens: { log_probs: 2 }, speechFrames: 25, silenceFrames: 25 });
+  ql.telemetry.recited(1, 1);
+  ql.telemetry.checks('vowel_sub', 1, 1);
   ql.telemetry.download({ revision: 'v4.0+abc', profile: 'web-cpu', bytes: 1, success: true, resumed: false });
   now = Date.parse('2026-11-07T12:00:00Z');
   ql.telemetry.seal();
   const ours = keysOf(ql.telemetry.pending().at(-1));
   const theirs = rec('events v2 (web)');
-  // the 2.0.1 fields are newer than the recording (the platform client doc, section 6)
-  const v201 = /^(report_id|launches|ayahs|words|surah_ayahs|rule_checks|rule_flags|share_asked|share_yes|share_no)(\.|$)/;
-  const extra = [...ours].filter((k) => !theirs.has(k) && !v201.test(k) && !/^cohorts\[\]\.(latency_ms|rtf|cold_start_ms|model_load_ms|session_flag_pct|margin|confidence|fallbacks|self_test|checks_on|classes)\./.test(k));
+  // the 2.0.1 and 3.0.0 fields are newer than the recording (the platform client doc, section 6; SDK 3.0 spec, section 6)
+  const v201 = /^(report_id|launches|ayahs|words|surah_ayahs|rule_checks|rule_flags|share_asked|share_yes|share_no|reported(\[\])?|cohorts\[\]\.(build|takes|audio_s|speech_s|silence_s|compute_s|tokens))(\.|$)/;
+  const extra = [...ours].filter((k) => !theirs.has(k) && !v201.test(k) && !/^cohorts\[\]\.(latency_ms|rtf|cold_start_ms|model_load_ms|margin|confidence|fallbacks|self_test)\./.test(k));
   assert.deepEqual(extra, [], 'telemetry fields the recording does not have');
   ql.reportIssue('model_load', 'x');
   const issue = keysOf(ql.state.get('issues.queue')[0]);
@@ -321,16 +324,6 @@ test('model source: the signed base, then cdn.quranlab.ai/models; modelsUrl wins
   assert.equal(await url('https://cdn.quranlab.ai/models'), `https://cdn.quranlab.ai/models/${path}`, 'the models path is not the bare host');
   assert.equal(await url(undefined, { cdnUrl: 'https://cdn.test' }), `https://cdn.test/hf/${path}`);
   assert.equal(await url('https://models.example.org', { modelsUrl: 'https://mirror.test/' }), `https://mirror.test/${path}`);
-});
-
-test('cdnFolderUrl: cdn.quranlab.ai/models by default, the bare cdn.quranlab.ai keeps the /hf/ path', async () => {
-  const { cdnFolderUrl, modelFolderUrl, MODELS_URL } = await import('../web/tajweed/index.js');
-  assert.equal(MODELS_URL, 'https://cdn.quranlab.ai/models');
-  assert.equal(cdnFolderUrl({ key: 'k', revision: 'r1' }).url, 'https://cdn.quranlab.ai/models/Quran-Lab/tajweedformer-v4/r1/sdk/v4.0/');
-  assert.equal(cdnFolderUrl({ key: 'k', revision: 'r1', url: 'https://cdn.quranlab.ai' }).url, 'https://cdn.quranlab.ai/hf/Quran-Lab/tajweedformer-v4/r1/sdk/v4.0/');
-  assert.equal(cdnFolderUrl({ key: 'k', revision: 'r1', url: 'https://eeur.cdn.quranlab.ai/' }).url, 'https://eeur.cdn.quranlab.ai/hf/Quran-Lab/tajweedformer-v4/r1/sdk/v4.0/');
-  assert.equal(modelFolderUrl('https://x.test/base/', 'A/b c', 'r', 'sdk/v4.0'), 'https://x.test/base/A/b%20c/r/sdk/v4.0/');
-  assert.deepEqual(cdnFolderUrl({ key: 'k', revision: 'r1' }).headers, { 'x-qlab-key': 'k' });
 });
 
 test('the telemetry product follows the platform, as the server checks it: a desktop app in Node is native, a page web', async () => {

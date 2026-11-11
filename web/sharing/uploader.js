@@ -4,7 +4,7 @@
 // signed, valid 7 days); POST /v1/uploads/{id}/urls?from=n answers the next batch, or fresh URLs for
 // the same numbers. Segments go straight to R2 as plain PUTs. Nothing is sent at the end.
 
-export const SDK_VERSION = '2.0.2';
+export const SDK_VERSION = '3.0.0';
 export const INPUT_ROUTES = Object.freeze(['built_in', 'wired', 'usb', 'bluetooth', 'car', 'continuity', 'other', 'unknown']);
 const CONSENT_RE = /^[A-Za-z0-9._-]{1,32}$/;
 const DEVICE_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,23}$/;
@@ -18,7 +18,7 @@ export const utcDay = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 1
  * hash of an app's own wording the learner agreed to (2.0.1), sent next to consent_version only then. */
 export function sessionJson({ modelRevision = null, backend = 'exact', weightsSha256 = null, sdkVersion = SDK_VERSION,
   consentVersion = null, consentTextSha256 = null, contributor, day, deviceClass, osMajor, inputSampleRate, inputRoute = 'unknown',
-  contributorKey = null, recoveryHash = null }) {
+  contributorKey = null, recoveryHash = null, takeSeq = null, gapMsPrev = null, modelBuild = null }) {
   if (contributorKey !== null && !/^[A-Za-z0-9_-]{87}$/.test(contributorKey)) throw new TypeError('contributor_key: base64url of the 65-byte point');
   if (recoveryHash !== null && !HEX64.test(recoveryHash)) throw new TypeError('recovery_hash: 64 lowercase hex');
   if (!HEX32.test(contributor)) throw new TypeError('contributor: 32 lowercase hex');
@@ -30,6 +30,8 @@ export function sessionJson({ modelRevision = null, backend = 'exact', weightsSh
   }
   if (!INPUT_ROUTES.includes(inputRoute)) throw new TypeError(`input_route ${inputRoute}`);
   if (!['neuralEngine', 'exact', 'mock'].includes(backend)) throw new TypeError(`backend ${backend}`);
+  if (takeSeq !== null && !(Number.isInteger(takeSeq) && takeSeq >= 1)) throw new TypeError(`take_seq ${takeSeq}`);
+  if (gapMsPrev !== null && !(Number.isInteger(gapMsPrev) && gapMsPrev >= 0 && gapMsPrev <= 3600000 && gapMsPrev % 100 === 0)) throw new TypeError(`gap_ms_prev ${gapMsPrev}`);
   const audio = { codec: 'opus', container: 'ogg', sample_rate: 48000, channels: 1, input_route: inputRoute };
   if (inputSampleRate >= 8000 && inputSampleRate <= 192000) audio.input_sample_rate = Math.round(inputSampleRate);
   const o = {
@@ -51,6 +53,11 @@ export function sessionJson({ modelRevision = null, backend = 'exact', weightsSh
   if (consentTextSha256 === null) delete o.consent_text_sha256;
   if (contributorKey === null) delete o.contributor_key;
   if (recoveryHash === null) delete o.recovery_hash;
+  // SDK 3.0.0: the model's build next to its version; this install's count of shared recordings; the wall gap
+  // since the previous one (absent for the first, or after more than an hour)
+  if (typeof modelBuild === 'string' && /^[0-9a-f]{40}$/.test(modelBuild)) o.decode.model_build = modelBuild;
+  if (takeSeq !== null) o.take_seq = takeSeq;
+  if (gapMsPrev !== null) o.gap_ms_prev = gapMsPrev;
   // sorted keys, as the Swift SDK writes it
   const sort = (x) => (x && typeof x === 'object' && !Array.isArray(x)
     ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, sort(x[k])])) : x);
@@ -133,6 +140,16 @@ export class ContributionClient {
   urls({ id, from, contributor, token, signal }) {
     return this._send(`${this.api}/v1/uploads/${id}/urls?from=${from}`, {
       method: 'POST', headers: { ...this.headers, authorization: `Bearer ${token}`, 'x-qlab-contributor': contributor }, signal,
+    });
+  }
+
+  /** The take list of an uploaded recording that takes in a row shared (2.0.3): POST /v1/uploads/{id}/takes with
+   * the exact body {"takes":[{"start_ms","gap_ms"}, ...]} (2 to 256 entries). Idempotent: the server replaces
+   * the list. */
+  takes({ id, body, contributor, token, signal }) {
+    return this._send(`${this.api}/v1/uploads/${id}/takes`, {
+      method: 'POST', headers: { ...this.headers, authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-qlab-contributor': contributor },
+      body, signal,
     });
   }
 

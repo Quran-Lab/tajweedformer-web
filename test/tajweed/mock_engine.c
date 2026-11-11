@@ -1,9 +1,7 @@
-/* A mock of the engine's zf_tajweed.h for the binding test (test/tajweed_engine.test.mjs): built
- * freestanding for wasm32 with clang together with src/zft_api.c, so the JS glue
- * (web/tajweed/engine.js) runs against the real shim, the real header and wasm32's struct layout.
- * NOT the engine: heads are a deterministic pattern, the config knows only the calibration fixture's
- * c16_l64 thresholds and statuses (and ignores the remote block), and scoring makes two sites, one
- * madd and one qalqalah item from fixed positions of the heads it is given.
+/* A mock of the engine's zf_tajweed.h (API 4, inference only) for the binding test
+ * (test/engine_binding.test.mjs): built freestanding for wasm32 with clang together with src/zft_api.c, so
+ * the JS glue (web/tajweed/engine.js) runs against the real shim, the real header and wasm32's struct layout.
+ * NOT the engine: heads are a deterministic pattern, and the reference table knows one ayah.
  *
  *   value of head k (ZfTajweedHeads order), take row r, column c = k * 100000 + r * 100 + c
  */
@@ -52,20 +50,6 @@ static void copy(char *dst, const char *src, int cap) {
   dst[i] = 0;
 }
 
-static const char *kClass[] = {"vowel_sub", "vowel_del", "vowel_ins", "short_to_long", "long_to_short",
-                               "cons_sub", "cons_del", "insertion"};
-static const char *kCheck[] = {"letters", "vowels", "length", "madd", "gemination", "qalqalah", "lazim"};
-static const char *kPreset[] = {"strict", "balanced", "sensitive", "very_sensitive"};
-/* the calibration fixture's c16_l64: statuses, and thresholds 0.25 * class + 1.5 - 0.5 * preset */
-static const int kClassStatus[] = {2, 2, 1, 2, 2, 2, 1, 0};
-static const int kClassCheck[] = {1, 1, 1, 2, 2, 0, 0, 0};
-static const int kCheckStatus[] = {2, 2, 2, 2, 2, 1, 0};
-static int find(const char *const *names, int n, const char *s) {
-  for (int i = 0; i < n; ++i)
-    if (streq(names[i], s)) return i;
-  return -1;
-}
-
 const char *zf_tajweed_version(void) { return "0.0.0-mock"; }
 int zf_tajweed_api_version(void) { return ZF_TAJWEED_API_VERSION; }
 
@@ -85,7 +69,12 @@ ZfTajweedModel *zf_tajweed_model_open(const char *dir, const ZfTajweedOpenOption
     if (error) *error = "mock: the folder was not staged under /tajweedformer/";
     return NULL;
   }
-  const char *ctx = o && o->context ? o->context : "c16_l64";
+  /* API 4: the context is required when the engine is loaded */
+  const char *ctx = o ? o->context : NULL;
+  if (!ctx) {
+    if (error) *error = "mock: options.context is required";
+    return NULL;
+  }
   if (!streq(ctx, "c16_l64") && !streq(ctx, "c24_l72")) {
     if (error) *error = "mock: no such context";
     return NULL;
@@ -97,24 +86,49 @@ ZfTajweedModel *zf_tajweed_model_open(const char *dir, const ZfTajweedOpenOption
   return &g_model;
 }
 void zf_tajweed_model_close(ZfTajweedModel *m) { (void)m; }
-const char *zf_tajweed_model_id(const ZfTajweedModel *m) { return m ? "v4.0" : NULL; }
 const char *zf_tajweed_model_context(const ZfTajweedModel *m) { return m ? m->context : NULL; }
 int zf_tajweed_model_chunk_ms(const ZfTajweedModel *m) { return m && m->engine ? m->chunk_ms : 0; }
-int zf_tajweed_ayah_count(const ZfTajweedModel *m, int surah) { return m && surah == 1 ? 7 : 0; }
+const char *zf_tajweed_token_name(const ZfTajweedModel *m, int id) { return m && id == 0 ? "<blk>" : NULL; }
+const void *zf_tajweed_model_calibration(const ZfTajweedModel *m, size_t *size) {
+  (void)m;
+  if (size) *size = 0;
+  return NULL;
+}
 
-static const int kExpTokens[] = {5, 31, 1, 6, 34};
-static const int kExpWords[] = {0, 0, 0, 1, 1};
-int zf_tajweed_expected_tokens(const ZfTajweedModel *m, int surah, int ayah, const int **tokens) {
-  if (!m || surah != 1 || ayah != 1) return -1;
-  *tokens = kExpTokens;
+/* ---- the reference table: bytes that start with "MOCKREF"; surah 1 has 7 ayahs and 1:1 has five units ---- */
+struct ZfTajweedReference {
+  int open;
+};
+static struct ZfTajweedReference g_ref;
+static const int kRefUnits[] = {5, 31, 1, 6, 34};
+static const int kRefWords[] = {0, 0, 0, 1, 1};
+static const unsigned char kRefSha[32] = {0xab, 0xcd};
+ZfTajweedReference *zf_tajweed_reference_open_memory(const void *bytes, size_t size, const char **error) {
+  if (!bytes || size < 7 || !starts((const char *)bytes, "MOCKREF")) {
+    if (error) *error = "mock: not a reference table";
+    return NULL;
+  }
+  g_ref.open = 1;
+  return &g_ref;
+}
+ZfTajweedReference *zf_tajweed_reference_open(const char *path, const char **error) {
+  (void)path;
+  if (error) *error = "mock: no files";
+  return NULL;
+}
+void zf_tajweed_reference_close(ZfTajweedReference *r) {
+  if (r) r->open = 0;
+}
+int zf_tajweed_reference_ayah_count(const ZfTajweedReference *r, int surah) { return r && r->open && surah == 1 ? 7 : 0; }
+int zf_tajweed_reference_units(const ZfTajweedReference *r, int surah, int ayah, const int **units, const int **word_of_unit,
+                               int *n_words) {
+  if (!r || !r->open || surah != 1 || ayah != 1) return -1;
+  if (units) *units = kRefUnits;
+  if (word_of_unit) *word_of_unit = kRefWords;
+  if (n_words) *n_words = 2;
   return 5;
 }
-int zf_tajweed_expected_words(const ZfTajweedModel *m, int surah, int ayah, const int **w, int *n_words) {
-  if (!m || surah != 1 || ayah != 1) return -1;
-  *w = kExpWords;
-  *n_words = 2;
-  return 5;
-}
+const unsigned char *zf_tajweed_reference_tokens_sha256(const ZfTajweedReference *r) { return r ? kRefSha : NULL; }
 
 /* ---- the stream ---- */
 #define MAX40 1024
@@ -191,193 +205,8 @@ int zf_tajweed_stream_greedy(const ZfTajweedStream *s, int *ids, int max) {
 }
 const char *zf_tajweed_stream_last_error(const ZfTajweedStream *s) { return s ? "mock: bad audio" : NULL; }
 
-/* ---- the config ---- */
-struct ZfTajweedConfig {
-  int preset, preset_app;
-  int cls_mode[8]; /* 0 none, 1 preset, 2 threshold */
-  int cls_preset[8];
-  double cls_thr[8];
-  int check[7]; /* -1 none */
-  int debug;
-  char context[16];
-};
-static struct ZfTajweedConfig g_cfg;
-
-ZfTajweedConfig *zf_tajweed_config_create(const ZfTajweedModel *m) {
-  if (!m) return NULL;
-  zf_tajweed_config_clear_app(&g_cfg);
-  g_cfg.debug = 0;
-  return &g_cfg;
-}
-void zf_tajweed_config_destroy(ZfTajweedConfig *c) { (void)c; }
-int zf_tajweed_config_set_remote(ZfTajweedConfig *c, const char *json, size_t len) {
-  (void)c;
-  if (!json) return 0;
-  return len && json[0] == '{' ? 0 : -1; /* the mock ignores the remote layer */
-}
-int zf_tajweed_config_set_preset(ZfTajweedConfig *c, const char *p) {
-  if (!p) return c->preset_app = 0, 0;
-  const int i = find(kPreset, 4, p);
-  if (i < 0) return -1;
-  c->preset = i, c->preset_app = 1;
-  return 0;
-}
-int zf_tajweed_config_set_class_preset(ZfTajweedConfig *c, const char *cls, const char *p) {
-  const int k = find(kClass, 8, cls), i = find(kPreset, 4, p);
-  if (k < 0 || i < 0) return -1;
-  c->cls_mode[k] = 1, c->cls_preset[k] = i;
-  return 0;
-}
-int zf_tajweed_config_set_class_threshold(ZfTajweedConfig *c, const char *cls, double t) {
-  const int k = find(kClass, 8, cls);
-  if (k < 0 || !(t >= -20 && t <= 20)) return -1;
-  c->cls_mode[k] = 2, c->cls_thr[k] = t;
-  return 0;
-}
-int zf_tajweed_config_clear_class(ZfTajweedConfig *c, const char *cls) {
-  const int k = find(kClass, 8, cls);
-  if (k < 0) return -1;
-  c->cls_mode[k] = 0;
-  return 0;
-}
-int zf_tajweed_config_set_check(ZfTajweedConfig *c, const char *check, int on) {
-  const int k = find(kCheck, 7, check);
-  if (k < 0 || on < -1 || on > 1) return -1;
-  c->check[k] = on;
-  return 0;
-}
-int zf_tajweed_config_set_context(ZfTajweedConfig *c, const char *ctx) {
-  if (ctx && !streq(ctx, "c16_l64") && !streq(ctx, "c24_l72")) return -1;
-  copy(c->context, ctx ? ctx : "", 16);
-  return 0;
-}
-void zf_tajweed_config_clear_app(ZfTajweedConfig *c) {
-  c->preset = 1, c->preset_app = 0;
-  for (int k = 0; k < 8; ++k) c->cls_mode[k] = 0;
-  for (int k = 0; k < 7; ++k) c->check[k] = -1;
-  c->context[0] = 0;
-}
-void zf_tajweed_config_set_debug_build(ZfTajweedConfig *c, int d) { c->debug = d; }
-int zf_tajweed_config_set_backend(ZfTajweedConfig *c, const char *b) {
-  (void)c;
-  return !b || streq(b, "int8") || streq(b, "fp32") ? 0 : -1;
-}
-
-static int on(const ZfTajweedConfig *c, int check, int status) {
-  const int f = c->check[check];
-  if (f < 0) return status == 2;
-  if (!f) return 0;
-  return status != 0 || c->debug;
-}
-int zf_tajweed_config_effective(const ZfTajweedConfig *c, ZfTajweedEffective *e) {
-  if (!c || !e) return -1;
-  e->preset = c->preset;
-  e->preset_source = c->preset_app ? 2 : 0;
-  for (int k = 0; k < 8; ++k) {
-    const int p = c->cls_mode[k] == 1 ? c->cls_preset[k] : c->preset;
-    e->class_threshold[k] = c->cls_mode[k] == 2 ? c->cls_thr[k] : 0.25 * k + 1.5 - 0.5 * p;
-    e->class_status[k] = kClassStatus[k];
-    e->class_enabled[k] = on(c, kClassCheck[k], kClassStatus[k]);
-    e->class_source[k] = c->cls_mode[k] || c->preset_app ? 2 : 0;
-  }
-  for (int k = 0; k < 7; ++k) {
-    e->check_status[k] = kCheckStatus[k];
-    e->check_enabled[k] = on(c, k, kCheckStatus[k]);
-    e->check_source[k] = c->check[k] >= 0 ? 2 : 0;
-  }
-  e->check_enabled[6] = e->check_enabled[6] && e->check_enabled[3];
-  copy(e->context, c->context[0] ? c->context : g_model.context, 16);
-  e->context_source = c->context[0] ? 2 : 0;
-  return 0;
-}
-const char *zf_tajweed_config_json(ZfTajweedConfig *c) { return c ? "{\"mock\":true}" : NULL; }
-
-/* ---- scoring ---- */
-struct ZfTajweedResult {
-  ZfTajweedSite sites[2];
-  ZfTajweedMadd madd[1];
-  ZfTajweedLetter qlq[1];
-  ZfTajweedSummary summary;
-};
-static struct ZfTajweedResult g_result;
-
-ZfTajweedResult *zf_tajweed_score(const ZfTajweedModel *m, const ZfTajweedConfig *c, const ZfTajweedHeads *h,
-                                  int surah, int ayah, const char **error) {
-  if (!m || !c || !h || !h->log_probs || !h->inter1_log_probs || h->n40 < 1) {
-    if (error) *error = "mock: log_probs and inter1_log_probs are needed";
-    return NULL;
-  }
-  if (surah != 1 || ayah != 1) {
-    if (error) *error = "mock: no such ayah";
-    return NULL;
-  }
-  ZfTajweedEffective e;
-  zf_tajweed_config_effective(c, &e);
-  struct ZfTajweedResult *r = &g_result;
-  const int last = h->n40 * 38 - 1;
-  /* site 0 reads the first values of the heads, site 1 the last: the whole arrays were copied */
-  const double a[2] = {h->log_probs[0], h->log_probs[last]}, b[2] = {h->inter1_log_probs[1], h->inter1_log_probs[last]};
-  const int cls[2] = {ZF_TJ_VOWEL_SUB, ZF_TJ_CONS_DEL};
-  for (int i = 0; i < 2; ++i) {
-    ZfTajweedSite *s = &r->sites[i];
-    const double w = cls[i] == ZF_TJ_CONS_DEL ? 0.5 : 0.8;
-    s->cls = cls[i];
-    s->status = e.class_status[cls[i]];
-    s->pos = i ? 3 : 1;
-    s->word = i;
-    s->expected = i ? 6 : 31;
-    s->alt = i ? -1 : 32;
-    s->llr_final = a[i] / 100000.0;
-    s->llr_inter1 = b[i] / 100000.0;
-    s->llr = w * s->llr_final + (1 - w) * s->llr_inter1;
-    s->threshold = e.class_threshold[cls[i]];
-    s->flagged = e.class_enabled[cls[i]] && s->llr > s->threshold;
-    s->frame_lo = i, s->frame_hi = i + 2;
-  }
-  ZfTajweedMadd *md = &r->madd[0];
-  md->pos = 4, md->word = 1, md->token = 34, md->madd_class = ZF_TJ_MADD_FIXED2, md->status = 2;
-  md->ratio = h->n20 / 8.0, md->count = 2, md->display_count = 2.25, md->allowed_lo = 2, md->allowed_hi = 2;
-  md->flagged = 0, md->frame_lo = 8, md->frame_hi = 12;
-  ZfTajweedLetter *q = &r->qlq[0];
-  q->pos = 3, q->word = 1, q->token = 6, q->status = 1;
-  q->score = h->attr_qalqalah ? h->attr_qalqalah[1] : -1;
-  q->threshold = 0.2556, q->flagged = q->score < q->threshold, q->frame_lo = 6, q->frame_hi = 18;
-  ZfTajweedSummary *u = &r->summary;
-  u->n_sites = 2, u->n_flagged = r->sites[0].flagged + r->sites[1].flagged;
-  u->n_madd = 1, u->n_madd_flagged = 0, u->n_qalqalah = 1, u->n_qalqalah_flagged = q->flagged;
-  u->n_gemination = 0, u->n_gemination_flagged = 0, u->short_vowel_frames = 4.5, u->madd_unit_ok = 1;
-  return r;
-}
-void zf_tajweed_result_free(ZfTajweedResult *r) { (void)r; }
-int zf_tajweed_result_sites(const ZfTajweedResult *r, const ZfTajweedSite **s) { return *s = r->sites, 2; }
-int zf_tajweed_result_madd(const ZfTajweedResult *r, const ZfTajweedMadd **m) { return *m = r->madd, 1; }
-int zf_tajweed_result_qalqalah(const ZfTajweedResult *r, const ZfTajweedLetter **q) { return *q = r->qlq, 1; }
-int zf_tajweed_result_gemination(const ZfTajweedResult *r, const ZfTajweedLetter **g) { return *g = NULL, (void)r, 0; }
-int zf_tajweed_result_summary(const ZfTajweedResult *r, ZfTajweedSummary *out) {
-  if (!r || !out) return -1;
-  *out = r->summary;
-  return 0;
-}
-const char *zf_tajweed_result_json(ZfTajweedResult *r) {
-  return r ? "{\"format\":\"mock\",\"sites\":[{\"class\":\"vowel_sub\"},{\"class\":\"cons_del\"}]}" : NULL;
-}
-
-/* API 3 in the mock: no word block, so no word settings available and no words scored; the path is the
- * mock's expected sequence */
-int zf_tajweed_config_set_word_preset(ZfTajweedConfig *c, const char *p) { return c && (!p || p[0]) ? 0 : -1; }
-int zf_tajweed_config_set_word_threshold(ZfTajweedConfig *c, double t) { return c && t == t ? 0 : -1; }
-int zf_tajweed_config_clear_word(ZfTajweedConfig *c) { return c ? 0 : -1; }
-int zf_tajweed_config_word(const ZfTajweedConfig *c, ZfTajweedWordSettings *out) {
-  if (!c || !out) return -1;
-  out->available = 0; out->status = 0; out->enabled = 0; out->enabled_source = 0; out->preset = 1; out->preset_source = 0;
-  out->threshold = 0; out->floor = 0; out->custom_lo = 0; out->custom_hi = 0;
-  return 0;
-}
-int zf_tajweed_result_words(const ZfTajweedResult *r, const ZfTajweedWord **w) { (void)r; *w = NULL; return 0; }
-int zf_tajweed_result_path(const ZfTajweedResult *r, const int **t, const int **w) { (void)r; *t = NULL; *w = NULL; return 0; }
-
-/* API 3 final in the mock: head selection is recorded (every head is still produced), top-2 by a plain scan */
-static unsigned g_mock_heads = 0x0133u; /* ZF_TAJWEED_HEADS_SCORER */
+/* head selection is recorded (every head is still produced), top-2 by a plain scan */
+static unsigned g_mock_heads = ZF_TAJWEED_HEADS_DEFAULT;
 int zf_tajweed_stream_set_heads(ZfTajweedStream *s, unsigned heads) { if (!s) return -1; g_mock_heads = heads | 1u; return 0; }
 unsigned zf_tajweed_stream_get_heads(const ZfTajweedStream *s) { return s ? g_mock_heads : 0; }
 int zf_tajweed_top2(const float *lp, int frames, int vocab, ZfTajweedTop2 *out) {
@@ -396,7 +225,7 @@ int zf_tajweed_top2(const float *lp, int frames, int vocab, ZfTajweedTop2 *out) 
 int zf_tajweed_stream_top2(const ZfTajweedStream *s, const ZfTajweedTop2 **out) { (void)s; *out = 0; return 0; }
 const char *zf_tajweed_head_info(unsigned head, int *frame_ms, int *cols) { (void)head; (void)frame_ms; (void)cols; return 0; }
 
-/* P2.16 in the mock */
+/* top-K is not in the mock */
 int zf_tajweed_topk(const float *v, int frames, int cols, int k, int *ids, float *vo, float *mg) {
   (void)v; (void)frames; (void)cols; (void)k; (void)ids; (void)vo; (void)mg; return -1;
 }

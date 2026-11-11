@@ -4,44 +4,39 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TajweedFormer quick start</title>
-<!-- The README's quick start as a page: microphone in, what the model heard out.
-     With a bundler (Vite, webpack, ...) the two imports below resolve from node_modules and this import map is
-     not needed. Without one, the map points the package names at this checkout; for an installed package use
-     "./node_modules/@quran-lab/tajweedformer/web/index.js" and ".../web/platform/index.js".
+<!-- The README's quick start as a page you can run: microphone in, what the model heard out; and the same
+     from a sample clip of the model, with no microphone.
+     With a bundler (Vite, webpack, ...) the import below resolves from node_modules and this import map is not
+     needed. Without one, the map points the package name at this checkout; for an installed package use
+     "./node_modules/@quran-lab/tajweedformer/web/index.js".
      Serve the page from https or http://localhost (a browser gives the microphone to nothing else), from an
      origin your web key allows. test/quickstart.test.mjs keeps the README's code equal to the script below. -->
 <script type="importmap">
-{ "imports": {
-  "@quran-lab/tajweedformer": "../web/index.js",
-  "@quran-lab/tajweedformer/platform": "../web/platform/index.js"
-} }
+{ "imports": { "@quran-lab/tajweedformer": "../web/index.js" } }
 </script>
 </head>
 <body>
 <button id="listen">Listen</button>
+<button id="clip">Play a sample clip</button>
+<label><input type="checkbox" id="again"> listen again when I come back to this page</label>
 <pre id="heard"></pre>
 <script type="module">
 // README:begin
-import { TajweedFormer } from '@quran-lab/tajweedformer';
-import { QuranLab } from '@quran-lab/tajweedformer/platform';
+import { TajweedClient } from '@quran-lab/tajweedformer';
 
-document.querySelector('#listen').onclick = async () => {   // the microphone needs a tap
-  const ql = await QuranLab.configure({ key: 'qlk_v1_...' });   // your web key from portal.quranlab.ai
-  const audio = new AudioContext({ sampleRate: 48000 });
-  const tf = await TajweedFormer.load({ platform: ql, sampleRate: 48000 });   // downloads the model once, then cached
-  const stream = tf.createStream({ onChunk: () => {             // every 320 ms: what the model heard so far
-    document.querySelector('#heard').textContent = stream.decoded().tokens.map((t) => t.unit).join(' ');
-  } });
-
-  const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-  const worklet = `registerProcessor('mic', class extends AudioWorkletProcessor {
-    process(inputs) { if (inputs[0][0]) this.port.postMessage(inputs[0][0].slice()); return true; } });`;
-  await audio.audioWorklet.addModule(URL.createObjectURL(new Blob([worklet], { type: 'text/javascript' })));
-  const node = new AudioWorkletNode(audio, 'mic', { numberOfOutputs: 0 });
-  node.port.onmessage = (e) => stream.pushAudio(e.data);        // Float32Array, mono, 48 kHz
-  audio.createMediaStreamSource(mic).connect(node);
-};
+const client = await TajweedClient.create({ key: 'qlk_v1_...' });   // your web key from sdk.quranlab.ai
+const model = await client.model();                                  // downloads the model once, then cached
+async function take(from) {                                          // one take: the microphone, or a clip
+  const session = await model.listen({ from, endOnSilenceMs: 1500 });   // ends when the learner stops
+  for await (const chunk of session.chunks) document.querySelector('#heard').textContent = chunk.decoded.text;
+}
+document.querySelector('#listen').onclick = () => take();            // the microphone needs a tap
 // README:end
+
+// no microphone: a sample clip of the model through the same path
+document.querySelector('#clip').onclick = () => take(model.sampleClips[0]);
+// a hidden page ends the take (the SDK never listens in the background); back on the page, start a new one
+document.addEventListener('visibilitychange', () => { if (!document.hidden && document.querySelector('#again').checked) take(); });
 </script>
 </body>
 </html>
