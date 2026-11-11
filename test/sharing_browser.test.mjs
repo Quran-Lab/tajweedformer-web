@@ -1,9 +1,11 @@
 // Sharing in a real browser (headless Chrome through puppeteer-core): the libopus module loads lazily
 // from dist/, the outbox lives in IndexedDB, a stub fetch stands in for qlab-api and R2. A finished
 // session uploads whole; a session left open when the page is closed is recovered and uploaded after
-// a reload (the IndexedDB outbox resumes on the next load). Skipped without Chrome or puppeteer-core
-// (CHROME_PATH picks the browser).
+// a reload (the IndexedDB outbox resumes on the next load). Since 2.0.3: two takes in a row are one
+// recording with its take list, and a hidden page closes the open recording. Skipped without Chrome or
+// puppeteer-core (CHROME_PATH picks the browser).
 import test from 'node:test';
+import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -35,6 +37,7 @@ window.stubFetch = async (url, init = {}) => {
   if (u.pathname === '/v1/uploads') return new Response(JSON.stringify(urls(init.headers['x-qlab-id'], 1)), { status: 201 });
   const m = /^\\/v1\\/uploads\\/([0-9a-f]{32})\\/urls$/.exec(u.pathname);
   if (m) return new Response(JSON.stringify(urls(m[1], Number(u.searchParams.get('from')))), { status: 200 });
+  if (/^\\/v1\\/uploads\\/[0-9a-f]{32}\\/takes$/.test(u.pathname)) { put('takes', kv('takes', []).concat([init.body])); return new Response(null, { status: 204 }); }
   if (u.host === 'r2.test') {
     const b = new Uint8Array(init.body);
     const objs = kv('objs', {});
@@ -78,6 +81,8 @@ test('sharing in headless Chrome: IndexedDB outbox, lazy libopus, recovery after
       for (let at = 0; at < x.length; at += 441) s.push(x.subarray(at, at + 441));
       const encodeMs = performance.now() - t1;
       const ms = await s.finish();
+      // 2.0.3: the recording stays open for the next take; the app says none follows
+      await sh.closeRecording();
       for (let i = 0; i < 50 && (await sh.outbox.pending()).length; i++) await sh.outbox.drain({ ignoringBackoff: true });
       const items = await sh.outbox.items();
       return { ms, loadMs, encodeMs, items, objs: JSON.parse(localStorage.getItem('objs') || '{}'), dev: S.webDevice() };
@@ -87,6 +92,42 @@ test('sharing in headless Chrome: IndexedDB outbox, lazy libopus, recovery after
     assert.equal(Object.keys(r1.objs).length, 2);
     assert.equal(r1.dev.deviceClass, 'browser');
     t.diagnostic(`${ua.match(/Chrome\/[\d.]+/)?.[0]}: opus module ${r1.loadMs.toFixed(0)} ms to first session; 25 s at 44.1 kHz encoded in ${r1.encodeMs.toFixed(0)} ms (${(25000 / r1.encodeMs).toFixed(1)} x realtime)`);
+    // 1b. 2.0.3: two takes in a row (the page's own clock and timer) are one recording with its take list; a
+    // third take's recording is closed by the page becoming hidden (the pipeline listens to visibilitychange)
+    const r1b = await page.evaluate(async () => {
+      const sh = await window.mk();
+      const take = async (seconds, seed) => {
+        const s = await sh.startSession({ inputSampleRate: 48000, inputRoute: 'built_in', decode: { backend: 'exact' } });
+        const x = window.noise(48000 * seconds, seed);
+        for (let at = 0; at < x.length; at += 480) s.push(x.subarray(at, at + 480));
+        await s.finish();
+        return s.id;
+      };
+      const a = await take(6, 3);
+      const b = await take(5, 4); // at once: inside the join window
+      const open = !!sh.recorder.recording;
+      await sh.closeRecording();
+      const c = await take(3, 5);
+      const openC = !!sh.recorder.recording;
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+      await sh.recorder.settled();
+      const closedC = !sh.recorder.recording;
+      delete document.visibilityState;
+      document.dispatchEvent(new Event('visibilitychange'));
+      for (let i = 0; i < 50 && (await sh.outbox.pending()).length; i++) await sh.outbox.drain({ ignoringBackoff: true });
+      return { a, b, c, open, openC, closedC, back: sh.recorder.backgrounded, items: (await sh.outbox.items()).filter((i) => i.id === a || i.id === c),
+        takes: JSON.parse(localStorage.getItem('takes') || '[]') };
+    });
+    assert.equal(r1b.b, r1b.a, 'the second take joined the first take\'s recording');
+    assert.notEqual(r1b.c, r1b.a);
+    assert.deepEqual([r1b.open, r1b.openC, r1b.closedC, r1b.back], [true, true, true, false]);
+    assert.deepEqual(r1b.items.map((i) => [i.status, i.durationMs, i.takes, i.takeList, i.completed]), [['uploaded', 11000, 2, 'sent', true], ['uploaded', 3000, 1, null, true]]);
+    assert.equal(r1b.takes.length, 1, 'one take list, for the recording of two takes');
+    const sent = JSON.parse(r1b.takes[0]).takes;
+    assert.deepEqual([sent.length, sent[0], sent[1].start_ms], [2, { start_ms: 0, gap_ms: 0 }, 6000]);
+    assert.ok(sent[1].gap_ms % 100 === 0 && sent[1].gap_ms <= 3000);
+    t.diagnostic(`two takes in a row: one recording of ${r1b.items[0].durationMs} ms, take list ${r1b.takes[0]}; a hidden page closed the next one`);
     // 2. a session left open (13 s: segment 1 closed, segment 2 half written) when the page goes away
     const openId = await page.evaluate(async () => {
       const sh = await window.mk();

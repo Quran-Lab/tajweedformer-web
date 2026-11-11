@@ -5,6 +5,7 @@
 // test drives it against a stub API with real libopus (dist/tajweedformer-opus.mjs) and decodes what the
 // stub received.
 import test from 'node:test';
+import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -86,7 +87,7 @@ test('a learner who said "Share" gets the whole session uploaded through the SDK
     assert.equal(m.consent_version, copyFor('en').consentVersion, 'the deck version the learner agreed to');
     assert.equal(m.device_class, 'node');
     assert.ok(Number.isInteger(m.os_major));
-    assert.equal(m.decode.sdk_version, '2.0.2');
+    assert.equal(m.decode.sdk_version, '3.0.0');
     const keys = [...api.state.puts.keys()].sort();
     assert.equal(keys.length, 2, `12 s is two segments (10 s, then the rest): ${keys.join(', ')}`);
     const all = Buffer.concat(keys.map((k) => api.state.puts.get(k)));

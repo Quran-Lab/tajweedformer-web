@@ -14,7 +14,10 @@ const { default: createModule } = await import(url);
 let fails = 0;
 const ok = (cond, msg) => { console.log(`${cond ? 'ok  ' : 'FAIL'} ${msg}`); if (!cond) fails++; };
 
-const m = await createModule();
+// the glue is built for web and worker; in Node it is handed the wasm file's bytes, as the SDK does
+const { readFileSync } = await import('node:fs');
+const wasm = readFileSync(new URL(url.replace(/\.mjs$/, '.wasm')));
+const m = await createModule({ instantiateWasm(imports, done) { WebAssembly.instantiate(wasm, imports).then((r) => done(r.instance, r.module)); return {}; } });
 ok(typeof m._malloc === 'function', 'module instantiated, _malloc present');
 
 // The V4 binding the SDK calls (web/tajweed/engine.js).

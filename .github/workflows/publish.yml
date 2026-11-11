@@ -1,7 +1,9 @@
 name: Publish to npm
 
 # Started by hand on a tag (Actions, Publish to npm, Run workflow, Use workflow from: Tags).
-# Builds what the package ships (dist/ is git-ignored), runs the tests on those builds, then publishes.
+# Builds what the package ships (dist/ is git-ignored), runs the tests the CI workflow runs on those builds,
+# checks what the package will contain, then publishes. A published version cannot be published again, so
+# everything that can fail comes before the last step.
 
 on:
   workflow_dispatch:
@@ -34,20 +36,35 @@ jobs:
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
           "$RUNNER_TEMP/emsdk/emsdk" install 6.0.11
           "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.11
-      - name: Tests without the engine
-        run: npm test
-      - name: Build (the engine with the tajweed library, the scorer alone, libopus) and test with it
+      - name: libopus for the sharing tests (built first, so no sharing test ever skips)
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          npm run build:opus
+      - name: Tests without the engine (libopus required)
+        run: REQUIRE_OPUS=1 npm test
+      - name: Build the engine and run every test with it (libopus and the mock engine required)
         env:
           ZF_WASM_TAJWEED: '1'
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           npm run build
-          npm run build:scorer
-          npm run build:opus
           npm run test:wasm
-          REQUIRE_OPUS=1 REQUIRE_SCORER=1 npm test
-      - name: What the package will contain
-        run: npm pack --dry-run
+          CLANG="$RUNNER_TEMP/emsdk/upstream/bin/clang" REQUIRE_OPUS=1 REQUIRE_MOCK=1 npm test
+      - name: The plain Vite example builds with no config file, and names no Node module
+        run: npm run example:build
+      - name: What the package will contain (README, AGENTS.md, CHANGELOG, the type declarations, the exports map, the built engine)
+        run: |
+          npm run check:package
+          npm pack --dry-run 2>&1 | tee "$RUNNER_TEMP/pack.txt"
+          for f in dist/tajweedformer.mjs dist/tajweedformer.wasm dist/tajweedformer-opus.mjs dist/tajweedformer-opus.wasm AGENTS.md; do
+            grep -q " $f\$" "$RUNNER_TEMP/pack.txt" || { echo "::error::the package would not contain $f"; exit 1; }
+          done
+      - name: The version is not on npm yet
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if npm view "@quran-lab/tajweedformer@$v" version >/dev/null 2>&1; then
+            echo "::error::@quran-lab/tajweedformer@$v is already published"; exit 1
+          fi
       - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

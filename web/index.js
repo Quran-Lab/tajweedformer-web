@@ -1,10 +1,19 @@
-// @quran-lab/tajweedformer: TajweedFormer V4 for browsers and Node. The exact engine in WebAssembly
-// (single thread, SIMD128; works everywhere with no special headers), the model delivery (shared
-// cache, resumable, hashed), the decoded and tajweed layers, and the Quran Lab platform client.
-//   import { TajweedFormer } from '@quran-lab/tajweedformer';
-import createTajweedFormer from '../dist/tajweedformer.mjs';
-import { bindTajweed } from './tajweed/tajweedformer.js';
-export * from './tajweed/index.js';
-
-export const TajweedFormer = bindTajweed(createTajweedFormer);
-export default TajweedFormer;
+// @quran-lab/tajweedformer: TajweedFormer for browsers and Node, a pure inference SDK. The exact engine in
+// WebAssembly (bit-identical to the native engine; in a Worker in browsers), verified model delivery, every
+// head of the network, the decoded layer, and the link to Quran Lab (signed config, telemetry, opt-in sharing).
+//
+//   import { TajweedClient } from '@quran-lab/tajweedformer';
+//   const client = await TajweedClient.create({ key: 'qlk_v1_...' });
+//   const model = await client.model();
+//   const session = await model.listen({ endOnSilenceMs: 1500 });
+//   for await (const chunk of session.chunks) console.log(chunk.decoded.text);
+//
+// This is the whole public surface. Everything else under web/ is internal and may change in any release.
+export { TajweedClient } from './api/client.js';
+export { TajweedModel } from './api/model.js';
+export { TajweedSession } from './api/session.js';
+export { TajweedHeads } from './api/heads.js';
+export { TajweedError } from './api/errors.js';
+export { Microphone } from './api/microphone.js';
+// the sharing UI components (custom elements; each takes the Client: element.client = client)
+export { QuranLabConsent, QuranLabSharingSettings } from './consent/element.js';

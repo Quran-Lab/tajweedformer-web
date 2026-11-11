@@ -4,15 +4,19 @@
 // 660a07197c4808da); one changed byte in a header value, a tolerance value or a file line is refused; the
 // golden_tolerance lines sit after the header lines, sorted by the build key's UTF-8 bytes (make_manifest3.py
 // signed_text); a manifest signed without them still verifies with its tolerance ignored; and the delivery path
-// (cachedReader, ModelFolder.open, TajweedFormer.load) accepts the 519235d0 manifest.
+// (cachedReader, ModelFolder.open, openTajweedFolder) verifies the 519235d0 manifest.
 // Run: npm test
 import test from 'node:test';
+import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   signedText, verifyManifestSignature, checkManifestSignature, parseGoldenTolerance, ModelFolder, ModelFolderError,
-  memoryReader, cachedReader, TajweedFormer, QURANLAB_PUBLIC_KEY_HEX, SDK_VERSION,
-} from '../web/tajweed/index.js';
+  memoryReader, QURANLAB_PUBLIC_KEY_HEX, SDK_VERSION,
+  openTajweedFolder,
+} from '../web/tajweed/manifest.js';
+import { cachedReader } from '../web/tajweed/delivery.js';
+import { TajweedModel } from '../web/index.js';
 import { keyId } from '../web/platform/client.js';
 
 const DIR = new URL('./tajweed/manifest_vectors/', import.meta.url);
@@ -157,7 +161,7 @@ function cdn(manifestBytes) {
 }
 
 test('delivery: cachedReader + ModelFolder.open (signature required) accept the 519235d0 manifest', async () => {
-  assert.equal(SDK_VERSION, '2.0.2');
+  assert.equal(SDK_VERSION, '3.0.0');
   const { fetch, log } = cdn(RAW['519235d0']);
   const reader = cachedReader({ baseUrl: 'https://cdn.test/sdk/', fetch, store: false });
   const f = await ModelFolder.open(reader, { requireSignature: true, verify: 'on-read' });
@@ -170,16 +174,19 @@ test('delivery: cachedReader + ModelFolder.open (signature required) accept the 
     { requireSignature: true, verify: 'on-read', sdkVersion: '2.0.0' }), (e) => e.code === 'sdk_too_old');
 });
 
-test('delivery: TajweedFormer.load gets past the 519235d0 manifest to the model files; a tampered one stops at the signature', async () => {
-  // the manifest is accepted, so the load goes on to calibration.json (stored gzip), which this CDN does not have
+test('delivery: the 519235d0 manifest verifies on the 3.0 path and is refused only for having no model version; a tampered one stops at the signature', async () => {
+  // a 2.x build: the signature is good, so the refusal is the version rule of SDK 3.0 (SPEC 2a), not the signature
   const good = cdn(RAW['519235d0']);
-  await assert.rejects(TajweedFormer.load({ url: 'https://cdn.test/sdk/', fetch: good.fetch, cache: false, requireSignature: true, loadEngine: false }),
-    (e) => e instanceof ModelFolderError && e.code === 'calibration_invalid' && /calibration\.json\.gz: HTTP 404/.test(e.message));
-  assert.deepEqual(good.log.slice(0, 2), ['manifest.json', 'calibration.json.gz']);
+  await assert.rejects(openTajweedFolder(cachedReader({ baseUrl: 'https://cdn.test/sdk/', fetch: good.fetch, store: false }), { requireSignature: true, verify: 'on-read' }),
+    (e) => e instanceof ModelFolderError && e.code === 'version_missing');
+  assert.deepEqual(good.log, ['manifest.json']);
   const m = load('519235d0');
   m.golden_tolerance.coreml.site_flag_diffs = 2;
   const bad = cdn(enc.encode(JSON.stringify(m)));
-  await assert.rejects(TajweedFormer.load({ url: 'https://cdn.test/sdk/', fetch: bad.fetch, cache: false, requireSignature: true, loadEngine: false }),
+  await assert.rejects(openTajweedFolder(cachedReader({ baseUrl: 'https://cdn.test/sdk/', fetch: bad.fetch, store: false }), { requireSignature: true, verify: 'on-read' }),
     (e) => e instanceof ModelFolderError && e.code === 'signature_invalid');
   assert.deepEqual(bad.log, ['manifest.json']);
+  // the same through the public API, as catalogue codes
+  await assert.rejects(TajweedModel.open({ 'manifest.json': RAW['519235d0'] }), (e) => e.code === 'model_incompatible');
+  await assert.rejects(TajweedModel.open({ 'manifest.json': enc.encode(JSON.stringify(m)) }), (e) => e.code === 'signature_invalid');
 });

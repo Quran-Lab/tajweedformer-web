@@ -4,6 +4,8 @@
 //   Node:     a JSON file per key in a directory (nodeStateStore in ../tajweed/node.js style, here)
 //   tests:    memoryState()
 
+import { node } from './node-hook.js';
+
 /** In memory. */
 export function memoryState() {
   const m = new Map();
@@ -32,8 +34,7 @@ export function localState(prefix = 'quranlab.') {
 
 /** A directory of JSON files (Node). Synchronous on purpose: tiny files, called rarely. */
 export async function dirState(dir) {
-  const fs = await import('node:fs');
-  const path = await import('node:path');
+  const { fs, path } = node();
   fs.mkdirSync(dir, { recursive: true });
   const file = (k) => path.join(dir, encodeURIComponent(k) + '.json');
   return {

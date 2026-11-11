@@ -3,16 +3,28 @@
 //   session.json   the start's body          capture.json  { preSkip, bitrates: { n: bit/s } } (set as segments open)
 //   seg-NNNNN.opus  a segment's Ogg pages     seg-NNNNN.json { n, bytes, sha256, granule, bitrate }: closed
 //   end.json       { durationMs, completed }  item.json     the outbox's record (only the outbox writes it)
+//   takes.json     { takes: [{ start_ms, gap_ms }] }: a recording of 2 or more takes (2.0.3), the take list call's body
 // The upload starts once the first segment is closed; every closed segment is PUT straight to its
 // presigned URL, at most 2 at a time; the next batch of URLs is asked for when 5 unused remain, fresh
 // ones on a 403. A session the page was closed in is recovered on the next load: the open segment is
 // cut back to its last whole page and the session ends as not completed (its stream has no end page).
+//
+// The take list (2.0.3, takes.js): a recording that takes in a row shared has its take boundaries in takes.json.
+// The session JSON goes up with the first segment, before later takes exist, so the list goes in its own call
+// once the recording has closed and every segment is uploaded: POST /v1/uploads/{id}/takes. The item is
+// `uploaded` when its segments are, whatever becomes of the list; the list (item.json `takeList: 'pending'` and
+// takes.json) waits across page loads until it is sent or dropped. 2xx: sent. 404 (a server without the route,
+// or an upload it does not know) and 410 (the upload was deleted): dropped. 400: dropped, with an issue. 401:
+// the token renewed, sent again. Anything else (429, 5xx, no connection): again later, with the outbox's
+// backoff. Sharing turned off drops it: nothing is sent after a withdrawal.
 
 import { segmentName, wholePages } from './oggopus.js';
 import { freshUrl, parseUrls, SharingError } from './uploader.js';
 import { isNetworkFailure } from './bitrate.js';
+import { takeList, takesBody } from './takes.js';
+import { node, isNode } from '../platform/node-hook.js';
 
-export const FILES = Object.freeze({ session: 'session.json', capture: 'capture.json', end: 'end.json', item: 'item.json' });
+export const FILES = Object.freeze({ session: 'session.json', capture: 'capture.json', end: 'end.json', item: 'item.json', takes: 'takes.json' });
 const DAY_MS = 86400000;
 /** Unsent sessions older than this are deleted (PLATFORM_CLIENT 10.4). */
 export const MAX_AGE_MS = 7 * DAY_MS;
@@ -58,8 +70,7 @@ export class MemoryStorage {
 
 /** A directory (Node): <root>/outbox/<id>/<file>, <root>/sharing.json for the contributor id. */
 export async function dirStorage(root) {
-  const fs = await import('node:fs/promises');
-  const path = await import('node:path');
+  const { fsp: fs, path } = node();
   const box = path.join(root, 'outbox');
   await fs.mkdir(box, { recursive: true });
   const f = (id, name) => path.join(box, id, name);
@@ -171,10 +182,7 @@ export async function indexedDbStorage(dbName = 'quranlab-sharing', idb = global
 /** The default storage: IndexedDB in a browser, `<cwd>/.quranlab` in Node, else memory. */
 export async function defaultStorage() {
   if (globalThis.indexedDB) return indexedDbStorage();
-  if (globalThis.process?.versions?.node) {
-    const path = await import('node:path');
-    return dirStorage(path.join(globalThis.process.cwd(), '.quranlab'));
-  }
+  if (isNode()) return dirStorage(node().path.join(globalThis.process.cwd(), '.quranlab'));
   return new MemoryStorage();
 }
 
@@ -204,8 +212,16 @@ export function markerSeconds(ms) {
   return ms.map((m) => { const sec = Math.max(0, m.granule - prev) / 48000; prev = m.granule; return sec; });
 }
 
+/** The take list a session's takes.json holds, or null (one take, or a file that is not a valid list). */
+export async function storedTakes(s, id) {
+  const j = await readJson(s, id, FILES.takes);
+  return j ? takeList(j.takes) : null;
+}
+
 /** A session the page was closed in: open segments cut back to their whole pages and closed, the
- * session ended as not completed. False when there is nothing to share (it is then removed). */
+ * session ended as not completed. Its take list keeps the takes that start before the recovered end (none of a
+ * later take's audio was kept); fewer than 2 left: no list. False when there is nothing to share (it is then
+ * removed). */
 export async function recover(s, id) {
   const cap = await readJson(s, id, FILES.capture);
   if (!cap) { await s.removeSession(id); return false; }
@@ -225,7 +241,14 @@ export async function recover(s, id) {
   const ms = await markers(s, id);
   if (!ms.length) { await s.removeSession(id); return false; }
   const last = ms[ms.length - 1];
-  await writeJson(s, id, FILES.end, { durationMs: Math.trunc(Math.max(0, last.granule - cap.preSkip) / 48), completed: false });
+  const end = { durationMs: Math.trunc(Math.max(0, last.granule - cap.preSkip) / 48), completed: false };
+  const j = await readJson(s, id, FILES.takes);
+  const takes = j ? takeList(j.takes, end.durationMs) : null;
+  if (takes) {
+    await s.write(id, FILES.takes, enc.encode(takesBody(takes)));
+    end.takes = takes.length;
+  } else await s.remove(id, FILES.takes);
+  await writeJson(s, id, FILES.end, end);
   return true;
 }
 
@@ -246,11 +269,17 @@ export const activeCaptures = new Set();
  * @param {() => number} [o.clock]  ms
  * @param {(item: object) => void} [o.onChange]
  * @param {import('./bitrate.js').BitrateLadder} [o.ladder]  told about network failures, successful PUTs and the backlog
+ * @param {(kind: string, code: string) => void} [o.onIssue]  a take list refused as a bad request ('other', 'takes:<code>')
+ * @param {() => Promise<void>|void} [o.onStop]  sharing went off: the recorder ends the recording being captured
+ * @param {(message: string) => void} [o.log]  one line for the developer (a server without the take list route)
  */
 export class Outbox {
   constructor({ storage, client, tokenProvider, flags = () => null, enabled = () => true, turnstile = null, platform = 'web',
-    contributor, clock = () => Date.now(), onChange = null, onError = null, random = Math.random, ladder = null }) {
-    Object.assign(this, { storage, client, tokenProvider, flags, enabled, turnstile, platform, contributor, clock, onChange, onError, random, ladder });
+    contributor, clock = () => Date.now(), onChange = null, onError = null, random = Math.random, ladder = null,
+    onIssue = null, onStop = null, log = null }) {
+    Object.assign(this, { storage, client, tokenProvider, flags, enabled, turnstile, platform, contributor, clock, onChange, onError, random, ladder,
+      onIssue, onStop, log });
+    this.takesLogged = false; // the dropped take list line, once per pipeline
     // closed segments not yet uploaded, per session: id -> Map(n -> seconds of audio); kept in memory so a
     // capture can read the backlog at the moment it closes a segment (the markers are written after)
     this.waiting = new Map();
@@ -265,7 +294,8 @@ export class Outbox {
 
   // ---- public ----
 
-  /** Every session, oldest first: { id, segments, bytes, durationMs, segmentBitrates, day, completed, status, failCode, attempts, lastError }. */
+  /** Every session, oldest first: { id, segments, bytes, durationMs, segmentBitrates, day, completed, status, failCode, attempts, lastError,
+   * takes (how many takes share the recording), takeList (null, 'pending', 'sent' or 'dropped') }. */
   async items() {
     await this._scan();
     const out = [];
@@ -312,16 +342,19 @@ export class Outbox {
   resume() { this.stopped = false; return this.drain(); }
 
   /** Sharing was turned off: in-flight PUTs aborted, every session not fully uploaded deleted at
-   * once (a session being captured is abandoned by its capture). */
+   * once, the recording being captured with them (`onStop`: also between takes, where no push would notice),
+   * and take lists still waiting dropped (nothing is sent after a withdrawal). */
   async stop() {
     this.stopped = true;
     for (const c of this.inFlight.values()) c.abort();
     this.inFlight.clear();
     if (this.wakeTimer) { clearTimeout(this.wakeTimer); this.wakeTimer = null; }
     if (this.running) await this.running.catch(() => {});
+    if (this.onStop) { try { await this.onStop(); } catch (_) { /* the capture's own end */ } }
     await this._scan();
     for (const r of [...this.records.values()]) {
       if (r.state === 'active' && !activeCaptures.has(r.id)) { await this.storage.removeSession(r.id); this.records.delete(r.id); }
+      else if (r.takeList === 'pending') await this._takesDone(r, 'dropped', 'sharing_off');
     }
     this.waiting.clear();
   }
@@ -378,7 +411,10 @@ export class Outbox {
     const now = this.clock();
     const due = [...this.records.values()].filter((r) => r.state === 'active' && (ignoringBackoff || !r.nextAttempt || r.nextAttempt <= now))
       .sort((a, b) => a.seq - b.seq).map((r) => r.id);
-    if (!due.length) return;
+    // take lists of recordings already uploaded: a retry, or one a closed page left
+    const lists = () => [...this.records.values()].filter((r) => r.takeList === 'pending' && (ignoringBackoff || !r.takeListNext || r.takeListNext <= this.clock()))
+      .sort((a, b) => a.seq - b.seq).map((r) => r.id);
+    if (!due.length && !lists().length) return;
     if (!allowed.ok) { for (const id of due) await this._note(id, `${allowed.why}; waiting`); return; }
     for (const id of due) {
       if (this.stopped) return;
@@ -393,6 +429,13 @@ export class Outbox {
         continue;
       }
       if (!(await this._step(id, token.token))) return;
+    }
+    for (const id of lists()) {
+      if (this.stopped) return;
+      let token = null;
+      try { token = await this.tokenProvider(); } catch (_) { token = null; }
+      if (!token || !token.token) { await this._takesRetry(this.records.get(id), 'no token'); return; }
+      if (!(await this._sendTakes(id, token.token))) return;
     }
   }
 
@@ -455,11 +498,87 @@ export class Outbox {
     rec.lastError = null;
     rec.nextAttempt = null;
     rec.urls = null;
+    // a recording of 2 or more takes: its take list follows its last segment; the item is uploaded either way
+    const list = await storedTakes(s, id);
+    if (list) rec.takeList = 'pending';
     await this._save(rec);
     for (const name of await s.list(id)) {
-      if (name !== FILES.item && name !== FILES.end && name !== FILES.session && !/^seg-\d{5,}\.json$/.test(name)) await s.remove(id, name);
+      if (name !== FILES.item && name !== FILES.end && name !== FILES.session && !(list && name === FILES.takes)
+        && !/^seg-\d{5,}\.json$/.test(name)) await s.remove(id, name);
     }
-    return true;
+    return list ? this._sendTakes(id, token) : true;
+  }
+
+  // ---- the take list (2.0.3) ----
+
+  // POST /v1/uploads/{id}/takes for an uploaded recording whose list waits. False when the pass should stop
+  // (offline); the item stays uploaded whatever the answer.
+  async _sendTakes(id, token) {
+    const s = this.storage;
+    let rec = this.records.get(id);
+    if (!rec || rec.takeList !== 'pending') return true;
+    const list = await storedTakes(s, id);
+    if (!list) { await this._takesDone(rec, 'dropped', 'no_list'); return true; }
+    const body = takesBody(list);
+    // under the contributor the recording was made by (its session JSON), as the server checks
+    const ses = await readJson(s, id, FILES.session);
+    const contributor = ses && typeof ses.contributor === 'string' ? ses.contributor : await this.contributor();
+    rec.takeListAttempts = (rec.takeListAttempts || 0) + 1;
+    let r = await this.client.takes({ id, body, contributor, token });
+    if (r.status === 401) {
+      // the token renewed, the same body once more
+      if (this.tokenProvider.invalidate) await this.tokenProvider.invalidate();
+      let fresh = null;
+      try { fresh = await this.tokenProvider(); } catch (_) { fresh = null; }
+      if (fresh && fresh.token && !this.stopped) r = await this.client.takes({ id, body, contributor, token: fresh.token });
+    }
+    rec = this.records.get(id);
+    if (!rec || rec.takeList !== 'pending' || this.stopped) return true; // sharing went off meanwhile
+    if (r.status >= 200 && r.status < 300) { await this._takesDone(rec, 'sent'); return true; }
+    const code = (r.body && r.body.error) || `http_${r.status}`;
+    if (r.status === 404 || r.status === 410) {
+      if (r.status === 404 && !this.takesLogged) {
+        this.takesLogged = true;
+        if (this.log) {
+          try { this.log('Quran Lab sharing: the server took the recording but not its take list (HTTP 404: no such route or upload); the list is dropped, the recording stays uploaded'); } catch (_) { /* the app's logger */ }
+        }
+      }
+      await this._takesDone(rec, 'dropped', code);
+      return true;
+    }
+    if (r.status === 400) {
+      // SDK 3.0.0: a list the server refuses as a bad request is NOT dropped (the server could refuse a correct
+      // list while its own view of the recording was stale). It stays pending and is retried on the backoff
+      // until it is accepted, sharing goes off, or the recording passes the seven-day limit; the issue is
+      // reported once for this list.
+      if (!rec.takeListReported) {
+        rec.takeListReported = true;
+        if (this.onIssue) { try { this.onIssue('other', 'bad_request:takes'); } catch (_) { /* never in the way */ } }
+      }
+      await this._takesRetry(rec, `HTTP 400 ${code}`);
+      return true;
+    }
+    await this._takesRetry(rec, r.status === 0 ? (r.error || 'offline') : `HTTP ${r.status} ${code}`);
+    return r.status !== 0;
+  }
+
+  // the list is sent or dropped: takes.json goes, the record says which
+  async _takesDone(rec, state, why = null) {
+    rec.takeList = state;
+    rec.takeListNext = null;
+    rec.takeListError = state === 'sent' ? null : why;
+    await this.storage.remove(rec.id, FILES.takes);
+    await this._save(rec);
+  }
+
+  // again later, with the outbox's backoff (30 s doubling to 6 h, jittered)
+  async _takesRetry(rec, why) {
+    if (!rec) return;
+    const n = Math.max(1, rec.takeListAttempts || 1);
+    const base = Math.min(30 * 2 ** Math.min(n - 1, 16), 6 * 3600);
+    rec.takeListError = why;
+    rec.takeListNext = this.clock() + base * (0.8 + 0.4 * this.random()) * 1000;
+    await this._save(rec);
   }
 
   // one PUT: 'ok', 'retry' (refused; retry scheduled), 'offline', 'stop'
@@ -584,7 +703,8 @@ export class Outbox {
     Object.assign(rec, { state: 'uploaded', capped: true, nextAttempt: null, urls: null, lastError: 'segment_cap' });
     this.waiting.delete(id);
     await this._save(rec);
-    for (const name of await this.storage.list(id)) if (/\.opus$/.test(name)) await this.storage.remove(id, name);
+    // no take list for a recording the cap cut short: its later takes never went up
+    for (const name of await this.storage.list(id)) if (/\.opus$/.test(name) || name === FILES.takes) await this.storage.remove(id, name);
   }
 
   // the server does not know it (404) or deleted it (410): drop it locally
@@ -606,13 +726,15 @@ export class Outbox {
     const now = this.clock();
     for (const r of [...this.records.values()]) {
       if (r.state === 'active' && !activeCaptures.has(r.id) && now - (r.createdAt || now) > MAX_AGE_MS) await this._drop(r.id, 'expired');
+      else if (r.takeList === 'pending' && now - (r.createdAt || now) > MAX_AGE_MS) await this._takesDone(r, 'dropped', 'expired');
     }
   }
 
   _scheduleWake() {
     if (this.wakeTimer) { clearTimeout(this.wakeTimer); this.wakeTimer = null; }
     if (this.stopped) return;
-    const next = Math.min(...[...this.records.values()].filter((r) => r.state === 'active' && r.nextAttempt).map((r) => r.nextAttempt));
+    const next = Math.min(...[...this.records.values()].filter((r) => r.state === 'active' && r.nextAttempt).map((r) => r.nextAttempt),
+      ...[...this.records.values()].filter((r) => r.takeList === 'pending' && r.takeListNext).map((r) => r.takeListNext));
     if (!Number.isFinite(next)) return;
     const delay = Math.min(Math.max(1000, next - this.clock()), 2 ** 31 - 1);
     this.wakeTimer = setTimeout(() => { this.wakeTimer = null; this.drain().catch(() => {}); }, delay);
@@ -652,6 +774,10 @@ export class Outbox {
     const ms = await markers(this.storage, r.id);
     const end = await readJson(this.storage, r.id, FILES.end);
     const ses = await readJson(this.storage, r.id, FILES.session);
+    // how many takes share the recording: end.json once it closed, takes.json while it runs
+    let takes = 1;
+    if (end) takes = Number.isInteger(end.takes) && end.takes > 1 ? end.takes : 1;
+    else { const list = await storedTakes(this.storage, r.id); if (list) takes = list.length; }
     return {
       id: r.id, segments: ms.length, bytes: ms.reduce((k, m) => k + m.bytes, 0), durationMs: end ? end.durationMs : 0,
       // the bit rate each segment was coded at, in segment order (null for a segment recorded before 2.0.1)
@@ -659,6 +785,7 @@ export class Outbox {
       day: ses ? ses.day : '', completed: end ? end.completed : null,
       status: r.state === 'active' ? 'queued' : r.state, capped: !!r.capped, failCode: r.failCode || null,
       failMessage: r.failMessage || null, attempts: r.attempts, lastError: r.lastError,
+      takes, takeList: r.takeList || null,
     };
   }
 }

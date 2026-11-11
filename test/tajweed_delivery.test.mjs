@@ -6,20 +6,11 @@
 // The engine part needs the staged V4 files (TAJWEED_V4_ENGINE, as tajweed_conformance.test.mjs);
 // the profile and cache parts run on synthetic files everywhere.
 import test from 'node:test';
+import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { existsSync, readFileSync, readdirSync, statSync, mkdtempSync, rmSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { cachedReader, memoryStore, profilePaths, pruneCache, sha256Hex, signedText, bindTajweed, DeliveryError } from '../web/tajweed/index.js';
-import { dirStore } from '../web/tajweed/node.js';
-
-const root = fileURLToPath(new URL('..', import.meta.url));
-const ENGINE = process.env.TAJWEED_V4_ENGINE || '';
-const CAL = process.env.TAJWEED_V4_CALIBRATION || '';
-const TOKENS = process.env.TAJWEED_V4_TOKENS || '';
-const AUDIO = process.env.TAJWEED_V4_AUDIO || '';
+import { cachedReader, memoryStore, profilePaths, pruneCache, DeliveryError } from '../web/tajweed/delivery.js';
+import { sha256Hex } from '../web/tajweed/manifest.js';
 
 // A tiny HTTP server: files from a map, Range support, an optional key check, a hook to fail requests.
 function serve(files, { key = null, failAfter = Infinity } = {}) {
@@ -113,61 +104,4 @@ test('cachedReader: ranges, resume after a dropped connection, SHA-256 cache, ch
     assert.equal(await pruneCache(store, [{ files: [] }]) > 0, true);
     assert.deepEqual(await store.keys('sha256/'), []);
   } finally { await srv.close(); }
-});
-
-const have = existsSync(path.join(ENGINE, 'c16_l64', 'layers.zfw')) && existsSync(path.join(root, 'dist', 'tajweedformer.mjs')) && existsSync(AUDIO);
-test('a signed V4 folder from a CDN: only the c16_l64 profile downloaded, cached on disk, then a clip bit for bit', {
-  skip: have ? false : 'needs the staged V4 engine files, dist/tajweedformer.mjs and the conformance audio', timeout: 600000,
-}, async (t) => {
-  const files = new Map([['calibration.json', readFileSync(CAL)], ['tokens.txt', readFileSync(TOKENS)], ['expected_tj3.zfx', readFileSync(path.join(ENGINE, 'expected_tj3.zfx'))]]);
-  for (const c of ['c16_l64', 'c24_l72']) for (const f of readdirSync(path.join(ENGINE, c))) files.set(`${c}/${f}`, readFileSync(path.join(ENGINE, c, f)));
-  files.set('coreml/c16_l64/keeps.bin', new Uint8Array(1000));
-  // sign with a test key (the SDK pins Quran Lab's; trustedKeys replaces it here)
-  const kp = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
-  const pub = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
-  const m = await manifestFor(files, { sidecar: 'c16_l64/layers.zfw' });
-  m.signature = Buffer.from(await crypto.subtle.sign({ name: 'Ed25519' }, kp.privateKey, new TextEncoder().encode(signedText(m)))).toString('base64');
-  files.set('manifest.json', new TextEncoder().encode(JSON.stringify(m)));
-  const srv = await serve(files, { key: 'qlk_test' });
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'tf-delivery-'));
-  try {
-    const { default: f } = await import(pathToFileURL(path.join(root, 'dist', 'tajweedformer.mjs')).href);
-    const TF = bindTajweed(f);
-    const store = dirStore(dir);
-    const progress = [];
-    const t0 = Date.now();
-    let tf = await TF.load({ url: srv.url, headers: { 'x-qlab-key': 'qlk_test' }, requireSignature: true, trustedKeys: [pub], cache: store,
-      context: 'c16_l64', onProgress: (p) => progress.push(p) });
-    const cold = Date.now() - t0;
-    const fetched = new Set(srv.log.map((x) => x.path));
-    const profileBytes = tf.profile.reduce((n, p) => n + files.get(p).length, 0);
-    assert.ok(!fetched.has('c24_l72/layers.zfw') && !fetched.has('coreml/c16_l64/keeps.bin'), 'other contexts and CoreML never fetched');
-    assert.equal(tf.delivery.bytesDownloaded, profileBytes + files.get('manifest.json').length);
-    assert.ok(progress.some((p) => p.path === 'c16_l64/layers.zfw' && p.loaded === p.total));
-    t.diagnostic(`cold load over HTTP: ${cold} ms, ${tf.delivery.bytesDownloaded} bytes (${tf.profile.length} files); the whole folder is ${[...files.values()].reduce((n, b) => n + b.length, 0)} bytes`);
-    tf.free();
-    srv.log.length = 0;
-    const t1 = Date.now();
-    tf = await TF.load({ url: srv.url, headers: { 'x-qlab-key': 'qlk_test' }, requireSignature: true, trustedKeys: [pub], cache: dirStore(dir), context: 'c16_l64' });
-    t.diagnostic(`warm load from the disk cache: ${Date.now() - t1} ms, requests ${srv.log.length} (the manifest only)`);
-    assert.deepEqual(srv.log.map((x) => x.path), ['manifest.json']);
-    // the loaded model streams the first conformance clip bit for bit (log_probs fingerprint and tokens)
-    const exp = JSON.parse(readFileSync(path.join(root, 'test/tajweed/conformance/v4_c16_l64_audio_expected.jsonl'), 'utf8').split('\n')[0]);
-    const pcmBuf = readFileSync(path.join(AUDIO, `${exp.clip}.pcm`));
-    const pcm = new Float32Array(pcmBuf.buffer.slice(pcmBuf.byteOffset, pcmBuf.byteOffset + pcmBuf.byteLength));
-    const s = tf.createStream();
-    for (let at = 0; at < pcm.length; at += 320) s.pushAudio(pcm.subarray(at, at + 320));
-    s.finish();
-    assert.deepEqual(s.greedy(), exp.tokens);
-    s.free();
-    tf.free();
-    // a wrong key: refused with HTTP 401
-    await assert.rejects(() => TF.load({ url: srv.url, headers: { 'x-qlab-key': 'nope' }, cache: false, trustedKeys: [pub] }));
-    // a manifest signed by another key: refused
-    await assert.rejects(() => TF.load({ url: srv.url, headers: { 'x-qlab-key': 'qlk_test' }, cache: false, requireSignature: true }),
-      (e) => e.code === 'signature_invalid');
-  } finally {
-    await srv.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
 });

@@ -4,6 +4,7 @@
 // memory, and the decoded length. Needs dist/tajweedformer-opus.mjs (npm run build:opus); skipped
 // without it (REQUIRE_OPUS=1 makes that an error).
 import test from 'node:test';
+import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

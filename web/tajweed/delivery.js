@@ -5,7 +5,7 @@
 //
 //   const reader = cachedReader({ baseUrl: 'https://cdn.quranlab.ai/models/Quran-Lab/tajweedformer-v4/<rev>/sdk/v4.0/',
 //                                 headers: { 'x-qlab-key': key }, onProgress });
-//   const tf = await TajweedFormer.load({ reader, context: 'c16_l64' });
+//   const { folder } = await openTajweedFolder(reader);
 //
 // Stores: the Cache API in browsers (default), IndexedDB where there is no Cache API, a directory in
 // Node (nodeStore in ./node.js), or memoryStore. Every store holds whole verified files under
@@ -203,9 +203,11 @@ export function cachedReader(o) {
       }
     }
     o.onProgress?.({ path: label, loaded, total: size, cached: false });
-    let next = 0, whole = null;
+    let next = 0, whole = null, failed = null;
+    // one failure stops every worker at its next range, and the read fails only when all of them have stopped:
+    // nothing is requested or stored after the read has failed, so what is kept for the resume is settled
     const worker = async () => {
-      while (whole === null) {
+      while (whole === null && !failed) {
         let i = next++;
         while (i < n && parts[i]) i = next++;
         if (i >= n) return;
@@ -230,7 +232,10 @@ export function cachedReader(o) {
       }
     };
     if (size === 0) whole = new Uint8Array(0);
-    else await Promise.all(Array.from({ length: Math.min(parallel, n) }, worker));
+    else {
+      await Promise.all(Array.from({ length: Math.min(parallel, n) }, () => worker().catch((e) => { failed = failed || e; })));
+      if (failed) throw failed;
+    }
     let bytes = whole;
     if (!bytes) {
       bytes = new Uint8Array(size);
@@ -269,6 +274,15 @@ export function cachedReader(o) {
   const reader = {
     store,
     stats,
+    /** Every read hands over bytes nobody else holds (so they may be transferred to a Worker). */
+    fresh: true,
+    /** Whether a listed file is in the cache whole (no network). False before the manifest was read. */
+    async cached(path) {
+      const e = listing && listing.get(path);
+      if (!e || !store) return false;
+      if (typeof store.has === 'function') return store.has(`sha256/${e.sha256}`);
+      return (await store.keys(`sha256/${e.sha256}`)).length > 0;
+    },
     async read(path) {
       if (path === 'manifest.json') {
         // always fresh when online (it is small and signed); the last good copy when offline
@@ -276,7 +290,7 @@ export function cachedReader(o) {
         try { b = await fetchWhole('manifest.json'); } catch (e) {
           if (!(e instanceof DeliveryError) || e.code !== 'offline' || !store) throw e;
           b = await store.get(`manifest/${base}`);
-          if (!b) throw e;
+          if (!b) { e.nothingCached = true; throw e; }
         }
         if (b && store) await store.put(`manifest/${base}`, b);
         try {

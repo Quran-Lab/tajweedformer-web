@@ -1,5 +1,4 @@
-// The decoded layer: what the model heard, from log_probs and
-// conf alone, no known text needed. Plain JS, no dependencies; the same numbers as the native SDK's
+// The decoded layer: what the model heard, from log_probs and conf alone, no known text needed. Plain JS, no dependencies; the same numbers as the native SDK's
 // tf_decode and the reference layers_ref.py (test/tajweed_layers.test.mjs).
 
 import { VOCAB, BLANK, HEAD_SPECS } from './heads.js';
@@ -105,49 +104,6 @@ export function sigmoidHead(a) {
   const o = new Float32Array(a.length);
   for (let i = 0; i < a.length; i++) o[i] = sigmoid(a[i]);
   return o;
-}
-
-/**
- * Per-word results of a scored take (API_LAYERS.md section 3). The score, threshold and flag are the
- * engine's (zf_tajweed_result_words, API 3: every single edit inside the word, clipped fused LLR, flagged
- * at or above the word tau; the reference's tajweed_ref.word_scores); this adds each word's timing (its sites'
- * 40 ms frames on the best path) and its flagged items. A word the engine did not score (the word check
- * off, or no word block in calibration) has score, threshold and flagged null.
- * @param {{ sites: object[], madd?: object[], qalqalah?: object[], gemination?: object[], engineWords?: object[] }} r
- * @param {number} nWords
- */
-export function wordResults({ sites, madd = [], qalqalah = [], gemination = [], engineWords = [] }, nWords) {
-  const byWord = new Map(engineWords.map((w) => [w.word, w]));
-  const words = [];
-  for (let w = 0; w < nWords; w++) {
-    const e = byWord.get(w);
-    words.push({
-      word: w, score: e ? e.score : null, threshold: e ? e.threshold : null, flagged: e ? e.flagged : null,
-      best: e && e.hasScore ? { class: e.class, edit: e.edit, pos: e.editPos, expected: e.expected, expectedUnit: e.expectedUnit,
-        alternative: e.alternative, alternativeUnit: e.alternativeUnit, llr: e.llr } : null,
-      tokens: e ? [e.tokLo, e.tokHi] : null,
-      startMs: null, endMs: null, issues: { sites: [], madd: [], qalqalah: [], gemination: [] },
-    });
-  }
-  const at = (w) => (Number.isInteger(w) && w >= 0 && w < words.length ? words[w] : null);
-  const lo = new Array(nWords).fill(Infinity), hi = new Array(nWords).fill(-Infinity);
-  sites.forEach((s, i) => {
-    const W = at(s.word);
-    if (!W) return;
-    if (s.flagged) W.issues.sites.push(i);
-    if (s.frameLo >= 0) lo[s.word] = Math.min(lo[s.word], s.frameLo);
-    if (s.frameHi >= 0) hi[s.word] = Math.max(hi[s.word], s.frameHi);
-  });
-  madd.forEach((x, i) => { const W = at(x.word); if (W && x.flagged) W.issues.madd.push(i); });
-  qalqalah.forEach((x, i) => { const W = at(x.word); if (W && x.flagged) W.issues.qalqalah.push(i); });
-  gemination.forEach((x, i) => { const W = at(x.word); if (W && x.flagged) W.issues.gemination.push(i); });
-  for (const W of words) {
-    if (lo[W.word] !== Infinity && hi[W.word] !== -Infinity) {
-      W.startMs = CTC_FRAME_MS * lo[W.word];
-      W.endMs = CTC_FRAME_MS * (hi[W.word] + 1);
-    }
-  }
-  return words;
 }
 
 // ---------------------------------------------------------------------------------------------------

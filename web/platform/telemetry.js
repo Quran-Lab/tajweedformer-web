@@ -8,8 +8,6 @@
 // Tried and rejected: sending the whole day again with a day-scoped id (the server would have to diff
 // days); one report spanning midnight (a delta belongs to one day, as the server's points do).
 
-import { CLASSES, CHECKS } from '../tajweed/settings.js';
-
 const B = {
   latency_ms: [['le_5', 5], ['le_10', 10], ['le_20', 20], ['le_40', 40], ['le_80', 80], ['le_160', 160], ['le_320', 320], ['gt_320', Infinity]],
   rtf: [['le_0_1', 0.1], ['le_0_25', 0.25], ['le_0_5', 0.5], ['le_1', 1], ['gt_1', Infinity]],
@@ -29,7 +27,9 @@ export const utcDay = (t = Date.now()) => new Date(t).toISOString().slice(0, 10)
 const FALLBACKS = ['non_finite', 'deadline', 'ane_unavailable', 'npu_unavailable', 'model_load', 'thermal', 'memory', 'other'];
 const CAP = 10_000_000;
 const DAY_MS = 86_400_000;
-/** The 2.0.1 counters at the top level of a report (each left out when zero). */
+/** The fields an app can report (SPEC 6.3), in the order of the wire body's `reported` list. */
+export const REPORTED = Object.freeze(['ayahs', 'surah_ayahs', 'coverage', 'words', 'rule_checks', 'rule_flags']);
+/** The counters at the top level of a report (each left out when zero); ayahs and words are app-reported in 3.0. */
 export const COUNTERS = Object.freeze(['launches', 'ayahs', 'words', 'share_asked', 'share_yes', 'share_no']);
 /** At most this many rule keys per report (the server's limit). */
 export const MAX_RULE_KEYS = 32;
@@ -40,9 +40,6 @@ export function newReportId() {
   globalThis.crypto.getRandomValues(b);
   return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
-// a verdict or a check that ran: its status is not off and it is not disabled (absent settings: ran)
-const ran = (x) => x === undefined || x === null || (x.status !== 'off' && x.enabled !== false);
-
 /**
  * The day's counters, persisted in `state` under "telemetry.days" ({ day: payload-in-progress }).
  * `device` is { class, soc?, os_major, ram_tier? }, `product` the platform's (productOf), `platform` the token app's.
@@ -53,7 +50,7 @@ export const PRODUCT_OF = Object.freeze({ web: 'web', windows: 'native', linux: 
 export const productOf = (platform) => PRODUCT_OF[platform] || 'web';
 
 export class Telemetry {
-  constructor({ state, platform = 'web', product = productOf(platform), sdkVersion = '2.0.2', appVersion = '0', device, clock = Date.now, enabled = true }) {
+  constructor({ state, platform = 'web', product = productOf(platform), sdkVersion = '3.0.0', appVersion = '0', device, clock = Date.now, enabled = true }) {
     Object.assign(this, { state, product, platform, sdkVersion, appVersion, device, clock });
     this.enabled = enabled;
     this.coldStartDone = false;
@@ -80,130 +77,107 @@ export class Telemetry {
     this._save(days);
   }
 
-  /** The cohort of a model's settings: revision, context, backend, preset (custom when any raw site
-   * threshold is set), word level. */
-  static cohortKey(tf) {
-    const e = tf.settings.effective();
-    const app = tf.settings.app || {};
-    const ov = { ...((tf.settings.remote && tf.settings.remote.overrides) || {}), ...(app.overrides || {}) };
-    const custom = Object.values(ov).some((o) => o && Object.prototype.hasOwnProperty.call(o, 'threshold'));
-    const wl = tf.settings.wordLevel ? tf.settings.wordLevel() : null;
-    let word = 'off', wordBucket = '';
-    if (wl && wl.enabled) {
-      if (wl.preset) word = wl.preset; else { word = 'custom'; wordBucket = bucket('word', wl.threshold); }
-    }
-    return {
-      revision: String((tf.folder && tf.folder.manifest && (tf.folder.manifest.model_id + '+' + tf.folder.manifest.revision)) || 'unknown').slice(0, 64),
-      context: tf.context, backend: 'cpu', preset: custom ? 'custom' : e.preset, word_level: word, word_bucket: wordBucket,
-      site_overrides: Math.min(8, Object.keys(ov).filter((k) => CLASSES.includes(k)).length),
-    };
-  }
-
+  // one cohort per model version, build, context and backend
   _cohort(d, key) {
-    let c = d.cohorts.find((x) => ['revision', 'context', 'backend', 'preset', 'word_level', 'word_bucket'].every((k) => x[k] === key[k]));
+    let c = d.cohorts.find((x) => ['revision', 'build', 'context', 'backend'].every((k) => x[k] === key[k]));
     if (!c) {
-      c = { ...key, sessions: 0, minutes: 0, chunks: 0, aborted: 0, fallbacks: {}, self_test: { pass: 0, fail: 0 }, latency_ms: {}, rtf: {},
-        cold_start_ms: {}, model_load_ms: {}, thermal: { transitions: 0, throttled_sessions: 0 }, checks_on: {}, classes: {},
-        session_flag_pct: {}, margin: {}, confidence: {}, madd: { c2: 0, c4: 0, c6: 0, flagged: 0 }, words: { scored: 0, flagged: 0 } };
+      c = { revision: key.revision, build: key.build, context: key.context, backend: key.backend, sessions: 0, minutes: 0, chunks: 0, aborted: 0,
+        fallbacks: {}, self_test: { pass: 0, fail: 0 }, latency_ms: {}, rtf: {}, cold_start_ms: {}, model_load_ms: {},
+        thermal: { transitions: 0, throttled_sessions: 0 }, margin: {}, confidence: {},
+        // the 6.2 counters, kept as whole numbers until the wire body (audio, speech and silence in ms, compute in microseconds)
+        takes: 0, audio_ms: 0, speech_ms: 0, silence_ms: 0, tokens: {}, compute_us: 0 };
       d.cohorts.push(c);
     }
-    c.site_overrides = key.site_overrides;
     return c;
   }
 
-  modelLoaded(tf, ms) { this._edit((d) => bump(this._cohort(d, Telemetry.cohortKey(tf)).model_load_ms, 'ms', ms)); }
+  /** A model was opened: `cohort` is { revision (the model version), build, context, backend }. */
+  modelLoaded(cohort, ms) { this._edit((d) => bump(this._cohort(d, cohort).model_load_ms, 'ms', ms)); }
 
-  /** A take ended: audio seconds, chunk timings (ms each), whether it was the launch's first. */
-  session(tf, { seconds, chunkMs = [], aborted = false, firstMs = null }) {
-    const chunk = tf.info.chunkMs || 320;
+  /**
+   * A take ended (SPEC 6.1 and 6.2), everything measured by the SDK from inference: the input samples and
+   * their rate, the compute time of each chunk (whole microseconds) and the chunk length, whether the take was
+   * cancelled or failed (`aborted`), the first audio's delay when it was the launch's first take, margin and
+   * confidence per emitted token, greedy tokens per selected CTC head, speech and silence frames (40 ms each).
+   * `sessions` counts every take, `aborted` those cancelled or failed; only a take that ended with its Heads
+   * adds to `takes`, `audio_s`, `speech_s`, `silence_s`, `tokens` and `compute_s`.
+   */
+  take(cohort, { samples = 0, sampleRate = 16000, chunkUs = [], chunkLenMs = 320, aborted = false, firstMs = null, margins = [], confidences = [],
+    tokens = {}, speechFrames = 0, silenceFrames = 0 }) {
     this._edit((d) => {
-      const c = this._cohort(d, Telemetry.cohortKey(tf));
-      if (aborted) c.aborted++; else c.sessions++;
-      c.minutes = Math.round((c.minutes + seconds / 60) * 1000) / 1000;
-      c.chunks = Math.min(CAP, c.chunks + chunkMs.length);
-      for (const ms of chunkMs) { bump(c.latency_ms, 'latency_ms', ms); bump(c.rtf, 'rtf', ms / chunk); }
+      const c = this._cohort(d, cohort);
+      c.sessions++;
+      if (aborted) c.aborted++;
+      c.minutes = Math.round((c.minutes + samples / sampleRate / 60) * 1000) / 1000;
+      c.chunks = Math.min(CAP, c.chunks + chunkUs.length);
+      for (const us of chunkUs) { bump(c.latency_ms, 'latency_ms', us / 1000); bump(c.rtf, 'rtf', us / 1000 / chunkLenMs); }
       if (!this.coldStartDone && firstMs !== null) { bump(c.cold_start_ms, 'ms', firstMs); this.coldStartDone = true; }
-      const eff = tf.settings.effective();
-      const on = { letters: false, vowels: false, length: false, madd: eff.madd.enabled, gemination: eff.gemination.enabled,
-        qalqalah: eff.qalqalah.enabled, lazim: eff.lazim.enabled };
-      for (const [cls, s] of Object.entries(eff.sites)) {
-        const k = { vowel_sub: 'vowels', vowel_del: 'vowels', vowel_ins: 'vowels', short_to_long: 'length', long_to_short: 'length' }[cls] || 'letters';
-        if (s.enabled) on[k] = true;
-      }
-      for (const k of CHECKS) if (on[k]) c.checks_on[k] = (c.checks_on[k] || 0) + 1;
+      for (const m of margins) bump(c.margin, 'margin', m);
+      for (const x of confidences) bump(c.confidence, 'confidence', x);
+      if (aborted) return;
+      c.takes++;
+      c.audio_ms += Math.floor((1000 * samples) / sampleRate);
+      c.speech_ms += 40 * speechFrames;
+      c.silence_ms += 40 * silenceFrames;
+      for (const us of chunkUs) c.compute_us += us;
+      for (const [head, n] of Object.entries(tokens)) if (n > 0) c.tokens[head] = Math.min(CAP, (c.tokens[head] || 0) + n);
     });
   }
 
-  /** The decoded layer of a take: margin and confidence per emitted token. */
-  decoded(tf, decoded) {
+  /** App-reported (SPEC 6.3): the learner recited `ayahs` ayahs of `surah` (negative to take a replaced report back). */
+  recited(surah, ayahs) {
     this._edit((d) => {
-      const c = this._cohort(d, Telemetry.cohortKey(tf));
-      for (const t of decoded.tokens) {
-        bump(c.margin, 'margin', t.margin);
-        if (t.confidence !== null) bump(c.confidence, 'confidence', t.confidence);
+      const k = String(surah);
+      d.ayahs = Math.max(0, Math.min(CAP, (d.ayahs || 0) + ayahs));
+      for (const f of ['surah_ayahs', 'coverage']) {
+        d[f] = d[f] || {};
+        d[f][k] = Math.max(0, (d[f][k] || 0) + ayahs);
+        if (!d[f][k]) delete d[f][k];
       }
     });
   }
 
-  /** A scored ayah: per class sites and flags, the session's flag %, madd counts, words, coverage; and the 2.0.1
-   * counters: ayahs, surah_ayahs, words, rule_checks / rule_flags (a verdict counts only when its check ran). */
-  scored(tf, r) {
+  /**
+   * App-reported (SPEC 6.3): the app's own judge checked `rule` `checked` times and flagged `flagged` of them.
+   * The caller validated the input. At most 32 distinct rules a day: a later one is dropped (false).
+   */
+  checks(rule, checked, flagged) {
+    if (!checked) return true; // valid, counts nothing, takes no place among the day's rules
+    let kept = this.enabled;
     this._edit((d) => {
-      d.ayahs = Math.min(CAP, (d.ayahs || 0) + 1);
-      if (Number.isInteger(r.surah) && r.surah >= 1 && r.surah <= 114) {
-        d.surah_ayahs = d.surah_ayahs || {};
-        d.surah_ayahs[String(r.surah)] = (d.surah_ayahs[String(r.surah)] || 0) + 1;
+      d.rule_checks = d.rule_checks || {};
+      d.rule_flags = d.rule_flags || {};
+      // 32 distinct rules a UTC day, over all of the day's deltas: the names seen today are kept beside the counts
+      const day = utcDay(this.clock());
+      let seen = this.state.get('telemetry.rules');
+      if (!seen || seen.day !== day) seen = { day, names: [] };
+      if (!seen.names.includes(rule)) {
+        if (seen.names.length >= MAX_RULE_KEYS) { kept = false; return; }
+        seen.names.push(rule);
+        this.state.set('telemetry.rules', seen);
       }
-      const eff = r.settings || {};
-      const rule = (key, checked, flagged) => {
-        if (!checked || !RULE_KEY.test(key)) return;
-        d.rule_checks = d.rule_checks || {};
-        d.rule_flags = d.rule_flags || {};
-        if (!(key in d.rule_checks) && Object.keys(d.rule_checks).length >= MAX_RULE_KEYS) return;
-        d.rule_checks[key] = Math.min(CAP, (d.rule_checks[key] || 0) + 1);
-        if (flagged) d.rule_flags[key] = Math.min(d.rule_checks[key], (d.rule_flags[key] || 0) + 1);
-      };
-      for (const s of r.sites || []) rule(s.class, ran(s) && ran(eff.sites && eff.sites[s.class]), s.flagged);
-      for (const m of r.madd || []) rule('madd', ran(m) && ran(eff.madd), m.flagged);
-      for (const q of r.qalqalah || []) rule('qalqalah', ran(q) && ran(eff.qalqalah), q.flagged);
-      for (const g of r.gemination || []) rule('gemination', ran(g) && ran(eff.gemination), g.flagged);
-      for (const w of r.words || []) {
-        if (w.score === null || w.score === undefined) continue;
-        d.words = Math.min(CAP, (d.words || 0) + 1);
-        rule('word', true, w.flagged === true);
-      }
-      const c = this._cohort(d, Telemetry.cohortKey(tf));
-      for (const s of r.sites) {
-        const k = (c.classes[s.class] = c.classes[s.class] || { sites: 0, flagged: 0 });
-        k.sites++;
-        if (s.flagged) k.flagged++;
-      }
-      const n = r.summary.sites || 0;
-      bump(c.session_flag_pct, 'pct', n ? (100 * r.summary.flagged) / n : 0);
-      for (const m of r.madd) {
-        if (m.count === 2) c.madd.c2++; else if (m.count === 4) c.madd.c4++; else if (m.count === 6) c.madd.c6++;
-        if (m.flagged) c.madd.flagged++;
-      }
-      c.words.scored += r.words.filter((w) => w.score !== null).length;
-      c.words.flagged += r.words.filter((w) => w.flagged).length;
-      d.coverage[String(r.surah)] = (d.coverage[String(r.surah)] || 0) + 1;
+      d.rule_checks[rule] = Math.min(CAP, (d.rule_checks[rule] || 0) + checked);
+      if (flagged) d.rule_flags[rule] = Math.min(d.rule_checks[rule], (d.rule_flags[rule] || 0) + flagged);
+      if (rule === 'word') d.words = Math.min(CAP, (d.words || 0) + checked);
     });
+    return kept;
   }
 
-  fallback(tf, reason) {
+  fallback(cohort, reason) {
     const k = FALLBACKS.includes(reason) ? reason : 'other';
-    this._edit((d) => { const c = this._cohort(d, Telemetry.cohortKey(tf)); c.fallbacks[k] = (c.fallbacks[k] || 0) + 1; });
+    this._edit((d) => { const c = this._cohort(d, cohort); c.fallbacks[k] = (c.fallbacks[k] || 0) + 1; });
   }
 
-  download({ revision, profile, bytes, success, resumed }) {
+  /** A model download: `revision` is the model version, `build` the build id (40 hex) when known. */
+  download({ revision, build = null, profile, bytes, success, resumed }) {
     this._edit((d) => {
-      let x = d.downloads.find((y) => y.revision === revision && y.profile === profile);
-      if (!x) { x = { revision, profile, bytes: 0, success: 0, failed: 0, resumed: 0 }; d.downloads.push(x); }
+      let x = d.downloads.find((y) => y.revision === revision && (y.build || null) === build && y.profile === profile);
+      if (!x) { x = { revision, ...(build ? { build } : {}), profile, bytes: 0, success: 0, failed: 0, resumed: 0 }; d.downloads.push(x); }
       x.bytes += bytes; if (success) x.success++; else x.failed++; if (resumed) x.resumed++;
     });
   }
 
-  /** +n on a 2.0.1 counter (COUNTERS: launches, share_asked, share_yes, share_no, ...). */
+  /** +n on a top-level counter (launches, share_asked, share_yes, share_no). */
   count(field, n = 1) {
     if (!COUNTERS.includes(field)) throw new RangeError(`telemetry counter ${field}`);
     this._edit((d) => { d[field] = Math.min(CAP, (d[field] || 0) + n); });
@@ -265,7 +239,7 @@ export class Telemetry {
   /** Drop a day's open counts (kept for 2.0.0 callers). */
   drop(day) { const d = this._days(); delete d[day]; this._save(d); }
   /** Drop everything, open counts and sealed reports (flags.analytics false). */
-  clear() { this.state.set('telemetry.days', null); this.state.set('telemetry.sealed', null); }
+  clear() { this.state.set('telemetry.days', null); this.state.set('telemetry.sealed', null); this.state.set('telemetry.rules', null); }
 
   /** Whether a report body carries anything (a delta with no count is not sent). */
   static hasContent(b) {
@@ -274,6 +248,19 @@ export class Telemetry {
 
   /** The closed v2 body: empty optional parts removed, cohorts beyond 16 merged into the largest. */
   static wire(p) {
+    // the 6.2 fields of a cohort are left out when zero
+    const lean = (c) => {
+      const { takes, audio_ms: audio, speech_ms: speech, silence_ms: silence, compute_us: compute, tokens, ...o } = c;
+      if (takes > 0) o.takes = takes;
+      if (audio > 0) o.audio_s = audio / 1000;
+      if (speech > 0) o.speech_s = speech / 1000;
+      if (silence > 0) o.silence_s = silence / 1000;
+      if (tokens && Object.keys(tokens).length) o.tokens = tokens;
+      // compute seconds to the millisecond, rounded half up from the microseconds
+      const ms = Math.floor(((compute || 0) + 500) / 1000);
+      if (ms > 0) o.compute_s = ms / 1000;
+      return o;
+    };
     let cohorts = p.cohorts.slice().sort((a, b) => b.sessions - a.sessions);
     if (cohorts.length > 16) {
       const keep = cohorts.slice(0, 16), rest = cohorts.slice(16);
@@ -281,10 +268,10 @@ export class Telemetry {
       cohorts = keep;
     }
     const out = { v: 2, day: p.day, product: p.product, platform: p.platform, sdk_version: p.sdk_version, app_version: p.app_version,
-      device: p.device, cohorts };
+      device: p.device, cohorts: cohorts.map(lean) };
     if (Object.keys(p.coverage || {}).length) out.coverage = p.coverage;
     if ((p.downloads || []).length) out.downloads = p.downloads;
-    // the 2.0.1 fields, each left out when zero or empty
+    // the top-level counters, each left out when zero or empty
     for (const k of COUNTERS) if (p[k] > 0) out[k] = p[k];
     if (p.surah_ayahs && Object.keys(p.surah_ayahs).length) out.surah_ayahs = p.surah_ayahs;
     if (p.rule_checks && Object.keys(p.rule_checks).length) {
@@ -292,6 +279,9 @@ export class Telemetry {
       const flags = Object.fromEntries(Object.entries(p.rule_flags || {}).filter(([k, v]) => v > 0 && k in p.rule_checks));
       if (Object.keys(flags).length) out.rule_flags = flags;
     }
+    // which of the fields present the app reported (SPEC 6.3), so the portal labels them without guessing
+    const reported = REPORTED.filter((k) => out[k] !== undefined);
+    if (reported.length) out.reported = reported;
     return out;
   }
 }

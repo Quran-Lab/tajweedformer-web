@@ -6,15 +6,13 @@
 // tajweedformer-sdk-swift's ModelManifest.signedMessage), so the same signature verifies in every SDK;
 // test/tajweed/manifest_v2_vector.json is the shared vector.
 //
-// A V4 folder (sdk/v4.0) is manifest format 2 with engine_format 2: calibration.json and the expected
-// table must be listed, min_sdk_version must be at most this SDK's version. A file the manifest does
-// not list is never read. Hashing and the signature use WebCrypto (globalThis.crypto.subtle), present
-// in every current browser and in Node 20 and later.
-
-import { validateCalibration, TajweedSettingsError } from './settings.js';
+// A model folder for SDK 3.0 is manifest format 3 (engine_format 3) with a `version` (the model's semver;
+// the folder is one build of it): min_sdk_version must be at most this SDK's version. calibration.json is
+// read-only data and may be absent. A file the manifest does not list is never read. Hashing and the
+// signature use WebCrypto (globalThis.crypto.subtle), present in every current browser and in Node 20 and later.
 
 /** The version of this SDK, compared with a manifest's min_sdk_version. */
-export const SDK_VERSION = '2.0.2';
+export const SDK_VERSION = '3.0.0';
 
 /** Manifest formats this SDK reads. */
 export const SUPPORTED_MANIFEST_FORMATS = Object.freeze([1, 2, 3]);
@@ -36,8 +34,11 @@ export const GOLDEN_TOLERANCE_KEYS = Object.freeze(['token_diffs', 'site_flag_di
  * qlab-api's MANIFEST_SIGNING_KEY, key id 660a07197c4808da, as compiled into the Swift and Android SDKs. */
 export const QURANLAB_PUBLIC_KEY_HEX = 'fc02fbd906608ebc206a371d8e61c1062ea555778b44b1ac834061043aee4a33';
 
-/** Files a V4 folder must list besides the manifest's own role files (tokens, sidecar, keeps). */
-export const V4_REQUIRED_FILES = Object.freeze(['calibration.json', 'expected_tj3.zfx']);
+/** A model version: x.y.z, no leading zeros, no suffix (SPEC 2a). Anything else is not a version. */
+export const MODEL_VERSION_RE = /^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,5})$/;
+// a build key of a tolerance field: 1 to 64 printable ASCII characters (no space)
+const BUILD_KEY_RE = /^[\x21-\x7e]{1,64}$/;
+const RAW_HEAD_RE = /^[a-z][a-z0-9_]{0,31}$/;
 
 const V2_FIELDS = ['model_id', 'family', 'revision', 'min_sdk_version', 'engine_format', 'coreml_format',
   'tokens_sha256', 'coreml', 'sidecar', 'keeps', 'tokens'];
@@ -116,7 +117,7 @@ export async function sha256Hex(bytes) {
  * @param {{tolerance?: boolean}} [o]  tolerance: false leaves the golden_tolerance lines out
  * @returns {string}
  */
-export function signedText(m, { tolerance = true } = {}) {
+export function signedText(m, { tolerance = true, raw = true } = {}) {
   const files = [...m.files].sort((a, b) => compareBytes(utf8(a.path), utf8(b.path)));
   let t;
   if (m.format === 1) {
@@ -128,8 +129,13 @@ export function signedText(m, { tolerance = true } = {}) {
   } else if (m.format === 3) {
     // contract LAYOUT.md v2 (tajweedformer-coreml publish/make_manifest3.py signed_text)
     t = 'quranlab-model-manifest 3\n';
-    for (const k of V3_HEADER) t += `${k} ${Array.isArray(m[k]) ? m[k].join(',') : m[k]}\n`;
+    for (const k of V3_HEADER) {
+      t += `${k} ${Array.isArray(m[k]) ? m[k].join(',') : m[k]}\n`;
+      // SDK 3.0 (SPEC 2a): the model version, one line right after the revision, only when the field is present
+      if (k === 'revision' && m.version !== undefined) t += `version ${m.version}\n`;
+    }
     if (tolerance) t += toleranceLines(m.golden_tolerance);
+    if (raw) t += rawToleranceLines(m.golden_raw_tolerance);
     const plat = (p) => (p === '*' ? '*' : V3_PLATFORMS.filter((x) => [].concat(p).includes(x)).join(','));
     for (const f of files) {
       const d = f.decoded || null;
@@ -144,14 +150,65 @@ export function signedText(m, { tolerance = true } = {}) {
   return t;
 }
 
-// The golden_tolerance lines of the signed text: every entry whose value is an object, sorted by
-// the build key's UTF-8 bytes (none for an absent field or one that is not an object).
+// A count of a tolerance entry: a number with an integer value 0 to 1,000,000.
+const isCount = (x) => typeof x === 'number' && Number.isInteger(x) && x >= 0 && x <= 1000000;
+// A well-formed `golden_tolerance` entry: its three counts (other keys of the entry are ignored).
+const toleranceEntryOk = (b, v) => BUILD_KEY_RE.test(b) && isObject(v) && GOLDEN_TOLERANCE_KEYS.every((k) => isCount(v[k]));
+
+// The golden_tolerance lines of the signed text: one per WELL-FORMED entry, sorted by the build key's UTF-8
+// bytes (none for an absent field or one that is not an object). An entry that is not well formed has no line.
 function toleranceLines(gt) {
   if (!isObject(gt)) return '';
-  const val = (x) => (x === undefined || x === null ? '-' : String(x));
-  return Object.keys(gt).filter((b) => isObject(gt[b]))
+  return Object.keys(gt).filter((b) => toleranceEntryOk(b, gt[b]))
     .sort((a, b) => compareBytes(utf8(a), utf8(b)))
-    .map((b) => `golden_tolerance ${b} ${GOLDEN_TOLERANCE_KEYS.map((k) => val(gt[b][k])).join(' ')}\n`).join('');
+    .map((b) => `golden_tolerance ${b} ${GOLDEN_TOLERANCE_KEYS.map((k) => String(gt[b][k])).join(' ')}\n`).join('');
+}
+
+// A distance or probability of a golden_raw entry: a number in [0, max] with at most 6 digits after the dot.
+const isRawNum = (x, max) => typeof x === 'number' && Number.isFinite(x) && x >= 0 && x <= max && Number(x.toFixed(6)) === x;
+const sameKeys = (o, keys) => { const k = Object.keys(o); return k.length === keys.length && keys.every((x) => k.includes(x)); };
+// A well-formed build of `golden_raw_tolerance` (SPEC section 5): every head is `attr` with exactly { p_mean } or a
+// CTC head name with exactly { token_edits, lp_mean, lp_p99 }, each in range. One bad head makes the build malformed.
+function rawBuildOk(b, v) {
+  if (!BUILD_KEY_RE.test(b) || !isObject(v)) return false;
+  for (const [h, e] of Object.entries(v)) {
+    if (!isObject(e)) return false;
+    if (h === 'attr') { if (!(sameKeys(e, ['p_mean']) && isRawNum(e.p_mean, 1))) return false; continue; }
+    if (!RAW_HEAD_RE.test(h)) return false;
+    if (!(sameKeys(e, ['token_edits', 'lp_mean', 'lp_p99']) && isCount(e.token_edits) && isRawNum(e.lp_mean, 30) && isRawNum(e.lp_p99, 30))) return false;
+  }
+  return true;
+}
+// <num> of a golden_raw line: the value with 6 digits after the dot, trailing zeros removed, one digit kept
+// ("0.05", "1.5", "2.0"). Made from the parsed number, never from the characters of the JSON.
+const rawNum = (x) => x.toFixed(6).replace(/0+$/, '').replace(/\.$/, '.0');
+
+// The golden_raw lines of the signed text: one per head of each well-formed build, sorted by the bytes of
+// "<build> <head>", after the golden_tolerance lines and before the first file line.
+function rawToleranceLines(grt) {
+  if (!isObject(grt)) return '';
+  const rows = [];
+  for (const b of Object.keys(grt)) {
+    if (!rawBuildOk(b, grt[b])) continue;
+    for (const [h, e] of Object.entries(grt[b])) {
+      const line = h === 'attr' ? `golden_raw ${b} attr p_mean=${rawNum(e.p_mean)}\n`
+        : `golden_raw ${b} ${h} token_edits=${String(e.token_edits)} lp_mean=${rawNum(e.lp_mean)} lp_p99=${rawNum(e.lp_p99)}\n`;
+      rows.push([utf8(`${b} ${h}`), line]);
+    }
+  }
+  return rows.sort((x, y) => compareBytes(x[0], y[0])).map((x) => x[1]).join('');
+}
+
+/**
+ * The `golden_raw_tolerance` field read as signed (SPEC section 5): { tolerance: the well-formed builds,
+ * tokensOnly: the malformed ones (judged on tokens only) }. null when the field is absent or not an object. The
+ * web SDK has no accelerator and never applies it; it reads it because the signature covers its lines.
+ */
+export function parseGoldenRawTolerance(grt) {
+  if (!isObject(grt)) return null;
+  const tolerance = {}, tokensOnly = [];
+  for (const [b, v] of Object.entries(grt)) { if (rawBuildOk(b, v)) tolerance[b] = v; else tokensOnly.push(b); }
+  return { tolerance, tokensOnly };
 }
 
 /**
@@ -164,9 +221,8 @@ function toleranceLines(gt) {
 export function parseGoldenTolerance(gt) {
   if (!isObject(gt)) return null;
   const out = {};
-  const count = (x) => isInt(x) && x >= 0 && x <= 1000000;
   for (const [b, v] of Object.entries(gt)) {
-    if (!b || /[ \n]/.test(b) || !isObject(v) || !GOLDEN_TOLERANCE_KEYS.every((k) => count(v[k]))) continue;
+    if (!toleranceEntryOk(b, v)) continue;
     out[b] = { token_diffs: v.token_diffs, site_flag_diffs: v.site_flag_diffs, word_flag_diffs: v.word_flag_diffs };
   }
   return out;
@@ -215,6 +271,9 @@ export function checkManifestShape(m) {
   if (m.format === 3) {
     if (!Array.isArray(m.contexts) || !m.contexts.length || m.contexts.some((c) => typeof c !== 'string' || !/^c\d+_l\d+$/.test(c))) bad('contexts');
     if (!m.contexts.includes(m.default_context)) bad('default_context is not one of contexts');
+    // SDK 3.0 (SPEC 2a): a version, when present, is x.y.z without leading zeros or a suffix; so is min_sdk_version
+    if (m.version !== undefined && (typeof m.version !== 'string' || !MODEL_VERSION_RE.test(m.version))) bad('version is not a model version (x.y.z)');
+    if (!MODEL_VERSION_RE.test(m.min_sdk_version)) bad('min_sdk_version is not x.y.z');
   }
   if (m.format >= 2) {
     if (!ID_RE.test(m.model_id)) bad('model_id is not a model id');
@@ -271,7 +330,16 @@ export async function verifyManifestSignature(m, trustedKeys = [QURANLAB_PUBLIC_
  * @returns {Promise<{valid: boolean, toleranceSigned: boolean}>}
  */
 export async function checkManifestSignature(m, trustedKeys = [QURANLAB_PUBLIC_KEY_HEX]) {
-  const no = { valid: false, toleranceSigned: false };
+  const r = await verifySignedTexts(m, trustedKeys);
+  return { valid: r.valid, toleranceSigned: r.toleranceSigned };
+}
+
+/**
+ * The signature check of SDK 3.0 with everything it found: { valid, toleranceSigned, rawToleranceSigned, text }
+ * (text: the signed text the signature verified on, or null).
+ */
+export async function verifySignedTexts(m, trustedKeys = [QURANLAB_PUBLIC_KEY_HEX]) {
+  const no = { valid: false, toleranceSigned: false, rawToleranceSigned: false, text: null };
   const sig = base64ToBytes(m.signature);
   if (!sig || sig.length !== 64) return no;
   const s = subtle();
@@ -291,10 +359,19 @@ export async function checkManifestSignature(m, trustedKeys = [QURANLAB_PUBLIC_K
     for (const key of keys) if (await s.verify({ name: 'Ed25519' }, key, sig, msg)) return true;
     return false;
   };
-  const hasTolerance = m.format === 3 && m.golden_tolerance !== undefined && m.golden_tolerance !== null;
-  if (!hasTolerance) return { valid: await ok(signedText(m, { tolerance: false })), toleranceSigned: false };
-  if (await ok(signedText(m))) return { valid: true, toleranceSigned: true };
-  return { valid: await ok(signedText(m, { tolerance: false })), toleranceSigned: false };
+  if (m.format !== 3) { const text = signedText(m); return (await ok(text)) ? { valid: true, toleranceSigned: false, rawToleranceSigned: false, text } : no; }
+  // with the golden_tolerance and golden_raw lines; then without the raw lines (the raw tolerance then counts as
+  // absent); then without the 2.x lines; then without both. A text equal to one already tried is skipped.
+  const tried = new Set();
+  for (const [tolerance, raw] of [[true, true], [true, false], [false, true], [false, false]]) {
+    const text = signedText(m, { tolerance, raw });
+    if (tried.has(text)) continue;
+    tried.add(text);
+    if (await ok(text)) {
+      return { valid: true, toleranceSigned: tolerance && toleranceLines(m.golden_tolerance) !== '', rawToleranceSigned: raw && isObject(m.golden_raw_tolerance), text };
+    }
+  }
+  return no;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -323,6 +400,53 @@ export function urlReader(baseUrl, fetchImpl = globalThis.fetch) {
 }
 
 /**
+ * The acceptance checks of a manifest file, in their fixed order (the first that fails decides the code):
+ * 1. a config named the build (`expect.build`): the SHA-256 of the bytes starts with it, else build_mismatch;
+ * 2. the bytes are a JSON object of a known manifest shape, else manifest_invalid (format_unsupported);
+ * 3. the signature verifies with a trusted key, else signature_invalid (an unsigned manifest: signature_required
+ *    when `requireSignature`);
+ * 4. with `requireVersion` (SDK 3.0 models): the manifest has `version`, else version_missing (a 2.x build);
+ * 5. min_sdk_version is not above the SDK's, else sdk_too_old;
+ * 6. a config named the version (`expect.version`): the manifest's equals it, else version_mismatch.
+ * @param {Uint8Array} raw  manifest.json as stored
+ * @param {object} [opts]  trustedKeys, requireSignature, requireVersion, sdkVersion, expect: { version, build }
+ * @returns {Promise<{manifest: object, build: string, toleranceSigned: boolean, rawToleranceSigned: boolean, signedText: string|null}>}
+ */
+export async function acceptManifest(raw, opts = {}) {
+  const expect = opts.expect || {};
+  const build = (await sha256Hex(raw)).slice(0, 40);
+  if (expect.build && !(await sha256Hex(raw)).startsWith(String(expect.build).toLowerCase())) {
+    throw new ModelFolderError('build_mismatch', `manifest.json is not the build the config named (${expect.build})`, 'manifest.json');
+  }
+  let m;
+  try { m = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)); } catch (e) {
+    throw new ModelFolderError('manifest_invalid', `manifest.json is not JSON: ${e.message}`, 'manifest.json');
+  }
+  checkManifestShape(m);
+  let toleranceSigned = false, rawToleranceSigned = false, text = null;
+  if (typeof m.signature === 'string') {
+    const sig = await verifySignedTexts(m, opts.trustedKeys || [QURANLAB_PUBLIC_KEY_HEX]);
+    if (!sig.valid) throw new ModelFolderError('signature_invalid', 'the manifest signature does not verify with a trusted key', 'manifest.json');
+    ({ toleranceSigned, rawToleranceSigned, text } = sig);
+  } else if (opts.requireSignature) {
+    throw new ModelFolderError('signature_required', 'the manifest is not signed and a signature is required', 'manifest.json');
+  }
+  if (opts.requireVersion && m.version === undefined) {
+    throw new ModelFolderError('version_missing', 'the manifest names no model version; this SDK needs a model build made for SDK 3.0.0 or later', 'manifest.json');
+  }
+  if (m.format >= 2) {
+    const sdk = opts.sdkVersion || SDK_VERSION;
+    if (!versionAtLeast(sdk, m.min_sdk_version)) {
+      throw new ModelFolderError('sdk_too_old', `${m.model_id} ${m.revision} needs SDK ${m.min_sdk_version} or newer (this is ${sdk})`);
+    }
+  }
+  if (expect.version && expect.version !== m.version) {
+    throw new ModelFolderError('version_mismatch', `the manifest is model version ${m.version}, the config named ${expect.version}`, 'manifest.json');
+  }
+  return { manifest: m, build, toleranceSigned, rawToleranceSigned, signedText: text };
+}
+
+/**
  * A verified model folder. open() checks the manifest (shape, signature, compatibility, role files
  * listed) and, by default, every listed file's size and SHA-256; read() returns a listed file's
  * bytes, checked against the manifest on first read and cached only when `cache` is set.
@@ -341,20 +465,7 @@ export class ModelFolder {
   static async open(reader, opts = {}) {
     const raw = await reader.read('manifest.json');
     if (!raw) throw new ModelFolderError('manifest_missing', 'no manifest.json in the model folder', 'manifest.json');
-    let m;
-    try { m = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)); } catch (e) {
-      throw new ModelFolderError('manifest_invalid', `manifest.json is not JSON: ${e.message}`, 'manifest.json');
-    }
-    checkManifestShape(m);
-
-    let toleranceSigned = false;
-    if (typeof m.signature === 'string') {
-      const sig = await checkManifestSignature(m, opts.trustedKeys || [QURANLAB_PUBLIC_KEY_HEX]);
-      if (!sig.valid) throw new ModelFolderError('signature_invalid', 'the manifest signature does not verify with a trusted key', 'manifest.json');
-      toleranceSigned = sig.toleranceSigned;
-    } else if (opts.requireSignature) {
-      throw new ModelFolderError('signature_required', 'the manifest is not signed and a signature is required', 'manifest.json');
-    }
+    const { manifest: m, toleranceSigned, rawToleranceSigned, build } = await acceptManifest(raw, opts);
 
     // format 3: files are known by their DECODED path (what the engine opens); the stored (gzip) path is
     // how a reader fetches them. Formats 1 and 2: one path.
@@ -365,10 +476,6 @@ export class ModelFolder {
       if (!listed.has(p)) throw new ModelFolderError('not_listed', `${role} ${p} is not listed in the manifest`, p);
     }
     if (m.format >= 2) {
-      const sdk = opts.sdkVersion || SDK_VERSION;
-      if (!versionAtLeast(sdk, m.min_sdk_version)) {
-        throw new ModelFolderError('sdk_too_old', `${m.model_id} ${m.revision} needs SDK ${m.min_sdk_version} or newer (this is ${sdk})`);
-      }
       if (!(opts.engineFormats || SUPPORTED_ENGINE_FORMATS).includes(m.engine_format)) {
         throw new ModelFolderError('engine_format_unsupported', `engine format ${m.engine_format} is not supported by this SDK`);
       }
@@ -386,6 +493,9 @@ export class ModelFolder {
     f._keep = !!opts.cache;
     // golden_tolerance only when the signature covers it; otherwise absent (every build exact)
     f.goldenTolerance = toleranceSigned ? parseGoldenTolerance(m.golden_tolerance) : null;
+    f.goldenRawTolerance = rawToleranceSigned ? parseGoldenRawTolerance(m.golden_raw_tolerance) : null;
+    // the build id (SPEC 2a): the first 40 hex of the SHA-256 of the manifest file as stored
+    f.build = build;
     if ((opts.verify || 'all') === 'all') await f.verifyAll();
     return f;
   }
@@ -398,6 +508,10 @@ export class ModelFolder {
   toleranceFor(build) {
     return (this.goldenTolerance && this.goldenTolerance[build]) || { token_diffs: 0, site_flag_diffs: 0, word_flag_diffs: 0 };
   }
+  /** The manifest's entry of a logical path ({ path, size, sha256, stored, role, context, ... }), or null. */
+  entry(path) { return this._listed.get(path) || null; }
+  /** Logical paths whose role is `role`. */
+  withRole(role) { return this.paths.filter((p) => this._listed.get(p).role === role); }
   /** Every listed path, sorted by UTF-8 bytes. */
   get paths() { return [...this._listed.keys()].sort((a, b) => compareBytes(utf8(a), utf8(b))); }
   /** Whether the manifest lists `path`. */
@@ -475,42 +589,31 @@ export function parseTokens(text) {
 }
 
 /**
- * Open a V4 TajweedFormer folder (sdk/v4.0): a format 2 manifest with engine_format 2, every
- * V4_REQUIRED_FILES entry listed, calibration.json valid and naming the manifest's model, tokens.txt
- * with 38 entries matching calibration's tokens_sha256 when it gives one.
+ * Open a TajweedFormer model folder for SDK 3.0: manifest format 3 with engine_format 3 and a `version`
+ * (SPEC 2a: a manifest without one is refused), tokens.txt with 38 entries. calibration.json is not needed:
+ * when listed it is handed over as data by the caller. `expect` names what the signed config asked for:
+ * the model version the manifest must carry and the build (the manifest's SHA-256 must start with it).
  * @param {{read(path: string): Promise<Uint8Array|null>}} reader
- * @param {object} [opts]  as ModelFolder.open
- * @returns {Promise<{ folder: ModelFolder, calibration: object, tokens: string[], contexts: string[] }>}
+ * @param {object} [opts]  as ModelFolder.open, plus expect: { version?: string, build?: string }
+ * @returns {Promise<{ folder: ModelFolder, tokens: string[], contexts: string[], version: string, build: string }>}
  */
 export async function openTajweedFolder(reader, opts = {}) {
-  const folder = await ModelFolder.open(reader, { ...opts, engineFormats: [...ENGINE_FORMATS_TAJWEEDFORMER] });
+  const folder = await ModelFolder.open(reader, { ...opts, engineFormats: [3], requireVersion: true });
   const m = folder.manifest;
-  if (!(m.format === 2 && m.engine_format === 2) && !(m.format === 3 && m.engine_format === 3)) {
-    throw new ModelFolderError('format_unsupported', 'a TajweedFormer folder needs manifest format 2 (engine_format 2) or 3 (engine_format 3)');
-  }
-  for (const p of V4_REQUIRED_FILES) {
-    if (!folder.has(p)) throw new ModelFolderError('not_listed', `${p} is required by a TajweedFormer folder and is not listed`, p);
-  }
-  let calibration;
-  try {
-    calibration = validateCalibration(JSON.parse(await folder.readText('calibration.json')));
-  } catch (e) {
-    if (e instanceof ModelFolderError) throw e;
-    throw new ModelFolderError('calibration_invalid', `calibration.json: ${e instanceof TajweedSettingsError ? e.message : e}`, 'calibration.json');
-  }
-  if (calibration.model_id !== m.model_id) {
-    throw new ModelFolderError('calibration_invalid', `calibration.json is for ${calibration.model_id}, the manifest for ${m.model_id}`, 'calibration.json');
-  }
-  if (HEX64_RE.test(calibration.tokens_sha256 || '') && calibration.tokens_sha256.toLowerCase() !== m.tokens_sha256.toLowerCase()) {
-    throw new ModelFolderError('calibration_invalid', 'calibration.json tokens_sha256 does not match the manifest', 'calibration.json');
+  if (!(m.format === 3 && m.engine_format === 3)) {
+    throw new ModelFolderError('format_unsupported', 'a TajweedFormer folder needs manifest format 3 (engine_format 3)');
   }
   const tokens = parseTokens(await folder.readText(m.tokens));
   if (tokens.length !== 38 || tokens.some((t) => t === undefined)) {
     throw new ModelFolderError('tokens_invalid', `${m.tokens} has ${tokens.length} entries, a TajweedFormer has 38`, m.tokens);
   }
-  if (m.format === 3) {
-    const a = [...m.contexts].sort().join(','), c = Object.keys(calibration.contexts).sort().join(',');
-    if (a !== c) throw new ModelFolderError('calibration_invalid', `the manifest's contexts (${a}) are not calibration.json's (${c})`, 'calibration.json');
-  }
-  return { folder, calibration, tokens, contexts: Object.keys(calibration.contexts) };
+  return { folder, tokens, contexts: [...m.contexts], version: m.version, build: folder.build };
+}
+
+/** Two model versions compared part by part as integers: -1, 0 or 1; null when either is not a version. */
+export function compareModelVersions(a, b) {
+  const pa = MODEL_VERSION_RE.exec(String(a)), pb = MODEL_VERSION_RE.exec(String(b));
+  if (!pa || !pb || typeof a !== 'string' || typeof b !== 'string') return null;
+  for (let i = 1; i <= 3; i++) { const x = Number(pa[i]), y = Number(pb[i]); if (x !== y) return x < y ? -1 : 1; }
+  return 0;
 }

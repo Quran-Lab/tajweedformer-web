@@ -1,6 +1,5 @@
-// @quran-lab/tajweedformer/platform: the Quran Lab platform client:
-// key, token, register, the signed config, telemetry v2 (on by default, anonymous), issues.
-//   import { QuranLab } from '@quran-lab/tajweedformer/platform';
+// SDK internals: the platform client's modules in one place, for the SDK's own code and tests. Not a package
+// entry: apps use TajweedClient (web/index.js).
 export { QuranLab, PlatformError, verifySignedConfig, keyId, SDK_VERSION, API_URL, CDN_URL, DELTA_INTERVAL_MS } from './client.js';
 export { Telemetry, bucket, utcDay, deviceInfo, COUNTERS, newReportId } from './telemetry.js';
 export { memoryState, localState, dirState } from './storage.js';

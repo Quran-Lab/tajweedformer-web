@@ -21,14 +21,8 @@ export const HEAD_SPECS = Object.freeze([
   { name: 'conf', key: 'conf', width: 1, rate: 20, kind: 'logit', what: 'the frame label is truthful' },
 ]);
 
-/** The heads the scorer needs; checks whose head is missing are skipped. */
-export const SCORER_HEADS = Object.freeze(['log_probs', 'inter1_log_probs', 'timing_log_probs', 'gem', 'attr_qalqalah']);
-
 export const VOCAB = 38;
 export const BLANK = 0;
-
-/** Madd classes of the expected table (the engine's ZfTajweedMaddClass), index = value. */
-export const MADD_CLASSES = Object.freeze(['none', 'fixed2', 'muttasil', 'free', 'lazim']);
 
 /** Audio per engine chunk in ms for a context name ("c16_l64" -> 320: 16 encoder frames of 20 ms). */
 export function contextChunkMs(context) {

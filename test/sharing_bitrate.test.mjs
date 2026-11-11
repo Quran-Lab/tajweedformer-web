@@ -5,6 +5,7 @@
 // do not, and each segment's bitrate is in its marker and the outbox item. The stream itself at several
 // bitrates is checked in sharing_ogg_append.test.mjs.
 import test from 'node:test';
+import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -95,8 +96,10 @@ function speak(cap, seconds, state) {
 async function pipeline(server) {
   const tokenProvider = async () => ({ token: 'qlt_v1.eyJ2IjoxfQ.web', attested: false });
   tokenProvider.invalidate = async () => {};
+  // share_join_ms 0: a session's recording closes when the session ends, as before 2.0.3 (takes that share a
+  // recording, and the ladder across them, are in sharing_takes.test.mjs)
   return createSharing({ api: API, fetch: server.fetch, tokenProvider, storage: new MemoryStorage(), consentVersion: 'share-2026-11-09',
-    enabled: () => true, flags: () => ({ contributions: true, upload_trust: { web: 'capped' } }), opus: async () => opus,
+    enabled: () => true, flags: () => ({ contributions: true, upload_trust: { web: 'capped' }, share_join_ms: 0 }), opus: async () => opus,
     device: { deviceClass: 'browser', osMajor: 14 }, random: () => 0.5 });
 }
 
@@ -129,6 +132,7 @@ test('wiring: a failed upload lowers the next segment of a running capture; thre
   // to 130.5 s: segment 4 closes, segment 5 opens at 192k; the session ends
   speak(cap, 60, at);
   assert.ok(await cap.finish() > 130000);
+  await sharing.closeRecording(); // no take follows (a recording stays open 1500 ms for a tail otherwise)
   for (let i = 0; i < 50; i++) {
     await outbox.drain({ ignoringBackoff: true });
     if ((await outbox.items())[0].status === 'uploaded') break;
@@ -165,6 +169,7 @@ test('wiring: a backed-up queue (120 s waiting) lowers the next segment; refusal
     await outbox.drain({ ignoringBackoff: true });
   }
   await cap.finish();
+  await sharing.closeRecording();
   // backlog when each segment closed: 10, 30, 70, 130 (>= 120: one rung down before segment 5 opens)
   assert.deepEqual(seen.slice(0, 4).map((x) => x.backlog), [10, 30, 70, 130]);
   const ms = await markers(sharing.storage, cap.id);
@@ -179,6 +184,7 @@ test('wiring: a backed-up queue (120 s waiting) lowers the next segment; refusal
   const c2 = await p2.startSession({ inputSampleRate: 16000, inputRoute: 'built_in', decode: { backend: 'exact' } });
   speak(c2, 12, { at: 0 });
   await c2.finish();
+  await p2.closeRecording();
   for (let i = 0; i < 5; i++) await p2.outbox.drain({ ignoringBackoff: true });
   assert.equal(p2.ladder.bitrate, 192000);
   assert.ok(s2.putCount >= 2);

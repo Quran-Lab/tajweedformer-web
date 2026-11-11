@@ -1,26 +1,26 @@
 // The README's quick start (examples/quickstart.html): the README shows exactly the example's script, the script
-// is a valid module, and, where a real V4 folder and the built engine are there, the script runs in Node from the
-// "microphone" to the model's output.
+// is ten lines or fewer of Client, model, listen, read with no sample rate in it, and it runs in Node from the
+// "microphone" to what the model heard, and from a sample clip with no microphone.
 //
-// The run uses stand-ins for the four browser objects the script touches (the button and the output element,
-// AudioContext, AudioWorkletNode, getUserMedia): the stand-in microphone hands a recitation clip to the worklet
-// port in 128-sample blocks, as a browser's audio thread does. Everything of the SDK is real: the platform
-// client (against a local API that signs its config with a throwaway key), the model download and verification,
-// the engine, the decoded layer. A real browser run with a real microphone device is scripts/browser-quickstart.mjs.
-//
-//   TAJWEED_V4_UPLOAD=<sdk/v4.0 as served: manifest.json signed by Quran Lab, gzip files>   (else the run skips)
-//   TAJWEED_QUICKSTART_CLIP=<raw float32 mono 48 kHz samples>   (default: the folder's first self-test clip, resampled)
+// The run uses stand-ins for the browser objects the page touches (the buttons and the output element, the
+// microphone objects of test/helpers/fakemic.mjs) and the page's script unchanged except for its import line,
+// which points at a module that makes the Client with the SDK's test seams (a stub of Quran Lab's API and CDN).
+// The run uses the synthetic model build and the fake engine host. A real browser with a fake audio device and
+// a real model folder runs scripts/browser-quickstart.mjs.
 import test from 'node:test';
+import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { gunzipSync } from 'node:zlib';
+import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resetClientForTests } from '../web/api/client.js';
+import { build3, stubPlatform, seamsFor, audioFor } from './helpers/model3.mjs';
+import { fakeMicrophone, fakePage } from './helpers/fakemic.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const html = readFileSync(path.join(root, 'examples/quickstart.html'), 'utf8').replace(/\r\n/g, '\n');
 const script = html.split('// README:begin\n')[1].split('// README:end')[0];
+const rest = html.split('// README:end\n')[1].split('</script>')[0];
 
 test('quick start: the README shows the example\'s script, character for character', () => {
   const readme = readFileSync(path.join(root, 'README.md'), 'utf8').replace(/\r\n/g, '\n');
@@ -30,108 +30,84 @@ test('quick start: the README shows the example\'s script, character for charact
   assert.equal(shown, script);
 });
 
-test('quick start: only names the package exports, and no placeholder helpers', () => {
+test('quick start: Client, model, listen, read in ten lines or fewer; only the package\'s entry; no sample rate', () => {
   const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
-  for (const m of script.matchAll(/from '(@quran-lab\/tajweedformer[^']*)'/g)) {
-    const sub = m[1] === pkg.name ? '.' : `./${m[1].slice(pkg.name.length + 1)}`;
-    assert.ok(pkg.exports[sub], `${m[1]} is an export of the package`);
-  }
-  assert.ok(html.includes('"@quran-lab/tajweedformer/platform": "../web/platform/index.js"'), 'the import map covers the imports');
+  const imports = [...script.matchAll(/from '([^']*)'/g)].map((m) => m[1]);
+  assert.deepEqual(imports, [pkg.name], 'one import: the package');
+  assert.ok(html.includes(`"${pkg.name}": "../web/index.js"`), 'the import map covers the import');
   assert.match(script, /key: 'qlk_v1_\.\.\.'/, 'the key placeholder is the documented one');
+  const lines = script.split('\n').filter((l) => l.trim() && !l.trim().startsWith('//'));
+  assert.ok(lines.length <= 10, `${lines.length} lines`);
+  for (const step of ['TajweedClient.create(', 'client.model()', 'model.listen(', 'session.chunks', 'chunk.decoded.text', 'endOnSilenceMs']) assert.ok(script.includes(step), step);
+  assert.ok(!/sampleRate|48000|16000|AudioContext|getUserMedia/.test(script), 'no sample rate and no audio plumbing in the quick start');
+  assert.match(script, /sdk\.quranlab\.ai/);
+  // the example also runs from a sample clip, and starts a new take when the page comes back
+  assert.match(rest, /model\.sampleClips\[0\]/);
+  assert.match(rest, /visibilitychange/);
 });
 
-const UPLOAD = process.env.TAJWEED_V4_UPLOAD || '';
-const haveModel = UPLOAD && existsSync(path.join(UPLOAD, 'manifest.json'));
-const haveEngine = existsSync(path.join(root, 'dist', 'tajweedformer.mjs'));
-
-test('quick start: runs from the microphone to the model output (Node, stand-in browser objects)', {
-  skip: !haveEngine ? 'needs dist/tajweedformer.mjs (npm run build)' : !haveModel ? 'set TAJWEED_V4_UPLOAD to a served V4 folder' : false,
-  timeout: 600000,
-}, async () => {
-  // a local API: the config recommends the folder, signed with a throwaway key the run trusts
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const rawPublic = new Uint8Array(publicKey.export({ type: 'spki', format: 'der' }).subarray(-32));
-  const kid = createHash('sha256').update(rawPublic).digest('hex').slice(0, 16);
-  const requests = [];
-  const fetchStub = async (url, init = {}) => {
-    const u = new URL(url);
-    requests.push(`${init.method || 'GET'} ${u.pathname}`);
-    const json = (status, o) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } });
-    if (u.host === 'models.test') {
-      const rel = decodeURIComponent(u.pathname.split('/sdk/v4.0/')[1] || '');
-      const f = path.join(UPLOAD, rel);
-      if (!rel || rel.includes('..') || !existsSync(f)) return new Response(null, { status: 404 });
-      const b = readFileSync(f);
-      const h = Object.fromEntries(Object.entries(init.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
-      const r = /^bytes=(\d+)-(\d+)$/.exec(h.range || '');
-      if (!r) return new Response(b, { status: 200 });
-      const lo = Number(r[1]), hi = Math.min(Number(r[2]), b.length - 1);
-      return new Response(b.subarray(lo, hi + 1), { status: 206, headers: { 'content-range': `bytes ${lo}-${hi}/${b.length}` } });
-    }
-    if (u.pathname === '/v1/attest') return json(200, { token: 'qlt_v1.t.s', expires_in: 86400, attested: false });
-    if (u.pathname === '/v1/register') return json(200, { ok: true, app_id: 'web:https://app.example', store_status: 'pending' });
-    if (u.pathname === '/v1/config') {
-      const now = Math.floor(Date.now() / 1000);
-      const body = Buffer.from(JSON.stringify({ v: 1, app: 'web:https://app.example', channel: 'stable', issued_at: now, expires_at: now + 86400, models: {},
-        recommended: { model: 'Quran-Lab/tajweedformer-v4', model_id: 'v4.0', folder: 'sdk/v4.0', revision: 'quickstart', source: 'stable' },
-        denylist: [], flags: { analytics: false, issues: false, contributions: false } }));
-      return new Response(body, { status: 200, headers: { 'x-qlab-signature': `ed25519=${sign(null, body, privateKey).toString('base64url')}`, 'x-qlab-key-id': kid, etag: '"1"' } });
-    }
-    return json(202, { ok: true });
-  };
-
-  // the clip the stand-in microphone plays: float32 mono at 48 kHz
-  let clip;
-  if (process.env.TAJWEED_QUICKSTART_CLIP) {
-    const b = readFileSync(process.env.TAJWEED_QUICKSTART_CLIP);
-    clip = new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
-  } else {
-    // the folder's first self-test clip (16 kHz int16), each sample three times: crude, and enough for the model
-    const set = JSON.parse(gunzipSync(readFileSync(path.join(UPLOAD, 'selftest/selftest.json.gz'))).toString('utf8'));
-    const s16 = gunzipSync(readFileSync(path.join(UPLOAD, 'selftest', `${set.clips[0].file}.gz`)));
-    const pcm = new Int16Array(s16.buffer.slice(s16.byteOffset, s16.byteOffset + s16.byteLength));
-    clip = new Float32Array(pcm.length * 3);
-    for (let i = 0; i < pcm.length; i++) clip[3 * i] = clip[3 * i + 1] = clip[3 * i + 2] = pcm[i] / 32768;
-  }
-
-  // the browser objects the script uses
-  const button = {}, heard = { textContent: '' };
-  const saved = {};
-  const globals = {
-    document: { querySelector: (q) => (q === '#listen' ? button : q === '#heard' ? heard : null) },
-    AudioContext: class {
-      constructor(o) { this.sampleRate = o.sampleRate; this.audioWorklet = { addModule: async () => {} }; }
-      createMediaStreamSource() {
-        return { connect: (node) => { queueMicrotask(() => { for (let at = 0; at < clip.length; at += 128) node.port.onmessage({ data: clip.subarray(at, at + 128) }); node.done(); }); } };
-      }
-    },
-    AudioWorkletNode: class { constructor() { this.port = {}; this.finished = new Promise((r) => { this.done = r; }); globals.lastNode = this; } },
-  };
-  for (const k of ['document', 'AudioContext', 'AudioWorkletNode']) { saved[k] = globalThis[k]; globalThis[k] = globals[k]; }
-  const nav = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { mediaDevices: { getUserMedia: async (c) => { assert.ok(c.audio); return {}; } } } });
-
-  // the script itself, with only the configure call pointed at the local API (the SDK's test options)
-  const cfg = "QuranLab.configure({ key: 'qlk_v1_...' })";
-  assert.ok(script.includes(cfg), 'the script has the configure line this test replaces');
-  globalThis.__quickstart = { fetch: fetchStub, trustedKeys: [rawPublic] };
-  const run = script.replace(cfg, "QuranLab.configure({ key: 'qlk_v1_test_aaaaaaaaaaaaaaaaaaaaaa', origin: 'https://app.example', bundleId: 'https://app.example', "
-    + "apiUrl: 'https://api.test', modelsUrl: 'https://models.test', autoSend: false, ...globalThis.__quickstart })");
-  const file = path.join(root, 'test', `.quickstart-run-${process.pid}.mjs`);
-  writeFileSync(file, run);
-  try {
-    await import(pathToFileURL(file).href);          // the package name resolves to this package itself
-    assert.equal(typeof button.onclick, 'function', 'the script waits for the tap');
-    await button.onclick();
-    await globals.lastNode.finished;
-    const tokens = heard.textContent.split(' ').filter(Boolean);
-    assert.ok(tokens.length >= 10, `the model heard the clip: ${tokens.length} tokens`);
-    assert.ok(requests.includes('GET /v1/config'), 'the key was used: the signed config was fetched');
-    assert.ok(requests.some((r) => r.endsWith('/manifest.json')), 'the model came from the config\'s recommendation');
-  } finally {
-    rmSync(file, { force: true });
-    for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete globalThis[k]; else globalThis[k] = saved[k]; }
-    if (nav) Object.defineProperty(globalThis, 'navigator', nav); else delete globalThis.navigator;
+// run the page's script with stand-in browser objects; `seams` are the Client's test seams
+async function runPage(seams, { mic, page }) {
+  const els = { '#listen': {}, '#clip': {}, '#again': { checked: true }, '#heard': { textContent: '' } };
+  const document = Object.assign(page.document, { querySelector: (q) => els[q] || null });
+  Object.defineProperty(document, 'hidden', { configurable: true, get() { return document.visibilityState === 'hidden'; } });
+  const saved = { document: globalThis.document };
+  globalThis.document = document;
+  globalThis.__quickstart = seams;
+  const shim = path.join(root, 'test', `.quickstart-client-${process.pid}.mjs`);
+  const file = path.join(root, 'test', `.quickstart-run-${process.pid}-${Math.random().toString(36).slice(2)}.mjs`);
+  writeFileSync(shim, "import { createClient } from '../web/api/client.js';\n"
+    + "export const TajweedClient = { create: (o) => createClient({ ...o, key: 'qlk_v1_test_aaaaaaaaaaaaaaaaaaaaaa' }, globalThis.__quickstart) };\n");
+  const importLine = "import { TajweedClient } from '@quran-lab/tajweedformer';";
+  assert.ok(script.includes(importLine), 'the script has the import line this test replaces');
+  writeFileSync(file, (script + rest).replace(importLine, `import { TajweedClient } from './${path.basename(shim)}';`));
+  const done = () => {
+    rmSync(file, { force: true }); rmSync(shim, { force: true });
+    if (saved.document === undefined) delete globalThis.document; else globalThis.document = saved.document;
     delete globalThis.__quickstart;
+  };
+  try { await import(pathToFileURL(file).href); } catch (e) { done(); throw e; }
+  return { els, done, mic, page };
+}
+
+test('quick start: runs from the microphone to what the model heard, from a sample clip, and again after the page was hidden', async () => {
+  resetClientForTests();
+  const api = await stubPlatform({ build: await build3() });
+  const mic = fakeMicrophone({ sampleRate: 48000 });
+  const page = fakePage();
+  const seams = seamsFor(api, { microphone: mic.seams, lifecycle: page });
+  const { els, done } = await runPage(seams, { mic, page });
+  try {
+    assert.equal(typeof els['#listen'].onclick, 'function', 'the script waits for the tap');
+    assert.equal(mic.opened, 0, 'no microphone before the tap');
+    // the tap: the microphone at 48 kHz, a recitation, then silence long enough for endOnSilenceMs to end the take
+    let take = els['#listen'].onclick();
+    while (!mic.node) await new Promise((r) => setTimeout(r, 2));
+    mic.play(audioFor([0, 0, 3, 3, 0, 5, 5, 5, 1, 7, 0, 0, 9, 9, ...new Array(80).fill(0)], 48000));
+    await take;
+    assert.equal(els['#heard'].textContent, 't3 t5 | t7 t9');
+    assert.equal(mic.track.stopped, true, 'the take ended on the silence and released the microphone');
+    assert.ok(api.log.some((x) => x.path === '/v1/config'), 'the key was used: the signed config was fetched');
+    assert.ok(api.log.some((x) => x.host === 'cdn' && x.path === 'manifest.json'), 'the model came from the config');
+    // the sample clip: no microphone
+    const opened = mic.opened;
+    await els['#clip'].onclick();
+    assert.equal(els['#heard'].textContent, 't3 t5 | t7 t9');
+    assert.equal(mic.opened, opened);
+    // a take is listening, the page is hidden (the take ends), the page comes back: a new take starts
+    take = els['#listen'].onclick();
+    await new Promise((r) => setTimeout(r, 10));
+    page.hide();
+    await take;
+    assert.equal(mic.track.stopped, true);
+    const before = mic.opened;
+    page.show();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(mic.opened, before + 1, 'back on the page: listening again');
+    page.hide();
+    await new Promise((r) => setTimeout(r, 10));
+  } finally {
+    done();
+    resetClientForTests();
   }
 });

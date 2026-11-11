@@ -16,7 +16,7 @@ export async function stubApi(flags) {
   const kp = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
   const pub = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
   const kid = await keyId(pub);
-  const state = { flags, starts: [], puts: new Map(), configVersion: 1, registers: [], events: [], eventReply: () => ({ status: 202, body: { ok: true, points: 1 } }), deletes: 0 };
+  const state = { flags, starts: [], puts: new Map(), takes: [], configVersion: 1, registers: [], events: [], eventReply: () => ({ status: 202, body: { ok: true, points: 1 } }), deletes: 0 };
   const json = (status, obj) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
   const urls = (id, from) => ({ id, urls: Array.from({ length: 20 }, (_, i) => ({ n: from + i, url: `https://r2.test/v1/${id}/seg-${String(from + i).padStart(5, '0')}.opus`, expires_at: Math.floor(Date.now() / 1000) + 604800 })) });
   const fetch = async (url, init = {}) => {
@@ -48,6 +48,9 @@ export async function stubApi(flags) {
     }
     const more = /^\/v1\/uploads\/([0-9a-f]{32})\/urls$/.exec(u.pathname);
     if (more) return json(200, urls(more[1], Number(u.searchParams.get('from'))));
+    // 2.0.3: the take list of a recording that takes in a row shared (kept as sent)
+    const list = /^\/v1\/uploads\/([0-9a-f]{32})\/takes$/.exec(u.pathname);
+    if (list && init.method === 'POST') { state.takes.push({ id: list[1], body: init.body, contributor: h['x-qlab-contributor'] }); return new Response(null, { status: 204 }); }
     if (u.pathname === '/v1/events') {
       const body = JSON.parse(init.body);
       state.events.push({ body, raw: init.body, keepalive: !!init.keepalive });

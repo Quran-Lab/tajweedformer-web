@@ -1,9 +1,0 @@
-The TajweedFormer scorer's sources, vendored for the scoring-only WebAssembly build (scripts/build_scorer.sh).
-
-Source: Quran-Lab/tajweedformer-sdk, branch main (API 3 final with top-K: words, lazy heads, top-2 and
-top-K, no_pin defaults per platform; layout 3), commit d0bb2b3, paths tajweed/include, tajweed/src and
-tajweed/FORMAT.md, exactly as committed (git archive; tajweed/ is identical at main de88490, the pinning fix). include/zf_tajweed.h sha256
-a5e89561842ae1b998fd7db3c2c13d49bfd0b63a3bf3de0f4ac52e135158de0d.
-
-Update: replace the folder from a newer engine commit and change the commit above. When the vendor/
-zipformer-sdk submodule carries tajweed/, scripts/build.sh builds it from there instead.

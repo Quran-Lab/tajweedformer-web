@@ -64,7 +64,7 @@ EXPORTS=_malloc,_free,_ow_enc_create,_ow_enc_get,_ow_enc_set,_ow_enc_encode,_ow_
 mkdir -p "$OUTDIR"
 OUT="$OUTDIR/tajweedformer-opus.mjs"
 emcc -O3 "${objs[@]}" -o "$OUT" --closure=0 \
-  -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createTajweedFormerOpus -sENVIRONMENT=web,worker,node \
+  -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createTajweedFormerOpus -sENVIRONMENT=web,worker \
   -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=16MB -sSTACK_SIZE=512KB \
   -sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPF32,HEAP32,UTF8ToString -sEXPORTED_FUNCTIONS="$EXPORTS"
 echo "libopus $VERSION (sha256 $SHA256), ${#files[@]} sources -> $OUT"

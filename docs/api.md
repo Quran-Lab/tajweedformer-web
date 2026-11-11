@@ -1,173 +1,147 @@
-# @quran-lab/tajweedformer 2.0.2: API
+# @quran-lab/tajweedformer 3.0.0: API
 
-Every type is in [`web/tajweed/index.d.ts`](../web/tajweed/index.d.ts),
-[`web/platform/index.d.ts`](../web/platform/index.d.ts) and
-[`web/consent/index.d.ts`](../web/consent/index.d.ts). The concepts and the numbers are the same in the
-Android, Apple and native SDKs.
+The whole public surface. Every type is in [`web/index.d.ts`](../web/index.d.ts); a test keeps this page, the
+type definitions and the package's exports in step. The names and the call order are the same in the Android,
+Apple and C SDKs.
 
 ## Entry points
 
 | Import | What |
 | --- | --- |
-| `@quran-lab/tajweedformer` | `TajweedFormer` with the engine (WebAssembly, single thread, SIMD128), and everything below that needs no engine |
-| `@quran-lab/tajweedformer/scorer` | `TajweedFormer` with the scorer only (96 KB wasm): score heads from a server, an NPU or saved files; no streams |
-| `@quran-lab/tajweedformer/tajweed` | the plain-JS parts: folders, settings, delivery, decode, words, types |
-| `@quran-lab/tajweedformer/node` | `dirReader(dir)` (a folder on disk), `dirStore(dir)` (the delivery cache on disk) |
-| `@quran-lab/tajweedformer/platform` | `QuranLab`: key, token, register, signed config, telemetry, issues |
-| `@quran-lab/tajweedformer/consent` | `enableSharing`, the consent sheet and settings elements, the sharing state |
-| `@quran-lab/tajweedformer/sharing` | the recitation upload (Ogg Opus, outbox); loaded by `consent` when needed |
+| `@quran-lab/tajweedformer` | everything below |
+| `@quran-lab/tajweedformer/node` | Node only: `dirReader(dir)`, a model folder on disk as a reader for `TajweedModel.open` |
 
-## Loading a model
+## Call order
 
 ```js
-const tf = await TajweedFormer.load({
-  platform: ql,                 // or url: 'https://.../sdk/v4.0/', or cdn: { key, revision }, or files, or reader
-  context: 'c16_l64',           // optional: app > portal > calibration default
-  sampleRate: 48000,            // the rate you push; 8000 to 48000, resampled by the engine
-  settings: { preset: 'balanced', word: { preset: 'general' } },
-  debug: false,                 // a debug build may turn on checks calibration marks off
-  cache: undefined,             // the Cache API by default; dirStore(dir) in Node; false for none
-  onProgress: ({ path, loaded, total, cached }) => {},
-  signal,                       // AbortSignal for the download
-});
-tf.info;        // modelId, revision, contexts, context, chunkMs (320 or 480), engine, engineVersion
-tf.profile;     // the files this load needed
-tf.delivery;    // requests, bytesDownloaded, filesFromCache, rangesResumed, store
-tf.presets;     // [{ name, label, siteFa }] from calibration
-tf.free();
+import { TajweedClient } from '@quran-lab/tajweedformer';
+const client = await TajweedClient.create({ key: 'qlk_v1_...' });
+const model = await client.model();
+const session = await model.listen({ endOnSilenceMs: 1500 });
+for await (const chunk of session.chunks) console.log(chunk.decoded.text);
 ```
 
-A folder is refused when its manifest is not format 2 with `engine_format` 2 or format 3 with
-`engine_format` 3, when its `min_sdk_version` is above 2.0.2, when a signature does not verify (folders
-from the Quran Lab CDN must be signed), or when a file it needs does not match its size and SHA-256. A
-file the manifest does not list is never read.
+An app that owns its audio replaces `listen` with `const session = model.session({ sampleRate })` and
+`session.push(samples)`.
 
-A format 3 manifest's `golden_tolerance` (per accelerator build, the differences from the CPU engine its
-golden test may show) is part of the signed text: one line per build after the header lines, sorted by
-the build key's UTF-8 bytes. A manifest signed without those lines still verifies, and its tolerance is
-ignored (`folder.goldenTolerance` is null, every build exact). The web SDK runs the CPU engine only, so
-the field never changes what it computes. `checkManifestSignature(m)` returns `{ valid, toleranceSigned }`.
+## TajweedClient
 
-## Raw layer: streams and heads
+One per page (per process in Node): `create` while another Client is open fails with `client_exists`.
 
-```js
-const s = tf.createStream({
-  heads: ['attr_ghunna', 'boundary'],   // added to the default (scorer heads + conf); or allHeads: true
-  onChunk(chunk) {
-    chunk.index; chunk.startMs; chunk.endMs;         // 320 ms chunks at c16, 480 ms at c24
-    chunk.logProbs;                                 // Float32Array [8 x 38] at c16 (40 ms frames)
-    chunk.attrGhunna;                               // Float32Array [16 x 5] (20 ms frames)
-    chunk.frames;                                   // the decoded layer's frames of this chunk
-  },
-});
-s.pushAudio(pcm);   // returns the chunks it completed
-s.finish();         // the end of the take (a 1.05 s flush)
-s.heads();          // the take's kept heads: { n40, n20, logProbs, inter1LogProbs, ... } (null when not kept)
-s.reset();          // a new take
-s.free();
-```
+| Member | |
+| --- | --- |
+| `TajweedClient.create(options)` | Promise of the Client. `options` is a `TajweedClientOptions`. Network trouble does not make it fail. |
+| `client.model(version?)` | Promise of the `TajweedModel` for this app: downloads on first use, verifies, opens and warms the engine. `version` ("4.0.0") pins a model version. |
+| `client.prefetch({ unmeteredOnly, onProgress, version })` | Download and verify ahead of use. `onProgress({ bytesDone, bytesTotal })`. Resolves with `{ bytesDone, bytesTotal, complete }`. With `unmeteredOnly` it waits on a `metered` connection and with `none`, and downloads on `unmetered` and `unknown` (see `connection` below). |
+| `client.storage()` | Promise of `{ models: [{ version, build, bytes }], sharingQueueBytes }`. |
+| `client.removeModels()` | Remove the model files (never the consent state or the sharing queue). |
+| `client.diagnose()` | Promise of a `TajweedDiagnosis`. |
+| `client.sharing` | A `TajweedSharing`. |
+| `client.analytics` | A `TajweedAnalytics`: `reportChecks(rule, checked, flagged)`. |
+| `client.pin` | `{ version, status }` when the server could not serve a pinned version, else null. |
+| `client.background()`, `client.foreground()` | The app left or returned to the foreground. Automatic in browsers. |
+| `client.close()` | Close the Client and its Model. |
 
-`HEAD_SPECS` lists every head: `name`, `key` (the property), `width`, `rate` (40 or 20 ms), `kind`
-(`log_softmax`, `softmax`, `logit`) and `classes`:
+`TajweedClientOptions`: `key` (required), `appId` (Node: the app id of a desktop key), `appVersion`, `storage`
+(Node: a folder; browsers: a name for this client's stored state), `analytics` (`'on'` or `'off'`), `audience`
+(`'general'` or `'children'`).
 
-| Head | Width | Rate | Classes |
-| --- | --- | --- | --- |
-| `log_probs` / `inter1_log_probs` / `inter4_log_probs` | 38 | 40 ms | tokens.txt |
-| `id_log_probs` / `timing_log_probs` | 38 | 20 ms | tokens.txt (timing: 0 = pause) |
-| `gem` | 2 | 20 ms | single, held |
-| `attr_tafkheem` | 3 | 20 ms | thin, heavy, low_heavy |
-| `attr_ghunna` | 5 | 20 ms | none, plain, geminate, ikhfa, idgham |
-| `attr_qalqalah` | 3 | 20 ms | none, sughra, kubra |
-| `attr_face` | 4 | 20 ms | none, imala, tasheel, sakt |
-| `boundary`, `conf` | 1 | 20 ms | logits: `sigmoidHead(a)` gives probabilities |
+`TajweedDiagnosis`: `sdk` (`version`, `latest`), `key` (`accepted`: true, false or null while no answer was seen;
+`reason`), `config` (`'fresh'`, `'stale'`, `'none'`), `model` (null, or `version`, `build`, `verified`),
+`context`, `backend` (a `TajweedBackend` or null), `microphone` (`'granted'`, `'denied'`, `'notAsked'`, `'none'`),
+`storage`, `lastError` (a code or null), `droppedChunks` (waiting chunks dropped because the app did not read
+`chunks`, since the Client was made), `connection` (`'unmetered'`, `'metered'`, `'none'`, or `'unknown'` where the
+runtime cannot tell: Node, a browser without the Network Information API such as Safari and Firefox, and a
+browser that gives no connection type).
 
-The engine computes only the heads asked for (engine API 3: a head nobody asked for is not computed,
-and every computed head is the same bits whatever else is asked for); `allHeads` computes all twelve.
-`stream.top2()` gives the engine's per-frame top-1 and runner-up. One stream is live at a time per model
-module.
+## TajweedModel
 
-## Decoded layer
+| Member | |
+| --- | --- |
+| `TajweedModel.open(folder)` | Promise of a Model from a folder at hand: a URL, a directory path (Node), a reader, or `{ path: bytes }`. Verified as a downloaded one. |
+| `id`, `version`, `build` | `"v4.0"`, `"4.0.0"`, the build id (diagnostics only). |
+| `contexts`, `defaultContext`, `chunkMs(context?)` | The context names, the one a Session uses by default, a context's chunk length in ms. |
+| `tokens` | A `TajweedTokens`: `count`, `blank`, `wordBar`, `name(id)`, `id(name)`. |
+| `calibration` | A `TajweedCalibration` or null: `format`, `sha256`, `text`, `json`, `contexts`, `classes`, `presets`, `context(name)`, `threshold(context, class, preset)`. Read-only data; never applied. |
+| `reference` | A `TajweedReference` or null: `isDownloaded`, `fetch()`, `units(surah, ayah)` giving `{ units, words, wordCount }`. |
+| `sampleClips` | A list of `TajweedClip`: `name`, `kind`, `durationMs`. |
+| `backend` | The `TajweedBackend` the next Session will use. |
+| `listen(options?)` | Promise of a `TajweedSession` fed by the microphone; with `from` (a clip, or a `Float32Array` with `sampleRate`) fed by that audio. |
+| `session(options?)` | A `TajweedSession` the app pushes audio into. |
+| `close()` | Release the engine. |
 
-```js
-const d = s.decoded();            // or tf.decode(heads) for heads from anywhere
-d.frames[t];   // { top1, top1LogProb, runnerUp, runnerUpLogProb, margin } per 40 ms frame
-d.tokens[i];   // { id, unit, frame0, frame1, startMs, endMs, peakFrame, logProb, runnerUp, runnerUpUnit,
-               //   runnerUpLogProb, margin, confidence }
-d.transcript;  // the units joined by spaces
-d.ids;         // equal to the engine's greedy transcript (s.greedy())
-d.words;       // tokens split at the "|" token; V4 rarely emits it, so use result.words for a known ayah
-s.decoded({ k: 5 }).frames[t].ranked;   // the 5 best tokens of frame t, ranked, with log-probs and margins
-s.topK('attr_ghunna', 5);               // any head with a distribution: { ids, values, margins } [frames x k], names
-tf.topK(heads, 'log_probs', 38);        // the full ranked list, for heads from anywhere
-```
+`TajweedSessionOptions`: `context`, `sampleRate` (pushed audio and `from` samples; default 16000), `heads` (names,
+or `'all'`), `backend` (`'auto'` or `'cpu'`), `topK` (0 to 38), `endOnSilenceMs` (off: 0 or null; else 100 to
+60000), `pace` (`'realTime'` or `'fast'`, with `from` only), `onChunk`, `onEvent`.
 
-Rules: ties go to the lower token id; a token is a run of equal non-blank top-1 frames; its numbers are
-those of its peak frame; `confidence` is the mean `sigmoid(conf)` over its 20 ms frames. Times are the
-model's output frame times from the start of the take.
+## TajweedSession
 
-## Tajweed layer
+| Member | |
+| --- | --- |
+| `push(samples)` | Mono float samples at the Session's `sampleRate` (a Session made with `session()` only). |
+| `chunks` | Async iterable of `TajweedChunk`; ends when the take ends. |
+| `events` | Async iterable of `TajweedEvent`. |
+| `finish()` | End the take. Promise of the take's `TajweedHeads`. Stops the microphone of a `listen` Session. |
+| `cancel()` | End the take and keep nothing. |
+| `backend` | The `TajweedBackend` in force. |
+| `reportRecited(surah, ayahFrom, ayahTo)` | Where the learner recited (anonymous daily totals). |
 
-```js
-const r = await tf.score(s.heads(), surah, ayah, { decoded: true });
-r.sites[i];      // { class, check, status, pos, word, expected, expectedUnit, alternative, alternativeUnit,
-                 //   llr: { final, inter1 }, fusedLlr, threshold, flagged, frameLo, frameHi }
-r.madd[i];       // { word, unit, maddClass, ratio, count, displayCount, allowedLo, allowedHi, flagged, frameLo, frameHi }
-r.qalqalah[i];   // { word, unit, score, threshold, flagged, frameLo, frameHi }; r.gemination the same
-r.words[w];      // { word, score, threshold, flagged, best: { class, edit, expectedUnit, alternativeUnit, llr }, tokens,
-                 //   startMs, endMs, issues: { sites, madd, qalqalah, gemination } }
-r.path;          // { tokens, wordOfToken }: the scored path (the legal reading closest to what was heard)
-r.summary;       // counts, plus words and wordsFlagged
-r.settings;      // the effective settings it was scored with; r.wordLevel the word level (or null)
-r.raw;           // the engine's whole result JSON: per window every class's alternative and LLRs
-r.decoded;       // with { decoded: true }
-```
+`TajweedChunk`: `index`, `startMs`, `endMs`, `firstFrame`, `backend`, `speech`, `heads` (this chunk's
+`TajweedHeads`), `decoded` (the `TajweedDecoded` of the take so far).
 
-- One entry in `sites` per scored window and class; `flagged` is true on the class the window reports.
-  A threshold is a cut on the fused LLR (`a * llr.final + (1 - a) * llr.inter1`, clipped to [-30, 30]).
-- `words[w]` is the engine's word level: `score` = the largest clipped fused LLR over every single edit
-  inside the word (any class), `best` = that edit, `flagged` = `score >= threshold` (the word tau in force).
-  `score`, `threshold` and `flagged` are null when the word check is off or the calibration has no word
-  block.
-- `score(heads, s, a, { backend: 'fp32' })` for heads that did not come from this engine (CoreML, an
-  NPU, a server); the default is `int8` (this engine's heads).
+`TajweedDecoded`: `text`, `tokens` (`TajweedToken`: `id`, `name`, `firstMs`, `peakMs`, `lastMs`, `confidence`),
+`words` (`TajweedWord`: `index`, `text`, `tokens`, `firstMs`, `lastMs`, `confidence`), `frames` (`TajweedFrame`:
+`top1`, `top1LogProb`, `runnerUp`, `runnerUpLogProb`, `margin`, and `topK` when asked), `settled`, `isFinal`.
 
-## Settings
+`TajweedEvent`, by `type`: `speechStarted` (`atMs`), `speechEnded` (`atMs`, `silenceMs`), `interrupted` (`cause`:
+`'interruption'` or `'routeChange'`), `resumed`, `backendChanged` (`backend`, `fromChunk`; never raised on the
+web), `ended` (`reason`: `'silence'`, `'background'`, `'hidden'`, `'interrupted'`, `'sourceEnd'`, `'limit'` (the take reached 20 minutes of audio), `'error'`; with
+`error` for `'error'`).
 
-```js
-tf.settings.setPreset('sensitive');
-tf.settings.setClassPreset('cons_sub', 'very_sensitive');
-tf.settings.setClassThreshold('vowel_sub', 1.25);   // -20 .. 20
-tf.settings.setCheck('qalqalah', true);
-tf.settings.setWord({ threshold: 5 });              // or { preset: 'beginner' }; clamped to calibration's range
-tf.settings.setCheck('word', false);                // no word scores at all
-tf.setRemoteConfig(configOrBlock);                  // the platform client does this for you
-tf.effectiveSettings();   // { context, preset, sites: { cls: { enabled, threshold, preset, source, status } }, madd, ...,
-                          //   dropped, refused }
-tf.wordLevel();           // { enabled, preset, source, threshold, presets, floor, min, max } or null
-```
+## TajweedHeads
 
-Invalid app values throw `TajweedSettingsError` (code `invalid_app_option`); an invalid portal field is
-dropped and listed in `dropped`, never the block. The context is fixed at load.
+| Member | |
+| --- | --- |
+| `names` | The heads it holds. |
+| `get(name)` | A `TajweedHead` (`name`, `kind`, `frameMs`, `frames`, `classes`, `values`) or null. |
+| `greedy(name = 'log_probs')` | A CTC head's tokens: `id`, `firstMs`, `peakMs`, `lastMs`. |
+| `decoded()` | The `TajweedDecoded` of exactly these Heads. |
 
-## Delivery helpers
+Head names: `log_probs`, `inter1_log_probs`, `inter4_log_probs`, `id_log_probs`, `timing_log_probs`, `gem`,
+`attr_tafkheem`, `attr_ghunna`, `attr_qalqalah`, `attr_face`, `boundary`, `conf`.
 
-`cachedReader({ baseUrl, headers, store, rangeSize, parallel, onProgress, signal })` is the reader
-`load()` uses over HTTP; `profilePaths(manifest, { context })` the profile; `pruneCache(store,
-[manifest])` removes cached files no kept manifest lists; stores: `cacheApiStore()`,
-`indexedDbStore()`, `memoryStore()`, `dirStore(dir)` (Node).
+## TajweedBackend
 
-## Platform
+`kind` (`'cpu'` or `'accelerator'`), `name`, `stage`, `reason`. On the web always
+`{ kind: 'cpu', name: 'wasm', stage: 'cpu', reason: null }`.
 
-See the README's Platform section. `QuranLab.configure(options)` never throws for network trouble:
-`ql.stopped` names an error-table code that stopped the network for this launch (a revoked key, a key
-of the wrong type), `ql.lastError` the last failure. Recognition never depends on the network once the
-model is cached.
+## TajweedSharing
 
-## Recitation sharing
+`isAvailable`, `isOn`, `setOn(on)`, `ask()`, `feed(samples, sampleRate)`, `items()` (a promise), `summary()`,
+`delete()`, `recoveryCode`, `setWording(overrides)`. The elements `QuranLabConsent` (`<quranlab-consent>`) and
+`QuranLabSharingSettings` (`<quranlab-sharing-settings>`, set its `client`) are the SDK's sheets.
 
-`enableSharing(ql, { lang, ask, idle })` returns a controller: `sessionCompleted()`,
-`setSharing(on)`, `deleteShared()`, `recoveryCode()`, `impactLine()`. `ask: async (a) => ({ yes })`
-lets the app show the sheet at its own time; the lines are always the SDK's (`copyFor(lang)`).
-Elements: `<quranlab-consent>` (`QuranLabConsent.ask(...)`) and `<quranlab-sharing-settings>`
-(`.controller = sharing`). Theme with `--ql-bg`, `--ql-fg`, `--ql-muted`, `--ql-accent`,
-`--ql-accent-fg`, `--ql-radius`, `--ql-font` and `::part(sheet|title|body|primary|secondary|guardian)`.
+## TajweedAnalytics
+
+`reportChecks(rule, checked, flagged)`: `rule` is lower-case letters, digits and underscores (at most 24, a
+letter first); `0 <= flagged <= checked <= 100000`.
+
+## Microphone
+
+`Microphone.open()` (a promise), `sampleRate`, `samples()` (async iterable of `Float32Array` blocks), `close()`.
+
+## TajweedError
+
+`code`, `message`, `fix`, `docs`. Codes: `invalid_argument`, `invalid_key`, `sdk_too_old`, `server_rejected`,
+`client_exists`, `model_unavailable`, `needs_connection`, `network_not_permitted`, `download_failed`,
+`storage_full`, `storage_failed`, `model_missing`, `model_invalid`, `signature_invalid`, `checksum_mismatch`,
+`model_incompatible`, `reference_missing`, `session_open`, `session_closed`, `cancelled`, `engine_failed`,
+`microphone_denied`, `microphone_unavailable`, `interrupted`, `sharing_unavailable`, `runtime_unsupported`.
+
+A refusal of the server is `server_rejected`, and its `message` and `fix` say what to do for the server's reason
+(the account has no access yet, the key is of another type or environment, the key belongs to another app, the
+page's origin is not on the key, a production key on a local address). A page whose origin is not on its key
+gets no answer from the API at all; the SDK then asks Quran Lab's origin check once per page load and raises
+that refusal instead of `needs_connection`. `runtime_unsupported` is a browser or a Node without something the
+SDK needs (its `message` names it). `network_not_permitted` is in the shared catalogue for the other SDKs; the
+web SDK does not raise it.

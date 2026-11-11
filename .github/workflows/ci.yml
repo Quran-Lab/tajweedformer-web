@@ -34,12 +34,17 @@ jobs:
         run: REQUIRE_OPUS=1 npm test
       - name: Sharing upload and stream tests five times (timing races in the upload queue show up here)
         run: for i in 1 2 3 4 5; do REQUIRE_OPUS=1 node --test test/sharing_upload.test.mjs test/sharing_ogg_append.test.mjs || exit 1; done
-      - name: Build (the engine with the tajweed library, and the scorer alone) and test with it
+      - name: Build the engine and run every test with it (libopus and the mock engine required)
         env:
           ZF_WASM_TAJWEED: '1'
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           npm run build
-          npm run build:scorer
           npm run test:wasm
-          REQUIRE_OPUS=1 REQUIRE_SCORER=1 npm test
+          CLANG="$RUNNER_TEMP/emsdk/upstream/bin/clang" REQUIRE_OPUS=1 REQUIRE_MOCK=1 npm test
+      - name: The plain Vite example builds with no config file, and names no Node module
+        run: npm run example:build
+      - name: What npm publish would ship (README, AGENTS.md, CHANGELOG, the type declarations, the exports map)
+        run: npm run check:package
+      - name: The model-backed proof (skips here; the model is gated and not on a public runner)
+        run: npm run proof

@@ -4,6 +4,7 @@
 // left, fresh URLs on a 403, offline and relaunch, a page closed mid-session, sharing turned off,
 // refusals, the capped tier (Turnstile, segment cap), 7-day expiry, one PUT at a time in segment order.
 import test from 'node:test';
+import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -107,8 +108,11 @@ async function configure(server, { storage = new MemoryStorage(), enabled = true
   const state = { enabled, flags };
   const tokenProvider = async () => token;
   tokenProvider.invalidate = async () => {};
+  // These tests are about one session and its upload, so the join window is 0 here and each session says that
+  // no take follows (closeRecording): since 3.0.0 a recording stays open 1500 ms after a take for a tail from
+  // the feed. Takes that share a recording are in sharing_takes.test.mjs, the tail in sharing_feed.test.mjs.
   const sharing = await createSharing({ api: API, fetch: server.fetch, tokenProvider, storage, consentVersion, clock, turnstile,
-    enabled: () => state.enabled, flags: () => state.flags, opus: async () => opus, device: { deviceClass: 'browser', osMajor: 14 }, bitrate });
+    enabled: () => state.enabled, flags: () => ({ share_join_ms: 0, ...state.flags }), opus: async () => opus, device: { deviceClass: 'browser', osMajor: 14 }, bitrate });
   return { sharing, storage, state, outbox: sharing.outbox };
 }
 
@@ -118,8 +122,8 @@ async function session(sharing, seconds, { rate = 48000, end = 'finish', route =
   const x = noise(Math.round(rate * seconds), 3n, 0.2);
   const step = rate / 100;
   for (let at = 0; at < x.length; at += step) s.push(x.subarray(at, Math.min(x.length, at + step)));
-  if (end === 'finish') await s.finish();
-  else if (end === 'cancel') await s.finish({ completed: false });
+  if (end === 'finish') { await s.finish(); await sharing.closeRecording(); }
+  else if (end === 'cancel') { await s.finish({ completed: false }); await sharing.closeRecording(); }
   else await s.io;
   return s;
 }
@@ -161,7 +165,7 @@ test('a 25 s session streams its segments to R2: one start, each segment on its 
   assert.equal(starts[0].headers.authorization, `Bearer ${UNATT.token}`);
   assert.equal(starts[0].headers['x-qlab-id'], item.id);
   const meta = JSON.parse(starts[0].body);
-  assert.deepEqual(Object.keys(meta).sort(), ['audio', 'consent_version', 'contributor', 'day', 'decode', 'device_class', 'format', 'os_major']);
+  assert.deepEqual(Object.keys(meta).sort(), ['audio', 'consent_version', 'contributor', 'day', 'decode', 'device_class', 'format', 'os_major', 'take_seq']); // take_seq: 3.0.0
   assert.equal(meta.format, 1);
   assert.equal(meta.consent_version, 'deck-1');
   assert.equal(meta.contributor, await c.sharing.contributorId());
@@ -256,6 +260,7 @@ test('the next batch comes when 5 unused URLs remain; a finished session asks fo
   assert.equal(server.puts().length, 1);
   assert.deepEqual(server.urlCalls(item.id), [7], 'segment 1 used, 5 left: the batch from 7');
   await running.finish();
+  await c.sharing.closeRecording();
   const [done] = await settle(c.outbox);
   assert.equal(done.segments, 2);
   assert.deepEqual(server.urlCalls(item.id), [7]);
@@ -537,13 +542,14 @@ test('createSharingSession: the controller\'s names, one page pipeline, module o
   const raw = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
   const common = { api: API, fetch: server.fetch, tokenProvider: async () => UNATT, headers: { 'x-qlab-sdk': 'web/2.0.0' },
     contributor: 'c'.repeat(32), contributorKeyRaw: raw, recoveryHash: 'd'.repeat(64), consentVersion: 'deck-1',
-    device: { deviceClass: 'browser', osMajor: 14 }, flags: { contributions: true, upload_trust: { web: 'capped' } }, storage,
+    device: { deviceClass: 'browser', osMajor: 14 }, flags: { contributions: true, upload_trust: { web: 'capped' }, share_join_ms: 0 }, storage,
     opus: async () => opus };
   const s = await mod.createSharingSession({ ...common, inputSampleRate: 16000, inputRoute: 'built_in', decodeInfo: { backend: 'exact', modelRevision: 'v4.0+abc' } });
   assert.equal(typeof s.push, 'function');
   const x = noise(16000 * 2, 5n, 0.2);
   for (let at = 0; at < x.length; at += 160) s.push(x.subarray(at, at + 160));
   assert.equal(await s.finish(), 2000);
+  await mod.outbox.closeRecording();
   const p = await mod.outbox.sharing();
   for (let i = 0; i < 50 && (await mod.outbox.pending()).length; i++) await (await p).outbox.drain({ ignoringBackoff: true });
   const items = await mod.outbox.items();
@@ -557,6 +563,7 @@ test('createSharingSession: the controller\'s names, one page pipeline, module o
   const s2 = await mod.createSharingSession({ ...common, inputSampleRate: 48000 });
   for (let at = 0; at < 48000; at += 480) s2.push(noise(480, BigInt(at + 1), 0.2));
   await s2.finish();
+  await mod.outbox.closeRecording();
   assert.equal((await mod.outbox.pending()).length, 1);
   await mod.outbox.stop();
   assert.equal((await mod.outbox.pending()).length, 0);

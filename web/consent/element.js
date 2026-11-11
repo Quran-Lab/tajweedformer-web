@@ -121,9 +121,13 @@ export class QuranLabConsent extends Base {
 
 /**
  * <quranlab-sharing-settings>: the switch, "What is shared", "Delete what I shared" and the
- * contribution code. Set `.controller` to the sharing controller (web/consent/index.js).
+ * contribution code. Set `.client` to the app's TajweedClient.
  */
 export class QuranLabSharingSettings extends Base {
+  /** The app's TajweedClient: the settings read and change its sharing state. */
+  set client(c) { this._client = c; this.controller = c && c._i ? c._i.ctl : null; }
+  get client() { return this._client || null; }
+  // SDK internals: the sharing controller behind the Client (web/consent/index.js)
   set controller(c) { this._c = c; this.render(); }
   get controller() { return this._c; }
   connectedCallback() { this.render(); }

@@ -1,7 +1,7 @@
 // Bundle size of what an app ships and loads, raw, gzip and brotli (what a CDN or bundler serves), and
-// Node cold start: import, model load from a local folder, first chunk. The model itself is fetched
-// lazily on load() (see the delivery profile); none of it is in the bundle.
-//   node scripts/size.mjs            (cold start needs the staged V4 files, as the tests)
+// Node cold start: import, model open from a local folder, first chunk. The model itself is fetched
+// by client.model() (see the delivery profile); none of it is in the bundle.
+//   node scripts/size.mjs            (cold start: TAJWEED_MODEL_DIR=<a 3.0 model folder>, TAJWEED_MODEL_KEY=<its signing key, hex>)
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { gzipSync, brotliCompressSync, constants } from 'node:zlib';
 import path from 'node:path';
@@ -33,41 +33,31 @@ function graph(entry, seen = new Set()) {
 const out = {};
 const js = (e) => [...graph(e)].filter((f) => !f.startsWith('dist/'));
 out['main entry JS (web/index.js graph, no glue)'] = sizes(js('web/index.js'));
+out['engine worker JS (web/api/worker.js graph, no glue)'] = sizes(js('web/api/worker.js'));
 out['engine glue dist/tajweedformer.mjs'] = sizes(['dist/tajweedformer.mjs']);
-out['engine dist/tajweedformer.wasm (fetched on first load())'] = sizes(['dist/tajweedformer.wasm']);
-out['scorer entry JS + glue'] = sizes([...js('web/scorer.js'), 'dist/tajweedformer-scorer.mjs']);
-out['scorer wasm'] = sizes(['dist/tajweedformer-scorer.wasm']);
-out['platform client (web/platform)'] = sizes(js('web/platform/index.js'));
-out['consent (web/consent, incl. element)'] = sizes(js('web/consent/index.js'));
+out['engine dist/tajweedformer.wasm (fetched by the first model())'] = sizes(['dist/tajweedformer.wasm']);
 if (existsSync(rel('dist/tajweedformer-opus.wasm'))) out['sharing opus wasm + glue (lazy)'] = sizes(['dist/tajweedformer-opus.mjs', 'dist/tajweedformer-opus.wasm']);
 console.log('size (bytes):');
 for (const [k, v] of Object.entries(out)) console.log(`  ${k}: ${v.files} files, raw ${v.raw}, gzip ${v.gzip}, brotli ${v.brotli}`);
 
-// Node cold start
-const ENGINE = process.env.TAJWEED_V4_ENGINE || '';
-const CAL = process.env.TAJWEED_V4_CALIBRATION || '';
-const TOKENS = process.env.TAJWEED_V4_TOKENS || '';
-if (existsSync(path.join(ENGINE, 'c16_l64', 'layers.zfw'))) {
-  const files = { 'calibration.json': readFileSync(CAL), 'tokens.txt': readFileSync(TOKENS), 'expected_tj3.zfx': readFileSync(path.join(ENGINE, 'expected_tj3.zfx')) };
-  for (const f of readdirSync(path.join(ENGINE, 'c16_l64'))) files[`c16_l64/${f}`] = readFileSync(path.join(ENGINE, 'c16_l64', f));
-  const { sha256Hex } = await import(pathToFileURL(rel('web/tajweed/manifest.js')).href);
-  const list = [];
-  for (const [p, b] of Object.entries(files)) list.push({ path: p, size: b.length, sha256: await sha256Hex(b) });
-  files['manifest.json'] = Buffer.from(JSON.stringify({ format: 2, model_id: 'v4.0', family: 'tajweedformer', revision: 'size', min_sdk_version: '2.0.0',
-    engine_format: 2, coreml_format: 9, tokens_sha256: await sha256Hex(files['tokens.txt']), coreml: '-', sidecar: 'c16_l64/layers.zfw', keeps: '-',
-    tokens: 'tokens.txt', files: list }));
+// Node cold start, from a model folder on disk
+const DIR = process.env.TAJWEED_MODEL_DIR || '';
+if (DIR && existsSync(path.join(DIR, 'manifest.json'))) {
   let t = performance.now();
-  const { TajweedFormer } = await import(pathToFileURL(rel('web/index.js')).href);
+  const { openModel } = await import(pathToFileURL(rel('web/api/model.js')).href);
+  const { dirReader } = await import(pathToFileURL(rel('web/node.js')).href);
   const imp = performance.now() - t;
   t = performance.now();
-  const tf = await TajweedFormer.load({ files, context: 'c16_l64' });
-  const load = performance.now() - t;
-  const s = tf.createStream();
-  t = performance.now();
+  const keys = process.env.TAJWEED_MODEL_KEY ? { trustedKeys: [process.env.TAJWEED_MODEL_KEY] } : {};
+  const model = await openModel({ reader: Object.assign(dirReader(DIR), { fresh: true }), folder: keys });
+  const open = performance.now() - t;
   const pcm = new Float32Array(16000);
   for (let i = 0; i < pcm.length; i++) pcm[i] = 0.1 * Math.sin(i / 7);
+  t = performance.now();
   let first = null;
-  for (let at = 0; at < pcm.length && first === null; at += 320) if (s.pushAudio(pcm.subarray(at, at + 320)) > 0) first = performance.now() - t;
-  s.free(); tf.free();
-  console.log(`Node ${process.versions.node} cold start: import ${imp.toFixed(0)} ms, load (verify + wasm + engine, files in memory) ${load.toFixed(0)} ms, first chunk after ${first.toFixed(0)} ms of compute from the first push`);
+  const s = model.session({ onChunk: () => { if (first === null) first = performance.now() - t; } });
+  s.push(pcm);
+  await s.finish();
+  await model.close();
+  console.log(`Node ${process.versions.node} cold start: import ${imp.toFixed(0)} ms, open (verify + wasm + engine + warm) ${open.toFixed(0)} ms, first chunk ${first.toFixed(0)} ms after the first push`);
 }

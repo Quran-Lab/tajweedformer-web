@@ -7,6 +7,7 @@
 //
 // MAKE_SHARING_VECTOR=1 writes the files to the shared sharing vectors/ (web_*.ogg).
 import test from 'node:test';
+import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import path from 'node:path';
