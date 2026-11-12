@@ -68,9 +68,9 @@ Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai) and paste 
 - **Linked to [sdk.quranlab.ai](https://sdk.quranlab.ai):** a web key, the signed config (which model
   build your app gets, the response time), anonymous daily telemetry, issue reports, and opt-in
   recitation sharing with the SDK's own consent sheet.
-- **Version:** 3.0.2, on npm as `@quran-lab/tajweedformer`. What has run where: the test suite on every push
-  (Linux, with the engine and libopus built there), and, with a real model folder that a public runner does
-  not have, the 35 conformance clips bit for bit in Node and in Chrome (`npm run proof`).
+- **Version:** 3.1.0, on npm as `@quran-lab/tajweedformer`. What has run where: the test suite on every push
+  (Linux, with the engine and libopus built there), and, in Quran Lab's own check with model files that a
+  public runner does not have, the 35 conformance clips bit for bit in Node and in Chrome (`npm run proof`).
 
 ## The TajweedFormer SDKs
 
@@ -79,10 +79,10 @@ One model, one engine, the same bits on every platform. Each SDK compiles the sa
 
 | Repository | What it is | Platforms | Install |
 | - | - | - | - |
-| [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+ on arm64-v8a and armeabi-v7a, desktop JVM | Maven Central `ai.quranlab:tajweedformer:3.0.0` |
-| [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "3.0.2"`, product `TajweedFormer` |
+| [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+ on arm64-v8a and armeabi-v7a, desktop JVM | Maven Central `ai.quranlab:tajweedformer:3.0.1` |
+| [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "3.1.0"`, product `TajweedFormer` |
 | [tajweedformer-web](https://github.com/Quran-Lab/tajweedformer-web) | WebAssembly SDK with SIMD128 | Browsers, Node 20+ | `npm install @quran-lab/tajweedformer` |
-| [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake `FetchContent`, tag 3.0.2 |
+| [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake `FetchContent`, tag 3.1.0 |
 | [tajweedformer-engine](https://github.com/Quran-Lab/tajweedformer-engine) | The engine: exact C runtime, inference library, conformance suite | everything above | Git submodule |
 
 The model is Quran-Lab/tajweedformer-v4 (`sdk/v4.0`), hosted by Quran Lab and served by
@@ -98,7 +98,7 @@ per-class thresholds) your users see, without shipping a new build.
 npm install @quran-lab/tajweedformer
 ```
 
-With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.0.2/web/index.js`. The package has one entry point; in Node, `@quran-lab/tajweedformer/node` adds the reader for a model folder on disk.
+With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.1.0/web/index.js`. The package has one entry point, the same in a page and in Node.
 
 ## Before you start
 
@@ -108,6 +108,7 @@ With a bundler (Vite, webpack and the like) the import in the quick start resolv
 | **Page** | A secure context: `https`, or `http://localhost`. A browser gives the microphone and WebCrypto to nothing else, and starts audio only after a tap or a click. |
 | **Browser** | WebAssembly with SIMD, AudioWorklet, and Ed25519 in WebCrypto (Chrome 137, Firefox 129, Safari 17, or later). In Node: version 20 or later. |
 | **Download** | The first visit downloads the model: 56.5 MB, then the browser's cache serves it (73.5 MB stored). |
+| **Model** | A model comes only from Quran Lab's server, through the Client: `await client.model()`, or `client.prefetch()` ahead of use; the Client opens only a model it downloaded itself on this device. When Quran Lab refuses the key or the app (a revoked key, a paused or blocked app), the SDK stops running the model and removes the downloaded model from the browser. Once the key is accepted again the model is downloaded again. |
 | **Takes** | A Model has one open Session (one take) at a time; the next take is a new Session. A take holds at most 20 minutes of audio. |
 | **Threads** | In a browser the engine runs in a module Worker, off the page's main thread (2.x ran it on the main thread); a page whose content security policy forbids Workers runs it on the main thread. In Node it runs on the calling thread. |
 
@@ -139,14 +140,15 @@ use the app's development key with `http://localhost:*` among its origins; a pro
 a local address, and the SDK says so (`server_rejected`, with what to do).
 
 From Node, or with audio you already have, replace `listen()` with `model.session()` and
-`session.push(samples)`; everything else is the same ([examples/node.mjs](examples/node.mjs)).
+`session.push(samples)`; everything else is the same, the Client included: a Node program makes a Client with
+its app's desktop key and `appId`, and the Client downloads the model ([examples/node.mjs](examples/node.mjs)).
 
 ## The five concepts
 
 | Concept | What it is | Made by |
 | - | - | - |
 | `TajweedClient` | The app's link to Quran Lab: the key, the signed config, telemetry, sharing, the model files on this device. One per page (a second one while the first is open is the error `client_exists`). | `await TajweedClient.create({ key })` |
-| `TajweedModel` | One verified model build: `id`, `version`, `build`, `contexts`, `defaultContext`, `chunkMs(context)`, `tokens`, `calibration`, `reference`, `sampleClips`, `backend`. Holds the engine. | `await client.model()`, or `await TajweedModel.open(folder)` |
+| `TajweedModel` | One verified model build: `id`, `version`, `build`, `contexts`, `defaultContext`, `chunkMs(context)`, `tokens`, `calibration`, `reference`, `sampleClips`, `backend`. Holds the engine. | `await client.model()` |
 | `TajweedSession` | One take: audio in, `chunks` and `events` out, the take's Heads from `finish()`. One open Session per Model (`session_open`). | `await model.listen(options)` (the SDK captures) or `model.session(options)` (the app pushes) |
 | `TajweedHeads` | Raw model output for a chunk or a whole take: `names`, `get(name)`, `greedy(name)`, `decoded()`. | a chunk (`chunk.heads`), `session.finish()` |
 | `TajweedBackend` | What runs the model. On the web always `{ kind: 'cpu', name: 'wasm', stage: 'cpu', reason: null }`. | `model.backend`, `session.backend`, `chunk.backend` |
@@ -228,7 +230,7 @@ take when the page is visible again (one line, in the example).
 
 ## Running without a microphone
 
-The model folder carries a few short sample clips. `model.sampleClips` lists them (`name`, `kind`,
+The model carries a few short sample clips. `model.sampleClips` lists them (`name`, `kind`,
 `durationMs`), and `listen` takes one in place of the microphone, at real-time pace or as fast as possible:
 
 ```js
@@ -272,7 +274,7 @@ console.log(await client.diagnose());       // one report, safe to paste into an
 Two pieces of read-only data come with the model for apps that build their own judge. The SDK never
 applies either one.
 
-**`model.calibration`** is `calibration.json` exactly as shipped (null when the model folder has none):
+**`model.calibration`** is `calibration.json` exactly as shipped (null when the model has none):
 `text` (the file), `json` (parsed, frozen), `sha256`, `format`, `contexts`, `classes`, `presets`,
 `context(name)` and `threshold(context, class, preset)`. What is in it:
 
@@ -327,8 +329,11 @@ start reads only the manifest from the network, and none of it when offline.
 The manifest is signed by Quran Lab (Ed25519) and names the model version. The SDK checks, in this order:
 the build the config named, the manifest's shape, the signature, that it has a version (a build for SDK 2.x
 has none: `model_incompatible`), its minimum SDK version, and the version the config named.
-`TajweedModel.open(folder)` opens a folder you already have (a URL, a directory in Node, or
-`dirReader(dir)` from `@quran-lab/tajweedformer/node`) with the same checks.
+A model comes only from Quran Lab's server, through the Client (3.1.0): the SDK has no call that takes a
+model as a folder, a URL or bytes. The Client opens only a build it downloaded itself on this device. It
+keeps a record of each download, bound to the device (in a browser with a key that cannot be exported, kept
+in IndexedDB; in Node with a key derived from the machine and the user), and model files that are in its
+storage without a valid record are deleted and downloaded again.
 
 The response time is the model's context: `c8_l64` (160 ms chunks), `c16_l64` (320 ms, the default),
 `c24_l72` and `c24_l256` (480 ms). A Session runs on the `context` option when your app sets it, else on the
@@ -343,6 +348,26 @@ const client = await TajweedClient.create({ key, appVersion: '1.0.0', analytics:
 
 - **Keys:** a web key works only from the origins you gave it on sdk.quranlab.ai. In Node use a desktop
   key and pass `appId` (your app id) and, if you like, `storage` (a folder).
+- **Model requests:** every request for a model file carries the install's token
+  (`authorization: Bearer <token>`) and the key. A token that has run out is renewed once and the request
+  repeated once; a redirect is never followed.
+- **A refused app:** when an answer of Quran Lab refuses the key or the app with one of the reasons
+  `key_revoked`, `key_unknown`, `app_not_allowed`, `origin_not_allowed`, `key_type_mismatch`, `app_blocked` or
+  `developer_not_approved`, `client.model()` and `client.prefetch()` fail with that refusal's error
+  (`invalid_key` for a revoked or unknown key, else `server_rejected` with the reason), also when the model is
+  on the device and also at a later start without a network, until Quran Lab accepts the key again; a refusal
+  of a model request ends only when a later model request is served. In a page, a refusal that the browser
+  hides (Quran Lab answers CORS only for a key's own origins) is read from the origin check and counts the
+  same. A Model that is already open keeps running until your app closes it. An answer without one of these
+  reasons never stops a model on the device: no connection, a failure or a limit of the server, `sdk_too_old`,
+  `invalid_key` without a reason.
+- **A refused app's model is removed:** when Quran Lab refuses the key or the app (a revoked key, a paused or
+  blocked app), the SDK stops running the model and removes the downloaded model from the browser. Once the
+  key is accepted again the model is downloaded again. It removes what `removeModels()` removes, in the Cache
+  API and in IndexedDB, and nothing else (the sharing state and unsent recordings stay). The SDK asks for
+  model files with `cache: 'no-store'`, so the browser's HTTP cache holds no copy of them; a copy your own
+  service worker kept is yours to remove. Another tab of the same origin that has a Model open keeps it running
+  from memory; once that tab closes it, its next `client.model()` finds the stored refusal and fails with it.
 - **Signed config:** Ed25519 over the exact bytes with Quran Lab's pinned key id, `expires_at` checked,
   ETag revalidation; a config that fails is ignored and the last good one stays.
 - **Telemetry:** on by default, anonymous by construction: sums and histograms only (takes, minutes of

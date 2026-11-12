@@ -1,5 +1,60 @@
 # Changelog
 
+## 3.1.0
+
+A model comes only from Quran Lab's server, through the Client.
+
+- **Removed: opening a model folder the app supplies.** `TajweedModel.open(folder)` is gone, and with it the
+  package's `@quran-lab/tajweedformer/node` entry and its `dirReader`. A model comes from Quran Lab's server
+  through the Client: `const model = await client.model()`, and `client.prefetch()` to download it ahead of
+  use. Why: the model is Quran Lab's to deliver, verify and update, and an app that carries its own copy cannot
+  be told of a newer or a withdrawn build. A Node program uses the Client as a page does
+  (`TajweedClient.create({ key, appId })` with the app's desktop key; [examples/node.mjs](examples/node.mjs)).
+  If your code called `TajweedModel.open(...)`, replace that call with `await client.model()`; nothing else of
+  the Model changes. The constructors of `TajweedClient` and `TajweedModel`, never part of the API, now refuse
+  to be called (`invalid_argument`).
+- **Changed: the Client opens only a model it downloaded itself on this device.** It keeps a record of each
+  download, bound to the device: in a browser with a key that cannot be exported, kept in IndexedDB; in Node,
+  which has no such store, with a key derived from the machine and the user. Model files that are in the
+  Client's storage without a valid record are not opened: they are deleted and the model is downloaded. So an
+  install that updates from an earlier version downloads the model once more; without a connection at that
+  first start `client.model()` fails with `needs_connection`. After that download a learner without a
+  connection keeps working, as before. In a browser with no IndexedDB at all the record lasts for the page
+  load, so every load downloads the model; where IndexedDB is there and fails, the call fails with
+  `storage_failed`, nothing is deleted, and the next call tries again.
+- **Changed: model files are requested with the install's token.** Every request for a model file carries
+  `authorization: Bearer <token>`, the token the SDK already uses for its other calls, and the key as before.
+  A token that has run out is renewed once and the request repeated once. A redirect is never followed.
+- **Changed: an app Quran Lab has refused does not run the model.** When an answer of Quran Lab refuses the
+  key or the app with one of the reasons `key_revoked`, `key_unknown`, `app_not_allowed`, `origin_not_allowed`,
+  `key_type_mismatch`, `app_blocked` or `developer_not_approved`, `client.model()` and `client.prefetch()` fail
+  with that refusal's error (`invalid_key` for a revoked or unknown key, else `server_rejected` with the
+  reason), also at a later start without a network. It ends when Quran Lab accepts the key again; a refusal
+  of a model request ends only when a later model request is served. In a page, a refusal that the browser
+  hides (Quran Lab answers CORS only for a key's own origins) is read from the origin check and counts the
+  same. A Model that is already open keeps running until your app closes it. An answer without one of these
+  reasons never stops a model on the device: no connection, a failure or a limit of the server, a network the
+  server does not serve, `sdk_too_old`, `invalid_key` without a reason.
+- **Changed: a refused app's model is removed.** When Quran Lab refuses the key or the app (a revoked key, a
+  paused or blocked app), the SDK stops running the model and removes the downloaded model from the browser.
+  Once the key is accepted again the model is downloaded again. The removal takes what `removeModels()` takes
+  (every model build in the SDK's stores, its records and partial downloads) and nothing else: the sharing
+  state and unsent recordings stay. A removal that cannot be done at once is done at the next start, before
+  anything else.
+- **Changed: a model on the device keeps running when a model request fails at a start.** When the CDN
+  answers the request for the model's manifest with an error that is not one of those refusals (a limit, a
+  failure, a network it does not serve, a refusal of this install's request such as
+  `model_attestation_required` or `model_not_allowed`), the model a download left opens from the device.
+  Before, such an answer made `client.model()` fail.
+- `server_rejected` has two new reasons for a refused model request, `model_attestation_required` and
+  `model_not_allowed`. The daily limit of model downloads is `download_failed` with its own sentence. The
+  message and fix of `app_blocked` say that the app is blocked by Quran Lab or paused by its developer. The fix
+  sentence of `model_missing` no longer names a folder.
+- **Changed: the sharing sheet's text.** The sharing sheet and "What is shared" now say that no human ever
+  listens to your recordings: only software learns from them. A learner who already agreed is not asked
+  again, and their recordings keep carrying the consent version they agreed to; a learner asked from now on
+  agrees to `share-2026-11-12` (copy deck `2026-11-12.1`, eight languages).
+
 ## 3.0.2
 
 A fix for recitation sharing: a recording that was waiting when the learner turned sharing off is never

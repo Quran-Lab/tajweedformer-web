@@ -4,7 +4,7 @@
 // or revisions, such as one shared weight file, is downloaded and stored once).
 //
 //   const reader = cachedReader({ baseUrl: 'https://cdn.quranlab.ai/models/Quran-Lab/tajweedformer-v4/<rev>/sdk/v4.0/',
-//                                 headers: { 'x-qlab-key': key }, onProgress });
+//                                 headers: () => ql.modelHeaders(), onProgress });
 //   const { folder } = await openTajweedFolder(reader);
 //
 // Stores: the Cache API in browsers (default), IndexedDB where there is no Cache API, a directory in
@@ -145,7 +145,14 @@ export function profilePaths(manifest, { context, platform = 'web', optional = f
  * A model-folder reader over HTTP that caches by SHA-256 and resumes by range.
  * @param {object} o
  * @param {string} o.baseUrl  the folder's URL, ending in "/" (sdk/v4.0/)
- * @param {Record<string,string>} [o.headers]  e.g. { 'x-qlab-key': key } for the Quran Lab CDN
+ * @param {Record<string,string>|(() => Promise<Record<string,string>>)} [o.headers]  the headers of every request, or
+ *   what makes them (asked before each request: the Client's one header provider, SPEC 15.4)
+ * @param {() => Promise<unknown>} [o.renew]  a 401 `invalid_token`: called once, then that request is repeated once
+ *   (never when the answer's `reason` is one that `o.stops` names: the key is refused, not the token)
+ * @param {(reason: string|null) => boolean} [o.stops]  whether an answer's `reason` refuses the key or the app
+ * @param {(e: DeliveryError) => void} [o.onRefusal]  a 401 or 403 answer, with its `error` and `reason`
+ * @param {() => void} [o.onServed]  the CDN served a request (a 2xx answer)
+ * @param {() => boolean} [o.stopped]  true: the server has refused this app; no stored manifest is used
  * @param {typeof fetch} [o.fetch]
  * @param {object} [o.store]  a store (default: defaultStore()); false: no cache
  * @param {number} [o.rangeSize]  bytes per range request (default 4 MiB)
@@ -165,22 +172,53 @@ export function cachedReader(o) {
   const pending = new Map();
   const held = new Map(); // prefetched bytes, handed over once (no second read from the store)
 
-  const req = async (path, range) => {
-    const headers = { ...(o.headers || {}) };
+  const answers = new WeakMap(); // an error answer's { error, reason }, read once
+  const req = async (path, range, repeated = false) => {
+    let headers;
+    try { headers = typeof o.headers === 'function' ? { ...(await o.headers()) } : { ...(o.headers || {}) }; } catch (e) {
+      // no header can be made (no token: the server did not answer, or it refused): nothing is sent. `auth`
+      // is the server's answer, raised where no stored copy can stand in.
+      const err = new DeliveryError('offline', `${path}: ${(e && e.message) || e}`);
+      if (e && e.name === 'PlatformError') err.auth = e;
+      throw err;
+    }
     if (range) headers.range = `bytes=${range[0]}-${range[1]}`;
     let r;
     stats.requests++;
-    try { r = await f(base + path.split('/').map(encodeURIComponent).join('/'), { headers, signal: o.signal, cache: 'no-store' }); } catch (e) {
+    // a model request never leaves the CDN: a redirect is an error, not followed
+    try { r = await f(base + path.split('/').map(encodeURIComponent).join('/'), { headers, signal: o.signal, cache: 'no-store', redirect: 'error' }); } catch (e) {
       if (o.signal && o.signal.aborted) throw new DeliveryError('aborted', 'download aborted');
       throw new DeliveryError('offline', `${path}: ${e.message || e}`);
     }
+    if (r.status >= 200 && r.status < 300 && typeof o.onServed === 'function') { try { o.onServed(); } catch (_) { /* the Client's own problem */ } }
+    if (r.status === 401 || r.status === 403 || r.status === 429) {
+      let body = null;
+      try { body = await r.clone().json(); } catch (_) { body = null; }
+      const error = body && typeof body.error === 'string' ? body.error : null;
+      const reason = body && typeof body.reason === 'string' ? body.reason : null;
+      const refused = typeof o.stops === 'function' && o.stops(reason);
+      // the token ran out or does not verify: a new one, once, and this request once more
+      if (r.status === 401 && error === 'invalid_token' && !refused && typeof o.renew === 'function' && !repeated) {
+        let renewed = true;
+        try { await o.renew(); } catch (_) { renewed = false; }
+        if (renewed) return req(path, range, true);
+      }
+      answers.set(r, { error, reason });
+    }
     return r;
+  };
+  // an error answer as a DeliveryError that carries the answer's code; a refusal is told to the Client
+  const httpError = (path, r) => {
+    const a = answers.get(r) || { error: null, reason: null };
+    const e = new DeliveryError('http', `${path}: HTTP ${r.status}${a.error ? ' ' + a.error : ''}`, { status: r.status, error: a.error, reason: a.reason });
+    if ((r.status === 401 || r.status === 403) && typeof o.onRefusal === 'function') { try { o.onRefusal(e); } catch (_) { /* the Client's own problem */ } }
+    return e;
   };
 
   async function fetchWhole(path) {
     const r = await req(path, null);
     if (r.status === 404) return null;
-    if (!r.ok) throw new DeliveryError('http', `${path}: HTTP ${r.status}`, { status: r.status });
+    if (!r.ok) throw httpError(path, r);
     const b = new Uint8Array(await r.arrayBuffer());
     stats.bytesDownloaded += b.length;
     return b;
@@ -219,7 +257,7 @@ export function cachedReader(o) {
           whole = b;
           return;
         }
-        if (r.status !== 206) throw new DeliveryError('http', `${path}: HTTP ${r.status}`, { status: r.status });
+        if (r.status !== 206) throw httpError(path, r);
         const cr = r.headers.get('content-range');
         if (cr && !cr.startsWith(`bytes ${lo}-${hi}/`)) throw new DeliveryError('checksum_mismatch', `${path}: wrong range ${cr}`);
         const b = new Uint8Array(await r.arrayBuffer());
@@ -285,12 +323,19 @@ export function cachedReader(o) {
     },
     async read(path) {
       if (path === 'manifest.json') {
-        // always fresh when online (it is small and signed); the last good copy when offline
+        // always fresh when online (it is small and signed). With no fresh one (no network, no token, an error
+        // answer of the CDN) the last good copy, so a model a real download left keeps running; never when
+        // the server's answer stops the model on this device
         let b = null;
         try { b = await fetchWhole('manifest.json'); } catch (e) {
-          if (!(e instanceof DeliveryError) || e.code !== 'offline' || !store) throw e;
-          b = await store.get(`manifest/${base}`);
-          if (!b) { e.nothingCached = true; throw e; }
+          if (!(e instanceof DeliveryError) || e.code === 'aborted' || e.code === 'checksum_mismatch') throw e;
+          const have = store && !(typeof o.stopped === 'function' && o.stopped()) ? await store.get(`manifest/${base}`) : null;
+          if (!have) {
+            if (e.auth) throw e.auth;
+            if (e.code === 'offline') e.nothingCached = true;
+            throw e;
+          }
+          b = have;
         }
         if (b && store) await store.put(`manifest/${base}`, b);
         try {

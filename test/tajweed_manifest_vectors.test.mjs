@@ -12,11 +12,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   signedText, verifyManifestSignature, checkManifestSignature, parseGoldenTolerance, ModelFolder, ModelFolderError,
-  memoryReader, QURANLAB_PUBLIC_KEY_HEX, SDK_VERSION,
+  QURANLAB_PUBLIC_KEY_HEX, SDK_VERSION,
   openTajweedFolder,
 } from '../web/tajweed/manifest.js';
 import { cachedReader } from '../web/tajweed/delivery.js';
-import { TajweedModel } from '../web/index.js';
+import { openModel } from '../web/api/model.js';
+import { memoryReader } from './helpers/readers.mjs';
 import { keyId } from '../web/platform/client.js';
 
 const DIR = new URL('./tajweed/manifest_vectors/', import.meta.url);
@@ -161,7 +162,7 @@ function cdn(manifestBytes) {
 }
 
 test('delivery: cachedReader + ModelFolder.open (signature required) accept the 519235d0 manifest', async () => {
-  assert.equal(SDK_VERSION, '3.0.2');
+  assert.equal(SDK_VERSION, '3.1.0');
   const { fetch, log } = cdn(RAW['519235d0']);
   const reader = cachedReader({ baseUrl: 'https://cdn.test/sdk/', fetch, store: false });
   const f = await ModelFolder.open(reader, { requireSignature: true, verify: 'on-read' });
@@ -186,7 +187,7 @@ test('delivery: the 519235d0 manifest verifies on the 3.0 path and is refused on
   await assert.rejects(openTajweedFolder(cachedReader({ baseUrl: 'https://cdn.test/sdk/', fetch: bad.fetch, store: false }), { requireSignature: true, verify: 'on-read' }),
     (e) => e instanceof ModelFolderError && e.code === 'signature_invalid');
   assert.deepEqual(bad.log, ['manifest.json']);
-  // the same through the public API, as catalogue codes
-  await assert.rejects(TajweedModel.open({ 'manifest.json': RAW['519235d0'] }), (e) => e.code === 'model_incompatible');
-  await assert.rejects(TajweedModel.open({ 'manifest.json': enc.encode(JSON.stringify(m)) }), (e) => e.code === 'signature_invalid');
+  // the same through the SDK's opening of a model (internal since 3.1.0), as catalogue codes
+  await assert.rejects(openModel({ reader: memoryReader({ 'manifest.json': RAW['519235d0'] }) }), (e) => e.code === 'model_incompatible');
+  await assert.rejects(openModel({ reader: memoryReader({ 'manifest.json': enc.encode(JSON.stringify(m)) }) }), (e) => e.code === 'signature_invalid');
 });

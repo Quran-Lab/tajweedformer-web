@@ -13,20 +13,29 @@ import { node as nodeParts, isNode } from '../platform/node-hook.js';
 import { sdkLatestOf } from '../platform/update-notice.js';
 import { cachedReader, defaultStore, profilePaths } from '../tajweed/delivery.js';
 import { ModelFolder, MODEL_VERSION_RE, QURANLAB_PUBLIC_KEY_HEX, sha256Hex, compareModelVersions } from '../tajweed/manifest.js';
+import { Installs, defaultDeviceKey, removeAllModels } from '../tajweed/install.js';
 import { enableSharing } from '../consent/index.js';
 import { openModel, resolveContext } from './model.js';
 import { WASM_BACKEND } from './session.js';
 import { microphonePermission } from './microphone.js';
-import { TajweedError, toTajweedError, invalid } from './errors.js';
+import { TajweedError, toTajweedError, invalid, stopReasonOf } from './errors.js';
 
 const RULE_RE = /^[a-z][a-z0-9_]{0,23}$/;
 const MAX_CHECKS = 100_000;
+// what createClient hands the constructor beside the internals, and nothing else can (it is kept nowhere else):
+// a page cannot make a Client from parts of its own (a transport, a store, a trusted key) by calling the
+// constructor (SPEC 15.1)
+const MADE = Symbol('TajweedClient.create');
+/** In the state store: a removal of the models that is owed (it failed, or could not be finished): tried again at
+ * every start, every model call, every refusal and when an open Model is closed (SPEC 15.3, contract 1.10.0). */
+const PURGE_KEY = 'model.purge';
 
 let current = null; // the process's one Client
 
 export class TajweedClient {
   /** Use TajweedClient.create(options). */
-  constructor(internals) {
+  constructor(internals, made) {
+    if (made !== MADE || !internals) throw invalid('a TajweedClient is made by TajweedClient.create(options)');
     this._i = internals;
     this._ql = internals.ql;
     this._closed = false;
@@ -87,15 +96,93 @@ export class TajweedClient {
     }
     const last = state.get('model.last');
     if (last && (!version || last.version === version)) {
-      return { url: last.url, version: last.version, build: last.build, headers: { 'x-qlab-key': ql.key, ...(ql.origin ? { origin: ql.origin } : {}) }, pin: null };
+      return { url: last.url, version: last.version, build: last.build, pin: null };
     }
     if (src && !src.version) throw new TajweedError('model_incompatible', { detail: 'the config names a model build without a version; this SDK needs a build made for SDK 3.0.0 or later' });
     throw failure;
   }
 
+  // the reader of the Client's own download. Every model request's headers come from one place (SPEC 15.4).
   _reader(src, onProgress) {
-    const i = this._i;
-    return cachedReader({ baseUrl: src.url, headers: src.headers, fetch: i.fetch, store: i.store, onProgress });
+    const i = this._i, ql = this._ql;
+    return cachedReader({ baseUrl: src.url, fetch: i.fetch, store: i.store, onProgress,
+      headers: () => ql.modelHeaders(), renew: () => ql.renewToken(), stops: (reason) => !!stopReasonOf(reason),
+      onRefusal: (e) => ql.noteModelRefusal(e), onServed: () => ql.noteModelServed(), stopped: () => !!ql.modelRefusal });
+  }
+
+  // A Client the server has refused does not run the model (SPEC 15.3): the refusal, also a remembered one.
+  // Before the CDN is asked: a stop in force, unless the CDN gave it and the API has accepted the key since (the
+  // CDN is then asked again, and its answer decides).
+  _refused() { if (this._ql.modelStopped) throw this._ql.modelRefusal; }
+  // After the CDN was asked: any stop still in force.
+  _stillRefused() { if (this._ql.modelRefusal) throw this._ql.modelRefusal; }
+
+  // A stop removes the models on this device (SPEC 15.3, contract 1.10.0): every build in every store the SDK
+  // wrote, their install records and partial downloads; what removeModels removes, done by the SDK itself. Not
+  // the remembered refusal, the device key, the sharing state or the unsent recordings (other stores). Never an
+  // error of its own: when it fails it is owed (PURGE_KEY) and tried again. Each request runs after the one
+  // before it has ended, so files a download wrote meanwhile go too. Resolves true when nothing is left.
+  _purge() {
+    const run = async () => {
+      const state = this._i.state;
+      try { state.set(PURGE_KEY, true); } catch (_) { /* owed in this page */ }
+      try {
+        await removeAllModels(this._i.store);
+        state.set('model.last', null);
+        state.set(PURGE_KEY, null);
+        return true;
+      } catch (_) { return false; }
+    };
+    const p = (this._purgeChain || Promise.resolve()).then(run, run);
+    this._purgeChain = p;
+    return p;
+  }
+
+  _purgeOwed() { try { return this._i.state.get(PURGE_KEY) === true; } catch (_) { return true; } }
+
+  // Before a model call: a stop another page stored meanwhile holds here too, and a removal that is owed (or a
+  // stop in force with files put back) is done first.
+  async _beforeModelCall() {
+    this._ql.syncRefusal();
+    if (this._ql.modelRefusal || this._purgeOwed()) await this._purge();
+  }
+
+  // A call fails while a stop is in force: the models go before it rejects with the stop's error.
+  async _failRefused(e, o) {
+    if (this._ql.modelRefusal) { await this._purge(); throw this._fail(this._ql.modelRefusal, o); }
+    throw this._fail(e, o);
+  }
+
+  // where the model is, or the refusal when the server has refused this app
+  async _allowedSource(version) {
+    let src;
+    try { src = await this._source(version); } catch (e) { this._refused(); throw e; }
+    this._refused();
+    return src;
+  }
+
+  // The install record (SPEC 15.2): the Client opens only a build it downloaded itself. Returns the state of
+  // the build's record before this call: 'installed', 'downloading' (a download to resume), or null: nothing
+  // here was the Client's; what was in the cache without a valid record is deleted, and the record of the
+  // download that starts now is written before the first request for a file. A key store that fails: nothing
+  // is opened, deleted or downloaded, and the call is storage_failed.
+  async _gate(src) {
+    const inst = this._i.installs;
+    try {
+      const had = await inst.state(src.build);
+      if (had) return had;
+      await inst.sweep();
+      await inst.write(src.build, 'downloading');
+      return null;
+    } catch (e) {
+      throw new TajweedError('storage_failed', { detail: String((e && e.message) || e) }, { cause: e });
+    }
+  }
+
+  // every file of the download profile is verified: the build is this Client's
+  async _installed(src, had) {
+    if (had === 'installed') return;
+    try { await this._i.installs.write(src.build, 'installed'); } catch (_) { /* it stays `downloading`: the next start finds every file and writes it */ }
   }
 
   /**
@@ -114,21 +201,29 @@ export class TajweedClient {
       if (this._model && !this._model._closed) await this._model.close();
       let src, reader;
       try {
-        src = await this._source(pinned);
+        await this._beforeModelCall();
+        src = await this._allowedSource(pinned);
+        const had = await this._gate(src);
         reader = this._reader(src);
         const model = await openModel({
           reader, platform: this._ql, seams: this._i.seams,
           folder: { trustedKeys: this._i.modelKeys, expect: { version: src.version, build: src.build } },
-          onClose: (m) => { if (this._model === m) this._model = null; },
+          onClose: (m) => { if (this._model === m) this._model = null; if (this._purgeOwed()) this._purge(); },
           onDrop: () => { this._droppedChunks++; },
         });
+        // a refusal that arrived while the model was opened (the token's answer, the CDN's), or one the CDN did
+        // not end when it was asked again: the model is not handed out
+        if (this._ql.modelRefusal) { await model.close().catch(() => {}); await this._purge(); throw this._ql.modelRefusal; }
+        await this._installed(src, had);
         this._model = model;
         this._modelPinned = pinned;
         this._ql.modelOpened({ revision: model.version, build: model.build, context: model.defaultContext, backend: 'cpu' },
           { loadMs: model.loadMs, delivery: reader.stats });
         return model;
       } catch (e) {
-        throw this._fail(e, { fallback: 'engine_failed' });
+        // while a stop is in force the call fails with it, whatever else went wrong (the CDN not reached again),
+        // and the models are removed first
+        await this._failRefused(e, { fallback: 'engine_failed' });
       }
     })();
     this._opening = { pinned, promise };
@@ -147,7 +242,9 @@ export class TajweedClient {
     this._guard();
     if (onProgress !== null && typeof onProgress !== 'function') throw invalid('onProgress must be a function');
     try {
-      const src = await this._source(version);
+      await this._beforeModelCall();
+      const src = await this._allowedSource(version);
+      const had = await this._gate(src);
       const loaded = new Map();
       let total = 0;
       const report = () => { if (onProgress) onProgress({ bytesDone: [...loaded.values()].reduce((a, b) => a + b, 0), bytesTotal: total }); };
@@ -161,7 +258,7 @@ export class TajweedClient {
       for (const p of paths) { if (await reader.cached(p)) { loaded.set(p, sizes.get(p)); have.push(p); } }
       report();
       const done = () => ({ bytesDone: [...loaded.values()].reduce((a, b) => a + b, 0), bytesTotal: total, complete: have.length === paths.length });
-      if (have.length === paths.length) return done();
+      if (have.length === paths.length) { this._stillRefused(); await this._installed(src, had); return done(); }
       // waits on a metered connection and with none; downloads on an unmetered one and where the browser cannot tell
       if (unmeteredOnly && ['metered', 'none'].includes(this._connection())) return done();
       for (const p of paths) {
@@ -174,9 +271,11 @@ export class TajweedClient {
       if (reader.stats.bytesDownloaded > 0) {
         this._ql.telemetry.download({ revision: src.version, build: src.build, profile: 'web-cpu', bytes: reader.stats.bytesDownloaded, success: true, resumed: reader.stats.rangesResumed > 0 });
       }
+      this._stillRefused();
+      await this._installed(src, had);
       return done();
     } catch (e) {
-      throw this._fail(e, { fallback: 'download_failed' });
+      await this._failRefused(e, { fallback: 'download_failed' });
     }
   }
 
@@ -265,8 +364,9 @@ export class TajweedClient {
     if (this._model && !this._model._closed) await this._model.close();
     const store = this._i.store;
     try {
-      for (const prefix of ['sha256/', 'part/', 'manifest/']) for (const k of await store.keys(prefix)) await store.delete(k);
+      await removeAllModels(store);
       this._i.state.set('model.last', null);
+      this._i.state.set(PURGE_KEY, null);
     } catch (e) { throw this._fail(new TajweedError('storage_failed', { detail: String((e && e.message) || e) }, { cause: e })); }
   }
 
@@ -279,7 +379,7 @@ export class TajweedClient {
     const stopped = ql.stopped;
     // the reason is the code of the error the app was given for that answer (a 401 whose body names the check
     // that refused is server_rejected, not invalid_key)
-    const refusal = ql.stoppedError || ql.refusedError || null;
+    const refusal = ql.stoppedError || ql.refusedError || ql.modelRefusal || null;
     const raised = refusal ? toTajweedError(refusal, { sdk: SDK_VERSION }).code : null;
     const key = stopped || refusal
       ? { accepted: false, reason: raised === 'invalid_key' || raised === 'sdk_too_old' ? raised : raised ? 'server_rejected'
@@ -363,7 +463,7 @@ function makeSharing(client) {
 /**
  * SDK internals: TajweedClient.create with the test seams ({ fetch, clock, state, store, sharingStorage, apiUrl,
  * modelsUrl, trustedKeys, modelKeys, platform, origin, lifecycle, autoSend, debug, engine, host, timers,
- * microphone, connection, sharing }).
+ * microphone, connection, sharing, installKey }). installKey: the device key of the install records.
  */
 export async function createClient(options, seams = {}) {
   if (current) throw new TajweedError('client_exists');
@@ -399,9 +499,15 @@ export async function createClient(options, seams = {}) {
     if (sharingStorage) ql.sharingStorage = sharingStorage;
     if (seams.sharing) ql.sharingSeams = seams.sharing;
     const ctl = enableSharing(ql, seams.sharingOptions || {});
-    const client = new TajweedClient({ ql, ctl, state, store, sharingStorage, fetch: ql.fetch, seams, modelKeys: seams.modelKeys || [QURANLAB_PUBLIC_KEY_HEX],
-      connection: seams.connection });
+    const installs = new Installs({ store, deviceKey: seams.installKey || defaultDeviceKey() });
+    const client = new TajweedClient({ ql, ctl, state, store, installs, sharingStorage, fetch: ql.fetch, seams, modelKeys: seams.modelKeys || [QURANLAB_PUBLIC_KEY_HEX],
+      connection: seams.connection }, MADE);
+    // a stop removes the models (SPEC 15.3, contract 1.10.0): when one arrives, and first of all at a start that
+    // finds a remembered stop or a removal still owed, before the Client does anything else
+    ql.onModelStop = () => { client._purge(); };
+    if (ql.modelRefusal || client._purgeOwed()) await client._purge();
     await ql.launch();
+    if (client._purgeChain) await client._purgeChain; // a stop the launch received: removed before create() returns
     if (ql.lastError) client._lastError = toTajweedError(ql.lastError, { sdk: SDK_VERSION, fallback: 'download_failed' }).code;
     current = client;
     return client;

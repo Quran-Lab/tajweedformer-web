@@ -13,7 +13,7 @@
 <p align="center">
   <img alt="platform: browsers, Node" src="https://img.shields.io/badge/platform-browsers%20%7C%20Node-1c1b19?style=flat-square">
   <img alt="bit-exact: 35 of 35 conformance clips" src="https://img.shields.io/badge/bit--exact-35%2F35%20clips-2a3b8f?style=flat-square">
-  <img alt="version: 3.0.2" src="https://img.shields.io/badge/version-3.0.2-2a3b8f?style=flat-square">
+  <img alt="version: 3.1.0" src="https://img.shields.io/badge/version-3.1.0-2a3b8f?style=flat-square">
   <img alt="model licence: NPL-1.2" src="https://img.shields.io/badge/model%20licence-NPL--1.2-1c1b19?style=flat-square">
 </p>
 
@@ -73,7 +73,7 @@ Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai) and paste 
 npm install @quran-lab/tajweedformer
 ```
 
-With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.0.2/web/index.js`. The package has one entry point; in Node, `@quran-lab/tajweedformer/node` adds the reader for a model folder on disk.
+With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.1.0/web/index.js`. The package has one entry point, the same in a page and in Node.
 
 ## Before you start
 
@@ -83,6 +83,7 @@ With a bundler (Vite, webpack and the like) the import in the quick start resolv
 | **Page** | A secure context: `https`, or `http://localhost`. A browser gives the microphone and WebCrypto to nothing else, and starts audio only after a tap or a click. |
 | **Browser** | WebAssembly with SIMD, AudioWorklet, and Ed25519 in WebCrypto (Chrome 137, Firefox 129, Safari 17, or later). In Node: version 20 or later. |
 | **Download** | The first visit downloads the model: 56.5 MB, then the browser's cache serves it (73.5 MB stored). |
+| **Model** | A model comes only from Quran Lab's server, through the Client: `await client.model()`, or `client.prefetch()` ahead of use; the Client opens only a model it downloaded itself on this device. When Quran Lab refuses the key or the app (a revoked key, a paused or blocked app), the SDK stops running the model and removes the downloaded model from the browser. Once the key is accepted again the model is downloaded again. |
 | **Takes** | A Model has one open Session (one take) at a time; the next take is a new Session. A take holds at most 20 minutes of audio. |
 | **Threads** | In a browser the engine runs in a module Worker, off the page's main thread (2.x ran it on the main thread); a page whose content security policy forbids Workers runs it on the main thread. In Node it runs on the calling thread. |
 
@@ -114,7 +115,8 @@ use the app's development key with `http://localhost:*` among its origins; a pro
 a local address, and the SDK says so (`server_rejected`, with what to do).
 
 From Node, or with audio you already have, replace `listen()` with `model.session()` and
-`session.push(samples)`; everything else is the same ([examples/node.mjs](examples/node.mjs)).
+`session.push(samples)`; everything else is the same, the Client included: a Node program makes a Client with
+its app's desktop key and `appId`, and the Client downloads the model ([examples/node.mjs](examples/node.mjs)).
 
 ## More
 

@@ -67,7 +67,7 @@ for (const [name, entry] of [['the browser entry (web/index.js)', 'web/index.js'
     const node = g.bare.filter((s) => { const m = s.split(': ')[1]; return m.startsWith('node:') || builtinModules.includes(m.split('/')[0]); });
     assert.deepEqual(node, [], 'a Node built-in is reachable from the browser entry');
     assert.deepEqual(g.bare, [], 'the package has no dependencies: every import is a relative path');
-    assert.equal(g.files.includes('web/index.node.js') || g.files.includes('web/tajweed/node.js') || g.files.includes('web/node.js'), false, 'the Node-only files are not reached');
+    assert.equal(g.files.includes('web/index.node.js') || g.files.includes('web/tajweed/node.js'), false, 'the Node-only files are not reached');
   });
 }
 

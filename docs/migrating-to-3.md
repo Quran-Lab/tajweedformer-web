@@ -18,7 +18,7 @@ A 3.0 SDK only loads model builds made for 3.0, and a 2.x SDK only those made fo
 | --- | --- |
 | `QuranLab.configure({ key })` from `@quran-lab/tajweedformer/platform` | `await TajweedClient.create({ key })` from `@quran-lab/tajweedformer` |
 | `TajweedFormer.load({ platform: ql })` | `await client.model()` |
-| `TajweedFormer.load({ url })`, `{ files }`, `{ reader }` | `await TajweedModel.open(folder)` |
+| `TajweedFormer.load({ url })`, `{ files }`, `{ reader }` | none since 3.1.0: `await client.model()`. A model comes from Quran Lab's server through the Client (3.0.x had `TajweedModel.open(folder)`) |
 | `TajweedFormer.load({ cdn: { revision } })`, pinning a revision | `await client.model('4.0.0')`: pin a model version |
 | `tf.createStream({ sampleRate, onChunk })` | `model.session({ sampleRate, onChunk })`, or `await model.listen()` |
 | `stream.pushAudio(pcm)` | `session.push(samples)` |
@@ -34,12 +34,16 @@ A 3.0 SDK only loads model builds made for 3.0, and a 2.x SDK only those made fo
 | `settings.controller = sharing` on `<quranlab-sharing-settings>` | `settings.client = client` |
 | `ql.background()`, `ql.foreground()` | `client.background()`, `client.foreground()` (automatic in browsers) |
 | `ModelFolderError`, `PlatformError`, `DeliveryError`, `EngineNotAvailableError` | `TajweedError` with a `code` |
-| `dirReader(dir)` from `@quran-lab/tajweedformer/node` | the same |
+| `dirReader(dir)` from `@quran-lab/tajweedformer/node` | none since 3.1.0: the entry is removed. A Node program makes a Client (`TajweedClient.create({ key, appId })`) and calls `client.model()` |
 
 Gone with no replacement: `tf.score()`, `tf.expected()`, `tf.ayahCount()`, `tf.settings`, `setRemoteConfig`,
 `effectiveSettings`, `presets`, `wordLevel`, the `settings` and `backend: 'fp32'` load options, the entry
 points `./scorer`, `./tajweed`, `./platform`, `./consent` and `./sharing`, and
 `dist/tajweedformer-scorer.*`. Everything the package exports is now in its one entry point.
+
+From 3.0 to 3.1: if your code called `TajweedModel.open(...)` or imported `@quran-lab/tajweedformer/node`,
+replace the call with `await client.model()` on a Client made with your app's key; the Model you get is the
+same. The first start after the update downloads the model once more.
 
 Other changes you will notice:
 

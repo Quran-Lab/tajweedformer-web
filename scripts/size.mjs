@@ -45,7 +45,7 @@ const DIR = process.env.TAJWEED_MODEL_DIR || '';
 if (DIR && existsSync(path.join(DIR, 'manifest.json'))) {
   let t = performance.now();
   const { openModel } = await import(pathToFileURL(rel('web/api/model.js')).href);
-  const { dirReader } = await import(pathToFileURL(rel('web/node.js')).href);
+  const { dirReader } = await import(pathToFileURL(rel('test/helpers/readers.mjs')).href);
   const imp = performance.now() - t;
   t = performance.now();
   const keys = process.env.TAJWEED_MODEL_KEY ? { trustedKeys: [process.env.TAJWEED_MODEL_KEY] } : {};

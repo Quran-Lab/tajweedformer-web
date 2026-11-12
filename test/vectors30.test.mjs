@@ -66,10 +66,11 @@ test('ayah_counts.json: the 114 counts', () => {
 test('manifest_30.json: every case is accepted or refused with its code; the signed text, the tolerance and the versions', async () => {
   const v = load('manifest_30.json');
   const enc = new TextEncoder();
-  // the vector is for the 3.0 line: `sdk_version` is the version it was built with, and this SDK is that version
-  // or a later 3.0.x. Every case runs against the SDK's OWN version (no sdkVersion option).
+  // `sdk_version` is the version the file was built with; its cases hold for an SDK of 3.0.0 to 3.1.99 (the two
+  // cases of a model that needs a newer SDK name 3.1.100 and 3.2.0). Every case runs against the SDK's OWN
+  // version (no sdkVersion option), which must be in that range and not below the file's.
   const [own, built] = [SDK_VERSION, v.sdk_version].map((s) => s.split('.').map(Number));
-  assert.equal(own[0] === built[0] && own[1] === built[1] && own[2] >= built[2], true, `SDK ${SDK_VERSION} is ${v.sdk_version} or a later 3.0.x`);
+  assert.equal(own[0] === 3 && own[1] <= 1 && (own[1] > built[1] || (own[1] === built[1] && own[2] >= built[2])), true, `SDK ${SDK_VERSION} is ${v.sdk_version} or a later 3.0.x or 3.1.x`);
   for (const c of v.cases) {
     const opts = { trustedKeys: [v.public_key_hex], requireSignature: true, requireVersion: true,
       expect: c.config ? { version: c.config.version, build: c.config.revision } : {} };

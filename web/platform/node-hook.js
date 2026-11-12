@@ -3,7 +3,7 @@
 // condition, fills it; this file imports nothing.
 let given = null;
 
-/** Called once by web/index.node.js: { fs, fsp, path, os, dirStore, dirReader, wasm(name) }. */
+/** Called once by web/index.node.js: { fs, fsp, path, os, dirStore, execFileSync, wasm(name) }. */
 export function setNode(parts) { given = parts; }
 
 /** True when this is Node (not a page, not a Worker of a page). */

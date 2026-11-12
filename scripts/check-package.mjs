@@ -31,7 +31,7 @@ const haveAgents = existsSync(path.join(root, 'AGENTS.md'));
 if (!pkg.files.includes('AGENTS.md')) problems.push('"AGENTS.md" is not in package.json "files"');
 if (!haveAgents) notes.push('AGENTS.md is not in this repository (the release tooling writes it into the public one): not checked here');
 const required = ['README.md', 'CHANGELOG.md', ...(haveAgents ? ['AGENTS.md'] : []), 'package.json', ...new Set(exported),
-  'web/index.d.ts', 'web/node.d.ts', 'web/api/worker.js', 'web/tajweed/node.js', 'web/platform/node-hook.js',
+  'web/index.d.ts', 'web/api/worker.js', 'web/tajweed/node.js', 'web/tajweed/install.js', 'web/platform/node-hook.js',
   'dist/tajweedformer.mjs', 'dist/tajweedformer.wasm', 'dist/tajweedformer-opus.mjs', 'dist/tajweedformer-opus.wasm',
   'docs/api.md', 'docs/migrating-to-3.md', 'examples/quickstart.html', 'examples/node.mjs',
   'examples/vite/index.html', 'examples/vite/main.js', 'examples/vite/package.json', 'examples/vite/README.md'];

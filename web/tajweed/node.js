@@ -1,28 +1,7 @@
-// Node only: a model folder on disk as a reader for ModelFolder.open / openTajweedFolder.
-//   import { dirReader } from '@quran-lab/tajweedformer/node';
-//   const { folder, calibration } = await openTajweedFolder(dirReader('models/sdk/v4.0'));
-import { readFile, realpath, writeFile, mkdir, rename, rm, readdir } from 'node:fs/promises';
+// Node only: the delivery cache of the Client in a directory.
+import { readFile, writeFile, mkdir, rename, rm, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { isSafePath } from './manifest.js';
-
-/** Reads `<dir>/<path>`; a missing file is null. Paths are the manifest's ("/"-separated, relative);
- * anything that would leave `dir` (through "..", an absolute path or a link) is refused. */
-export function dirReader(dir) {
-  const root = path.resolve(dir);
-  let realRoot = null;
-  return {
-    async read(p) {
-      if (!isSafePath(p)) return null;
-      const full = path.join(root, ...p.split('/'));
-      let real;
-      try { real = await realpath(full); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
-      realRoot = realRoot || await realpath(root);
-      if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return null;
-      try { return new Uint8Array(await readFile(real)); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
-    },
-  };
-}
 
 /** A delivery cache in a directory (Node): the same keys as the browser stores ("sha256/<hex>",
  * "part/<hex>/<i>", "manifest/<url>"), one file each, written atomically (temp file, rename).

@@ -19,7 +19,7 @@ import { TajweedEngine, EngineStream } from '../web/tajweed/engine.js';
 import { joinHeads, HEAD_SPECS } from '../web/tajweed/heads.js';
 import { EngineHost, localHost } from '../web/api/engine-host.js';
 import { openModel } from '../web/api/model.js';
-import { memoryReader } from '../web/tajweed/manifest.js';
+import { memoryReader } from './helpers/readers.mjs';
 import { build3, testKeyHex } from './helpers/model3.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));

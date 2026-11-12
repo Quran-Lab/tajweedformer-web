@@ -1,14 +1,14 @@
 // A Model is one verified model build on this device (NAMING.md section 3): its version, contexts, tokens,
 // calibration and reference data, sample clips. It holds the engine (in a Worker in browsers) and makes
 // Sessions: model.listen() (the SDK captures) and model.session() (the app pushes).
-import { openTajweedFolder, memoryReader, urlReader } from '../tajweed/manifest.js';
+import { openTajweedFolder } from '../tajweed/manifest.js';
 import { profilePaths } from '../tajweed/delivery.js';
 import { contextChunkMs, BLANK } from '../tajweed/heads.js';
 import { WORD_BOUNDARY } from '../tajweed/decode.js';
 import { localHost, workerHost } from './engine-host.js';
 import { TajweedSession, WASM_BACKEND } from './session.js';
 import { selectHeads } from './heads.js';
-import { node as nodeParts, wasmArgs } from '../platform/node-hook.js';
+import { wasmArgs } from '../platform/node-hook.js';
 import { MIN_SILENCE_MS, MAX_SILENCE_MS } from './speech.js';
 import { Microphone } from './microphone.js';
 import { TajweedError, toTajweedError, invalid } from './errors.js';
@@ -90,9 +90,14 @@ function makeCalibration(bytes, sha256) {
   });
 }
 
+// what openModel hands the constructor beside its parts, and nothing else can (it is kept nowhere else):
+// a page cannot make a Model from a folder or an engine of its own by calling the constructor (SPEC 15.1)
+const MADE = Symbol('openModel');
+
 export class TajweedModel {
-  /** Use TajweedModel.open(folder) or client.model(). */
-  constructor(x) {
+  /** Use client.model(): a model comes from Quran Lab's server, through the Client. */
+  constructor(x, made) {
+    if (made !== MADE || !x) throw invalid('a TajweedModel comes from client.model()');
     this._x = x;
     const m = x.folder.manifest;
     /** "v4.0" */
@@ -118,13 +123,6 @@ export class TajweedModel {
       cohort: (context) => ({ revision: self.version, build: self.build, context, backend: 'cpu' }),
     };
   }
-
-  /**
-   * Open a model folder already at hand, verified as a downloaded one is (signature, sizes, SHA-256): a URL of
-   * the folder, a directory path in Node, a reader ({ read(path) }, such as dirReader of the ./node entry), or
-   * the files in memory ({ path: bytes }).
-   */
-  static open(folder) { return openModel({ reader: readerOf(folder) }); }
 
   /** The context a Session uses when the app names none: the config's inference.context, then the manifest's default. */
   get defaultContext() { return resolveContext(null, this._x.platform ? this._x.platform.config : null, this._x.folder.manifest).context; }
@@ -307,23 +305,9 @@ function playInto(session, source, samples, sampleRate, pace, clock) {
   Promise.resolve().then(step);
 }
 
-function readerOf(folder) {
-  if (folder && typeof folder.read === 'function') return folder;
-  if (typeof folder === 'string') {
-    if (/^https?:\/\//.test(folder) || typeof globalThis.document !== 'undefined') {
-      const base = typeof globalThis.document !== 'undefined' ? new URL(folder, globalThis.document.baseURI).href : folder;
-      return Object.assign(urlReader(base), { fresh: true });
-    }
-    // Node: a directory
-    let inner = null;
-    return { fresh: true, async read(p) { inner = inner || nodeParts().dirReader(folder); return inner.read(p); } };
-  }
-  if (folder && typeof folder === 'object') return memoryReader(folder);
-  throw invalid('open takes a folder: a URL, a directory path (Node), a reader or the files in memory');
-}
-
 /**
- * Open, verify and warm a model from a reader. SDK internals (client.model() and TajweedModel.open()).
+ * Open, verify and warm a model from a reader. SDK internals: client.model() gives it the reader of its own
+ * download; the tests and the proofs give it a folder. Not exported from the package's entries.
  * @param {object} o
  * @param {{read(path: string): Promise<Uint8Array|null>}} o.reader
  * @param {object} [o.folder]  options of openTajweedFolder: trustedKeys, expect { version, build }
@@ -364,7 +348,7 @@ export async function openModel({ reader, folder: folderOpts = {}, platform = nu
       timers: seams.timers || { setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t) },
       microphone: seams.microphone || null, lifecycle: seams.lifecycle || null, limits: seams.limits || null, onDrop: onDrop || null, onClose, reference: null };
     x.reference = await makeReference(x);
-    const model = new TajweedModel(x);
+    const model = new TajweedModel(x, MADE);
     const context = model.defaultContext;
     await model._ensureContext(context);
     await host.warm({ context, sampleRate: 16000 });
