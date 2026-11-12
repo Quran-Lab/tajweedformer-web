@@ -15,6 +15,8 @@
 // consentTextSha256 (2.0.1). 2.0.0's `versionAsked` is left as it is and no longer read.
 
 export const SHARING_STATE_KEY = 'sharing.v1';
+// the count of a stored answer (see `changes`)
+const countOf = (s) => (s && Number.isInteger(s.changes) ? s.changes : (s && s.consent === 'final' ? 1 : 0));
 const FRESH = { v: 1, consent: 'unknown', asks: 0, lastAskSession: 0, sessions: 0, thanked: false, decidedAt: null,
   consentVersion: null, consentTextSha256: null, guardian: false };
 /** Sheets shown in all, ever: the first ask and at most two re-asks after "Not now". */
@@ -42,13 +44,67 @@ export class SharingState {
     this.listeners = new Set();
   }
   get s() {
-    const s = { ...FRESH, ...(this.state.get(SHARING_STATE_KEY) || {}) };
+    // (while "delete what I shared" asks the server: what this page has seen, not the stored off form)
+    const s = { ...FRESH, ...((this._held ? this._held.seen : this._raw()) || {}) };
     if (!Number.isFinite(s.asks) || s.asks < 0) s.asks = 0;
     // a 2.0.0 grant without a version was given to the deck 2.0.0 bundled
     if (s.consent === 'granted' && !s.consentVersion) { s.consentVersion = LEGACY_CONSENT_VERSION; s.consentTextSha256 = null; }
     return s;
   }
-  _put(s) { this.state.set(SHARING_STATE_KEY, s); for (const f of this.listeners) f(s); }
+  _put(s) {
+    if (this._held) { this._held.seen = s; this._storeOff(); } else this._store(s);
+    for (const f of this.listeners) f(s);
+  }
+
+  // One write of the stored answer. It never throws. False when the device did not take it: the store threw
+  // (a full disk, a folder that refuses), or it reads back something else (the browser store keeps a write
+  // that localStorage refused in memory only, and goes on reading the old value).
+  _write(v) {
+    try { this.state.set(SHARING_STATE_KEY, v); } catch (_) { return false; }
+    try { return JSON.stringify(this.state.get(SHARING_STATE_KEY) ?? null) === JSON.stringify(v ?? null); } catch (_) { return false; }
+  }
+
+  // The answer is `v` from now on. When the device does not take the write, `v` is kept in memory: it is what
+  // this page reads, and every later write of the answer (and flush()) stores it.
+  _store(v) {
+    if (this._write(v)) { this._unsaved = null; return true; }
+    let over = null;
+    try { over = JSON.stringify(this.state.get(SHARING_STATE_KEY) ?? null); } catch (_) { over = null; }
+    this._unsaved = { v, over };
+    return false;
+  }
+
+  // The answer as this page has it: the stored one, or the one the device has not taken yet. When another
+  // page has written the stored answer since, the learner's no is never lost: an off held here stays in force
+  // (the next write stores it); an on held here gives way to what is stored.
+  _raw() {
+    const u = this._unsaved;
+    if (u) {
+      let now = u.over;
+      try { now = JSON.stringify(this.state.get(SHARING_STATE_KEY) ?? null); } catch (_) { now = u.over; }
+      if (now === u.over) return u.v;
+      if (u.v && u.v.consent !== 'granted') { u.over = now; return u.v; }
+      this._unsaved = null;
+    }
+    try { return this.state.get(SHARING_STATE_KEY) || null; } catch (_) { return null; }
+  }
+
+  /** Stores an answer the device did not take earlier, if there is one (after the queue was deleted: the write
+   * may succeed now that the queue's data is gone). */
+  flush() {
+    if (!this._unsaved) return;
+    this._raw(); // (another page may have written since: then the stored answer is in force)
+    if (this._unsaved) this._store(this._unsaved.v);
+  }
+
+  // The stored form while the server is asked to delete: what this page sees, as consent off with the count one
+  // higher. A page or process that starts now, or after this one died here, finds sharing off.
+  _storeOff() {
+    // (a write the device refuses is not an error: the server is asked all the same, and the next write of the
+    // answer tries again)
+    const h = this._held;
+    h.stored = this._write({ ...FRESH, ...(h.seen || {}), consent: 'final', changes: Math.max(h.count, countOf(h.seen) + 1) });
+  }
   onChange(f) { this.listeners.add(f); return () => this.listeners.delete(f); }
   _today() { return new Date(this.clock()).toISOString().slice(0, 10); }
 
@@ -128,6 +184,7 @@ export class SharingState {
       if (this.guardianVariant && !guardianConfirmed) throw new Error('the guardian variant needs the parent or guardian confirmation');
       Object.assign(s, { consent: 'granted', decidedAt: this._today(), consentVersion: this.consentVersion,
         consentTextSha256: this.consentTextSha256, guardian: !!guardianConfirmed });
+      s.changes = this.changes + 1; // sharing comes on: a change of mind, in the same write
     } else {
       s.consent = s.asks >= MAX_ASKS ? 'final' : 'declined';
       s.decidedAt = this._today();
@@ -135,6 +192,48 @@ export class SharingState {
     this._put(s);
     return s.consent;
   }
+
+  /**
+   * "Delete what I shared" is about to ask the server (R5). From this call, with no wait before it, the STORED
+   * answer says off with the count one higher: a page or process that starts while the server is asked, or
+   * after this one died there, finds sharing off and deletes the queue. What THIS page sees does not change
+   * while the server is asked: `s`, `sharing` and `changes` stay what they were and no listener is called.
+   * Every other write of the answer meanwhile is stored in the off form too, so nothing puts "on" back on the
+   * device. Returns { accepted(), refused() }: accepted turns sharing off for this page too (one change);
+   * refused stores what this page has seen all along, and nothing was ever visible. When the device cannot store
+   * the off, the server is asked all the same: nothing is thrown and no mark is left behind (after a refusal
+   * the next write stores the page's own answer; after an acceptance the page's answer is off whether or not
+   * it could be stored, and every later write stores it).
+   */
+  offUntilAnswered() {
+    if (this._held) return this._held.done; // a second delete while one asks: the same answer serves both
+    const held = { seen: this._raw(), count: this.changes + 1, done: null, stored: false };
+    held.done = {
+      accepted: () => {
+        if (this._held !== held) { if (this.s.consent === 'granted') this.setSharing(false); return; }
+        const s = this.s;
+        const count = Math.max(held.count, this.changes + 1);
+        this._held = null;
+        Object.assign(s, { consent: 'final', changes: count });
+        this._put(s);
+      },
+      refused: () => {
+        if (this._held !== held) return;
+        this._held = null;
+        // (when the device refuses this write, a new page would read the off form until the next write of the
+        // answer here stores it; this page reads its own answer all along)
+        this._store(held.seen);
+      },
+    };
+    this._held = held;
+    this._storeOff();
+    return held.done;
+  }
+
+  /** The count of the learner's changes of mind (sharing turned off, an accepted delete, sharing coming on).
+   * A state stored by an SDK without the count reads 1 when sharing was turned off there, else 0: the queue of
+   * such an SDK has no stamps (0), so it uploads as before while sharing stayed on and is deleted when it did not. */
+  get changes() { return countOf(this.s); }
 
   /** The settings switch. On records the version in force now (an existing grant keeps its own). Off is final
    * until the learner turns it on again here, and is never asked about again. */
@@ -148,6 +247,9 @@ export class SharingState {
     } else {
       s.consent = 'final';
     }
+    // the count of the learner's changes of mind, in the write that saves the switch (R5): a recording begun
+    // under an earlier count is never uploaded
+    s.changes = this.changes + 1;
     this._put(s);
   }
 

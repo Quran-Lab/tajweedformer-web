@@ -16,7 +16,7 @@
 // takes.json) waits across page loads until it is sent or dropped. 2xx: sent. 404 (a server without the route,
 // or an upload it does not know) and 410 (the upload was deleted): dropped. 400: dropped, with an issue. 401:
 // the token renewed, sent again. Anything else (429, 5xx, no connection): again later, with the outbox's
-// backoff. Sharing turned off drops it: nothing is sent after a withdrawal.
+// backoff. Sharing turned off drops it: no request is started after a withdrawal.
 
 import { segmentName, wholePages } from './oggopus.js';
 import { freshUrl, parseUrls, SharingError } from './uploader.js';
@@ -280,9 +280,11 @@ export const activeCaptures = new Set();
 export class Outbox {
   constructor({ storage, client, tokenProvider, flags = () => null, enabled = () => true, turnstile = null, platform = 'web',
     contributor, clock = () => Date.now(), onChange = null, onError = null, random = Math.random, ladder = null,
-    onIssue = null, onStop = null, log = null }) {
+    onIssue = null, onStop = null, log = null, epoch = null }) {
     Object.assign(this, { storage, client, tokenProvider, flags, enabled, turnstile, platform, contributor, clock, onChange, onError, random, ladder,
-      onIssue, onStop, log });
+      onIssue, onStop, log, epoch });
+    this._epochSeen = null; // the count of consent changes at the last scan
+    this._undeletable = new Set(); // recordings whose delete failed (logged once each)
     this.takesLogged = false; // the dropped take list line, once per pipeline
     // closed segments not yet uploaded, per session: id -> Map(n -> seconds of audio); kept in memory so a
     // capture can read the backlog at the moment it closes a segment (the markers are written after)
@@ -352,12 +354,14 @@ export class Outbox {
     // never sent because they turned it on again
     while (this.stopping) await this.stopping.catch(() => {});
     this.stopped = false;
+    this.paused = false;
     return this.drain();
   }
 
   /** Sharing was turned off: every request in flight aborted, every session not fully uploaded deleted at
    * once, the recording being captured with them (`onStop`: also between takes, where no push would notice),
-   * and take lists still waiting dropped (nothing is sent after a withdrawal). Resolves when the queue is gone:
+   * and take lists still waiting dropped (no request is started after a withdrawal; what the browser or the
+   * system had already buffered of the segment in flight may still go out). Resolves when the queue is gone:
    * within STOP_WAIT_MS and a few file removals, whatever was in flight. */
   stop() { return this._off(true); }
 
@@ -368,14 +372,30 @@ export class Outbox {
    */
   pause() { return this._off(false); }
 
-  _off(remove) {
-    // from this line on nothing is sent and no pass writes: every request and every write of a pass asks _live()
+  /** The part of pause() that needs no wait: from this line no pass sends or writes, and the queue keeps
+   * everything. pause() (the passes leave) or stop() follows; resume() ends it. */
+  hold() {
     this.stopped = true;
+    // a paused queue keeps everything: while the server is asked the count of consent changes is ahead of the
+    // stamps (the off is written first), and no scan deletes a recording as outdated; the count at the pause
+    // is the one a scan goes by until resume() or stop()
+    if (!this.paused) this._pausedEpoch = this._epoch();
+    this.paused = true;
+  }
+
+  _off(remove) {
+    // from this line on no request is started and no pass writes: every request and every write of a pass asks
+    // _live()
+    if (remove) { this.stopped = true; this.paused = false; } else this.hold();
     const before = this.stopping;
+    // deletes that fail are tried again for half of the off call's bound at most (the other half is the
+    // margin for the passes to leave and for one try per recording): what is left then is never uploaded and
+    // is deleted at the next pass or start (_scan)
+    const until = Date.now() + STOP_WAIT_MS / 2;
     const p = (async () => {
       if (before) await before.catch(() => {});
       await this._halt();
-      if (remove) await this._deleteQueue();
+      if (remove) await this._deleteQueue(until);
     })().finally(() => { if (this.stopping === p) this.stopping = null; });
     this.stopping = p;
     return p;
@@ -400,34 +420,61 @@ export class Outbox {
     if (!gone) this._givenUp = pass;
   }
 
-  async _deleteQueue() {
+  async _deleteQueue(until = 0) {
     if (this.onStop) { try { await this.onStop(); } catch (_) { /* the capture's own end */ } }
-    await this._scan();
+    await this._scan(until);
     for (const r of [...this.records.values()]) {
-      if (r.state === 'active' && !activeCaptures.has(r.id)) await this._remove(r.id);
+      if (r.state === 'active' && !activeCaptures.has(r.id)) await this._remove(r.id, until);
       else if (r.takeList === 'pending') await this._takesDone(r, 'dropped', 'sharing_off');
     }
     // a second look at the disk itself: nothing unsent may be left, whatever the records say
     for (const id of await this.storage.sessions()) {
       if (activeCaptures.has(id)) continue;
+      if (this._undeletable.has(id)) continue; // tried above, and at every pass from now on
       const item = await readJson(this.storage, id, FILES.item);
-      if (!item || item.state === 'active') await this._remove(id);
+      if (!item || item.state === 'active') await this._remove(id, until);
     }
     this.waiting.clear();
   }
 
   // one session out of the queue, on disk and in memory. A delete that fails is tried again (a file of the
-  // folder can be open for a moment on Windows); it never keeps the other sessions from being deleted.
-  async _remove(id) {
+  // folder can be open for a moment on Windows) while `until` allows, at most ten times; it never keeps the
+  // other sessions from being deleted. A session that could not be deleted stays in `removed`: it is never
+  // read into the queue again, and _scan tries its delete at every pass. True when it is gone.
+  async _remove(id, until = 0) {
     this.removed.add(id);
     this.records.delete(id);
     this.waiting.delete(id);
     for (let i = 0; ; i++) {
-      try { await this.storage.removeSession(id); return; } catch (e) {
-        if (i >= 10) { if (this.log) this.log(`TajweedFormer sharing: a queued recording could not be deleted (${(e && e.code) || e}); it is deleted at the next start`); return; }
-        await new Promise((r) => setTimeout(r, 20 * (i + 1)));
+      try { await this.storage.removeSession(id); this._undeletable.delete(id); return true; } catch (e) {
+        const wait = 20 * (i + 1);
+        if (i >= 10 || Date.now() + wait > until) {
+          if (this.log && !this._undeletable.has(id)) this.log(`TajweedFormer sharing: a queued recording could not be deleted (${(e && e.code) || e}); it is not uploaded, and it is deleted at the next pass or start`);
+          this._undeletable.add(id);
+          return false;
+        }
+        await new Promise((r) => setTimeout(r, wait));
       }
     }
+  }
+
+  /** The count of the learner's consent changes now (the controller's; 0 for a pipeline without one). */
+  _epoch() { const n = this.epoch ? this.epoch() : 0; return Number.isInteger(n) ? n : 0; }
+
+  // a recording made before the learner's last "off": its audio is deleted; one that was uploaded while
+  // sharing was on keeps its item, and a take list of it that still waits is dropped
+  async _outdated(rec, until = 0) {
+    if (rec.state === 'active') { await this._remove(rec.id, until); return; }
+    if (rec.takeList === 'pending') { this.records.set(rec.id, rec); await this._takesDone(rec, 'dropped', 'sharing_off'); }
+  }
+
+  /** Deletes what a stop left on the device (the page died before the queue was deleted; a delete failed), with
+   * sharing on or off. Resolves with how many such recordings are still there. */
+  async sweep() {
+    await this._scan();
+    let left = 0;
+    for (const id of await this.storage.sessions()) if (this.removed.has(id)) left++;
+    return left;
   }
 
   /** Whether a pass may send or write now: sharing is on, and no stop was asked for. */
@@ -857,17 +904,37 @@ export class Outbox {
   // ---- storage ----
 
   // Picks up sessions the captures made and recovers the ones a closed page left.
-  async _scan() {
+  async _scan(until = 0) {
     const s = this.storage;
+    // A recording is stamped at its creation with the count of the learner's consent changes. One whose stamp is
+    // not the current count was made before the learner's last "off" (the stop did not get to it: the page
+    // died, or its delete failed): it is never read into the queue, and it is deleted here, at every pass and
+    // start, with sharing on or off. The same for one this pipeline's stop could not delete (`removed`).
+    const epoch = this.paused ? this._pausedEpoch : this._epoch();
+    if (this._epochSeen !== epoch) {
+      this._epochSeen = epoch;
+      for (const r of [...this.records.values()]) if (!activeCaptures.has(r.id) && (r.epoch || 0) !== epoch) await this._outdated(r, until);
+    }
     for (const id of await s.sessions()) {
+      // (the stop's own scan: one it has just tried till its deadline is not tried again in the same call)
+      if (this.removed.has(id)) { if (!until || !this._undeletable.has(id)) await this._remove(id, until); continue; }
       if (this.records.has(id)) continue;
-      const rec = await readJson(s, id, FILES.item);
-      if (rec && rec.id === id) { this.records.set(id, rec); this.seqTop = Math.max(this.seqTop, rec.seq); await this._countWaiting(rec); continue; }
       const capturing = activeCaptures.has(id);
+      const rec = await readJson(s, id, FILES.item);
+      if (rec && rec.id === id) {
+        if (!capturing && (rec.epoch || 0) !== epoch && (rec.state === 'active' || rec.takeList === 'pending')) {
+          await this._outdated(rec, until);
+          if (rec.state === 'active') continue;
+        }
+        this.records.set(id, rec); this.seqTop = Math.max(this.seqTop, rec.seq); await this._countWaiting(rec); continue;
+      }
       if (capturing && !(await markers(s, id)).length) continue;
+      const cap = await readJson(s, id, FILES.capture);
+      const stamp = cap && Number.isInteger(cap.epoch) ? cap.epoch : 0;
+      if (!capturing && stamp !== epoch) { await this._remove(id, until); continue; }
       if (!capturing && !(await readJson(s, id, FILES.end)) && !(await recover(s, id))) continue;
       const fresh = { id, seq: ++this.seqTop, state: 'active', started: false, urls: null, uploaded: [], failCode: null,
-        failMessage: null, attempts: 0, lastError: null, nextAttempt: null, createdAt: this.clock() };
+        failMessage: null, attempts: 0, lastError: null, nextAttempt: null, createdAt: this.clock(), epoch: stamp };
       await this._save(fresh);
       await this._countWaiting(fresh);
     }
@@ -884,7 +951,7 @@ export class Outbox {
     await writeJson(this.storage, rec.id, FILES.item, rec);
     // the write came back after the recording was deleted with the queue (a storage call that took longer than
     // the off call waits): it has made the folder anew, so the recording is deleted again
-    if (this.removed.has(rec.id)) { await this._remove(rec.id); return; }
+    if (this.removed.has(rec.id)) { await this._remove(rec.id, Date.now() + 1000); return; }
     if (this.onChange) this.onChange(await this._snapshot(rec));
   }
 
