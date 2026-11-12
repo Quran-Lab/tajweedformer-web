@@ -8,6 +8,8 @@ import { contextChunkMs, HEAD_SPECS } from '../../web/tajweed/heads.js';
 import { keyId } from '../../web/platform/client.js';
 import { memoryState } from '../../web/platform/storage.js';
 import { memoryStore } from '../../web/tajweed/delivery.js';
+// (an SDK before 3.1.0 has no install record: the helpers then give no device key)
+const { memoryDeviceKey } = await import('../../web/tajweed/install.js').catch(() => ({ memoryDeviceKey: () => undefined }));
 import { MemoryStorage } from '../../web/sharing/outbox.js';
 import { sign, testKeyHex, enc, TOKENS, calFixture } from '../tajweed/folder.mjs';
 
@@ -93,7 +95,9 @@ export async function build3(o = {}) {
 /**
  * Quran Lab's API and CDN as one fetch. o: { build (from build3), flags, inference, pinAnswer, sdkLatest }.
  * Returns { fetch, log, pub, state }: state.offline = true makes every request fail as a dead network;
- * state.status[path] forces an error answer for an API path ({ status, error, message }).
+ * state.status[path] forces an error answer for an API path ({ status, error, message, reason, min_sdk });
+ * state.cdnAnswer = { status, body } forces the CDN's answer to every model request; state.token is the token
+ * the API gives and the CDN takes (change it to make the one in the SDK's hands invalid).
  */
 export async function stubPlatform(o = {}) {
   const kp = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
@@ -101,7 +105,7 @@ export async function stubPlatform(o = {}) {
   const kid = await keyId(pub);
   const log = [];
   const state = { offline: false, status: {}, build: o.build || null, builds: o.builds || {}, flags: o.flags || { analytics: true, issues: true, contributions: false },
-    inference: o.inference, configVersion: 1, sdkLatest: o.sdkLatest, cdnRequests: 0, cutAfter: null };
+    inference: o.inference, configVersion: 1, sdkLatest: o.sdkLatest, cdnRequests: 0, cutAfter: null, cdnAnswer: null, token: 'qlt_v1.test.sig' };
   const json = (status, obj, headers = {}) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json', ...headers } });
   const fetch = async (url, init = {}) => {
     if (state.offline) throw new TypeError('fetch failed');
@@ -111,8 +115,13 @@ export async function stubPlatform(o = {}) {
       state.cdnRequests++;
       if (state.cutAfter !== null && state.cdnRequests > state.cutAfter) throw new TypeError('fetch failed');
       const mm = /^\/models\/Quran-Lab\/tajweedformer-v4\/([0-9a-f]{40})\/sdk\/v4\.0\/(.+)$/.exec(u.pathname);
-      log.push({ method: 'GET', host: 'cdn', path: mm ? decodeURIComponent(mm[2]) : u.pathname, build: mm && mm[1], headers: h });
-      if (h['x-qlab-key'] !== KEY) return json(401, { error: 'invalid_key' });
+      log.push({ method: 'GET', host: 'cdn', path: mm ? decodeURIComponent(mm[2]) : u.pathname, build: mm && mm[1], headers: h, redirect: init.redirect });
+      if (state.cdnAnswer) return json(state.cdnAnswer.status, state.cdnAnswer.body);
+      // the CDN of 3.1.0 (SPEC 15.4): the install's token, and the key. (STUB_CDN_OF_TODAY=1: the CDN of 2026-11,
+      // which reads the key and ignores the token; with it the tests of the other rules of 3.1.0 can be run on
+      // the released code and seen to fail for their own reason.)
+      if (process.env.STUB_CDN_OF_TODAY !== '1' && h.authorization !== `Bearer ${state.token}`) return json(401, { error: 'invalid_token', message: 'Renew the token.' });
+      if (h['x-qlab-key'] !== KEY) return json(401, { error: 'missing or invalid x-qlab-key' });
       const b = mm && (state.builds[mm[1]] || (state.build && state.build.build === mm[1] ? state.build : null));
       const file = b && b.files[decodeURIComponent(mm[2])];
       if (!file) return new Response(null, { status: 404 });
@@ -124,12 +133,12 @@ export async function stubPlatform(o = {}) {
     const body = init.body ? JSON.parse(init.body) : null;
     log.push({ method: init.method || 'GET', host: 'api', path: u.pathname, query: u.search, headers: h, body });
     const forced = state.status[u.pathname];
-    if (forced) return json(forced.status, { error: forced.error, message: forced.message || '' });
+    if (forced) return json(forced.status, { error: forced.error, message: forced.message || '', ...(forced.reason ? { reason: forced.reason } : {}), ...(forced.min_sdk ? { min_sdk: forced.min_sdk } : {}) });
     if (u.pathname === '/v1/attest') {
       if (h['x-qlab-key'] !== KEY) return json(401, { error: 'invalid_key' });
-      return json(200, { token: 'qlt_v1.test.sig', expires_in: 86400, attested: false });
+      return json(200, { token: state.token, expires_in: 86400, attested: false });
     }
-    if (h.authorization !== 'Bearer qlt_v1.test.sig') return json(401, { error: 'invalid_token' });
+    if (h.authorization !== `Bearer ${state.token}`) return json(401, { error: 'invalid_token' });
     if (u.pathname === '/v1/register') return json(200, { ok: true, app_id: `${body.platform}:${body.bundle_id}`, store_status: 'pending' });
     if (u.pathname === '/v1/config') {
       const want = u.searchParams.get('model_version');
@@ -239,5 +248,6 @@ export function fakeHost() {
 export function seamsFor(api, extra = {}) {
   return { fetch: api.fetch, apiUrl: 'https://api.test', trustedKeys: [api.pub], modelKeys: [testKeyHex], origin: ORIGIN, platform: 'web',
     state: memoryState(), store: memoryStore(), sharingStorage: new MemoryStorage(), autoSend: false, host: fakeHost(),
+    installKey: memoryDeviceKey(), // this test device's key store (SPEC 15.2); pass the same one for a relaunch
     lifecycle: { document: null, window: null }, ...extra };
 }

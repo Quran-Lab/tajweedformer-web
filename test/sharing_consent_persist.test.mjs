@@ -20,7 +20,8 @@ const have = existsSync(path.join(root, 'dist', 'tajweedformer-opus.mjs'));
 if (!have && process.env.REQUIRE_OPUS === '1') throw new Error('dist/tajweedformer-opus.mjs is missing: npm run build:opus');
 const skipAudio = have ? false : 'dist/tajweedformer-opus.mjs is not built (npm run build:opus)';
 
-const DECK = 'share-2026-11-09';
+// the deck this SDK bundles (3.1.0: contract 1.9.0)
+const DECK = 'share-2026-11-12';
 // a newer deck than the bundled one, under a language tag no other test uses
 const NEXT = 'share-2026-12-01';
 registerDeck('zz', { ...EN, lang: 'en', version: '2026-12-01.1', consent_version: NEXT });
@@ -108,6 +109,48 @@ test('a deck change with a 2.0.1 grant: no ask, sharing stays on, the JSON carri
   assert.equal(s.consent_version, DECK, 'the old version, not the deck in force');
   assert.equal(w.ctl.state.s.consentVersion, DECK, 'the stored grant is unchanged');
 }));
+
+// SDK 3.1.0: the deck SDK 2.0.1 to 3.0.2 bundled, under a language tag no other test
+// uses. The consent state code is the same as 3.0.2's, so the yes it stores is the one a 3.0.2 page stored.
+const DECK_302 = 'share-2026-11-09';
+registerDeck('yy', { ...EN, lang: 'en', version: '2026-11-09.1', consent_version: DECK_302 });
+
+test('3.1.0: a yes stored under share-2026-11-09 is not asked again and the next recording carries share-2026-11-09; a learner asked from now on agrees to share-2026-11-12', { skip: skipAudio }, async () => {
+  const pcm = clip16k(12);
+  await inDir('share-1109-', async () => {
+    const api = await stubApi({ contributions: true });
+    const st = memoryState();
+    // the learner agrees under the deck of 3.0.2
+    let w = wired(await client(api, { state: st }), { lang: 'yy' });
+    assert.equal(w.ctl.consent.version, DECK_302);
+    assert.ok(await listen(w.ctl, pcm), 'the first scored session asks');
+    assert.equal(w.asked.length, 1);
+    assert.deepEqual([st.get(SHARING_STATE_KEY).consent, st.get(SHARING_STATE_KEY).consentVersion], ['granted', DECK_302], 'the stored yes');
+    // the page loads again with 3.1.0: its own deck is in force and nothing is asked
+    resetSharingForTests();
+    w = wired(await client(api, { state: st }));
+    assert.equal(DECK, 'share-2026-11-12');
+    assert.equal(w.ctl.consent.version, DECK, 'the 3.1.0 deck is in force');
+    assert.equal(w.ctl.state.sharing, true, 'sharing stays on');
+    const s = await shareOne(api, w.ctl, pcm);
+    for (let i = 0; i < 30; i++) assert.equal(await w.ctl.sessionCompleted({ feedback: true }), null);
+    assert.equal(w.asked.length, 0, 'not asked again');
+    assert.equal(s.consent_version, DECK_302, 'the next recording carries the version agreed to');
+    assert.equal(w.ctl.state.grantVersion, DECK_302);
+    assert.equal(st.get(SHARING_STATE_KEY).consentVersion, DECK_302, 'kept on the device');
+  });
+  // a learner asked from now on (another install) agrees to share-2026-11-12
+  await inDir('share-1112-', async () => {
+    const api = await stubApi({ contributions: true });
+    const w = wired(await client(api));
+    assert.ok(await listen(w.ctl, pcm));
+    assert.equal(w.asked.length, 1);
+    assert.equal(w.asked[0].consentVersion, DECK, 'the sheet asks for share-2026-11-12');
+    assert.equal(w.ctl.state.grantVersion, DECK);
+    const s = await shareOne(api, w.ctl, pcm);
+    assert.equal(s.consent_version, DECK);
+  });
+});
 
 test('a wording change after a custom grant: no ask, the original custom version and hash in the JSON; a new learner records the new version', { skip: skipAudio }, () => inDir('share-wording-later-', async () => {
   // share_join_ms 0: each session is its own recording with its own session JSON, as before 2.0.3 (with the

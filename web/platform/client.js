@@ -10,8 +10,9 @@ import { Telemetry, deviceInfo, utcDay, productOf } from './telemetry.js';
 import { localState } from './storage.js';
 import { QURANLAB_PUBLIC_KEY_HEX, hexToBytes, bytesToHex } from '../tajweed/manifest.js';
 import { noticeSdkLatest } from './update-notice.js';
+import { MODEL_STOP_REASONS, stopReasonOf } from '../api/errors.js';
 
-export const SDK_VERSION = '3.0.2';
+export const SDK_VERSION = '3.1.0';
 export const API_URL = 'https://api.quranlab.ai';
 export const CDN_URL = 'https://cdn.quranlab.ai';
 /** Where model files are served: {base}/{owner}/{repo}/{revision}/{path}. The signed config's `base`
@@ -24,15 +25,21 @@ const ISSUE_KINDS = ['engine_failed', 'model_load', 'checksum_mismatch', 'signat
 /** Codes after which the client stops all network calls until the next launch (error table). */
 const STOP_CODES = new Set(['invalid_key', 'unauthorized', 'developer_not_approved', 'not_a_member', 'key_type_mismatch',
   'origin_not_allowed', 'app_not_allowed', 'app_blocked', 'environment_mismatch', 'sdk_too_old']);
+/** The reasons that stop a model on this device (SPEC 15.3): one list, defined in web/api/errors.js. */
+export { MODEL_STOP_REASONS };
+/** Where a stop is remembered in the state store. */
+export const MODEL_REFUSED_KEY = 'model.refused';
 /** The origin check's `why` (allowed false) as the refusal it stands for: the status and code a 4xx would have
- * carried. `listed` is allowed; a `why` that is not here is a refusal with the `why` as its code. */
+ * carried, and the `reason` that the refused request's own body carried (a page cannot read that body: a key
+ * answers CORS only for its own origins). `listed` is allowed; a `why` that is not here is a refusal with the
+ * `why` as its code and no reason. */
 const ORIGIN_CHECK = Object.freeze({
-  not_listed: { status: 403, code: 'origin_not_allowed' },
+  not_listed: { status: 403, code: 'origin_not_allowed', reason: 'origin_not_allowed' },
   local_needs_development_key: { status: 403, code: 'local_needs_development_key' },
-  key_unknown: { status: 401, code: 'invalid_key' },
-  key_revoked: { status: 401, code: 'invalid_key' },
-  key_not_approved: { status: 403, code: 'developer_not_approved' },
-  not_a_web_key: { status: 403, code: 'key_type_mismatch' },
+  key_unknown: { status: 401, code: 'invalid_key', reason: 'key_unknown' },
+  key_revoked: { status: 401, code: 'invalid_key', reason: 'key_revoked' },
+  key_not_approved: { status: 403, code: 'developer_not_approved', reason: 'developer_not_approved' },
+  not_a_web_key: { status: 403, code: 'key_type_mismatch', reason: 'key_type_mismatch' },
 });
 /** A telemetry delta every this long while the app is in use (2.0.1: Quran Lab's choice, 15 minutes). */
 export const DELTA_INTERVAL_MS = 15 * 60_000;
@@ -143,6 +150,20 @@ export class QuranLab {
     this._hidden = false;
     this.stopped = null; // the code that stopped the network this launch
     this.refusedError = null;
+    // a refusal that stops the model on this device, remembered across launches until the server accepts the
+    // key again (SPEC 15.3). `from` says who refused: 'api', or 'cdn' (a model request). `_cdnRecheck`: the
+    // API has accepted the key since the CDN refused, so the next model call asks the CDN again (this launch only)
+    this.modelRefusal = null;
+    this._cdnRecheck = false;
+    let was = null;
+    try { was = this.state.get(MODEL_REFUSED_KEY); } catch (_) { was = null; }
+    if (was && typeof was.code === 'string' && stopReasonOf(was.reason)) {
+      const e = new PlatformError(was.status === 401 ? 401 : 403, was.code, 'the answer of an earlier launch');
+      e.reason = was.reason;
+      e.from = was.from === 'cdn' ? 'cdn' : 'api';
+      if (typeof was.origin === 'string') e.origin = was.origin;
+      this.modelRefusal = e;
+    }
     this.config = null;
     this._token = null;
     this._timer = null;
@@ -164,6 +185,82 @@ export class QuranLab {
 
   get flags() { return (this.config && this.config.flags) || { analytics: true, issues: true, contributions: false }; }
 
+  // ---- the model gate (SPEC 15.3) ----
+  // An answer of the server stops the model on this device exactly when its body carries a `reason` of
+  // MODEL_STOP_REASONS; it is remembered with where it came from. Anything else changes nothing here.
+  _refusal(err, from = 'api') {
+    if (!err || !stopReasonOf(err.reason)) return;
+    err.from = from;
+    this.modelRefusal = err;
+    this._cdnRecheck = false;
+    try { this.state.set(MODEL_REFUSED_KEY, { status: err.status, code: err.code, reason: err.reason, origin: err.origin || null, from }); } catch (_) { /* in force for this launch */ }
+    // a stop also removes the models on this device (SPEC 15.3, contract 1.10.0): the Client does it
+    if (typeof this.onModelStop === 'function') { try { this.onModelStop(err); } catch (_) { /* the Client's own problem */ } }
+  }
+
+  /** A stop another page of this origin stored since this one was made (the state is shared): it holds here too.
+   * A stop in force here is never dropped by this (only an accepting answer ends it). */
+  syncRefusal() {
+    if (this.modelRefusal) return;
+    let was = null;
+    try { was = this.state.get(MODEL_REFUSED_KEY); } catch (_) { was = null; }
+    if (!was || typeof was.code !== 'string' || !stopReasonOf(was.reason)) return;
+    const e = new PlatformError(was.status === 401 ? 401 : 403, was.code, 'the answer to another page');
+    e.reason = was.reason;
+    e.from = was.from === 'cdn' ? 'cdn' : 'api';
+    if (typeof was.origin === 'string') e.origin = was.origin;
+    this.modelRefusal = e;
+  }
+
+  _clearRefusal() {
+    this.modelRefusal = null;
+    this._cdnRecheck = false;
+    try { this.state.set(MODEL_REFUSED_KEY, null); } catch (_) { /* cleared for this launch */ }
+  }
+
+  // The API accepted the key (a register or token answer that succeeded, a config that verified): a stop the
+  // API gave ends. A stop the CDN gave is not ended by the API: the next model call asks the CDN again, and
+  // the CDN's answer decides (SPEC 15.3).
+  _accepted() {
+    if (!this.modelRefusal) return;
+    if (this.modelRefusal.from === 'cdn') { this._cdnRecheck = true; return; }
+    this._clearRefusal();
+  }
+
+  /** True while a stop is in force and a model call must fail with it before asking anything of the CDN. */
+  get modelStopped() { return !!this.modelRefusal && !(this.modelRefusal.from === 'cdn' && this._cdnRecheck); }
+
+  /** A model request the CDN refused ({ status, error, reason }): the same rule as for the API's answers. */
+  noteModelRefusal({ status, error, reason }) {
+    const e = new PlatformError(status, error || 'http_' + status, 'a model request');
+    if (reason) e.reason = reason;
+    this._refusal(e, 'cdn');
+  }
+
+  /** The CDN served a model request: a stop the CDN gave ends (one the API gave is never asked of the CDN). */
+  noteModelServed() { if (this.modelRefusal && this.modelRefusal.from === 'cdn') this._clearRefusal(); }
+
+  /**
+   * The headers of a model request (the model's manifest, every file, every Range request; SPEC 15.4): the
+   * install's token and the key (the CDN reads the key first, and a request with a token alone gets its generic
+   * 401). THE ONE PLACE where they are made: a change of the server's rule is one edit here. Asked before every
+   * request, so a token is there before the first one and is renewed when under an hour is left.
+   */
+  async modelHeaders() {
+    let token;
+    try { token = await this.token(); } catch (e) { throw (this.stopped && this.stoppedError) || e; }
+    const h = { authorization: `Bearer ${token}`, 'x-qlab-key': this.key };
+    if (this.origin) h.origin = this.origin;
+    return h;
+  }
+
+  /** A new token (the CDN answered 401 invalid_token to a model request). */
+  async renewToken() {
+    this._token = null;
+    this.state.set('token', null);
+    return this.token();
+  }
+
   // ---- HTTP ----
   async _call(method, path, { body = null, auth = 'token', headers = {}, raw = false, keepalive = false } = {}) {
     if (this.stopped) throw new PlatformError(0, this.stopped, 'stopped for this launch');
@@ -183,6 +280,8 @@ export class QuranLab {
       throw e;
     }
     if (r.status < 400 && auth !== 'none') { this.keyAccepted = true; this.refusedError = null; } // the server answered a call made with this key or its token
+    // a register or token answer that succeeds accepts the key (the config does when it has verified)
+    if (r.status < 400 && !raw && (path === '/v1/register' || path === '/v1/attest')) this._accepted();
     if (raw) return r;
     if (r.status >= 400) {
       let e = {};
@@ -192,10 +291,14 @@ export class QuranLab {
       // the check that refused (a 401 invalid_key names it: app_not_allowed, origin_not_allowed, key_type_mismatch);
       // the error raised to the app reads it first, what the client does with the network follows `error`
       if (typeof e.reason === 'string') err.reason = e.reason;
+      // a reason of the stop list refuses the key or the app, whatever `error` says: a 401 invalid_token that
+      // carries one (the key was revoked after the token was issued) is not renewed
+      const stop = stopReasonOf(err.reason);
       // the last refusal of this key or app (401 or 403; not a token that ran out), for diagnose()
-      if ((r.status === 401 || r.status === 403) && err.code !== 'invalid_token') this.refusedError = err;
-      if (STOP_CODES.has(err.code)) { this.stopped = err.code; this.stoppedError = err; }
-      if (err.code === 'invalid_token' && auth === 'token' && !headers['x-retried']) {
+      if ((r.status === 401 || r.status === 403) && (err.code !== 'invalid_token' || stop)) this.refusedError = err;
+      if (STOP_CODES.has(err.code) || stop) { this.stopped = err.code; this.stoppedError = err; }
+      this._refusal(err);
+      if (err.code === 'invalid_token' && !stop && auth === 'token' && !headers['x-retried']) {
         this._token = null; this.state.set('token', null);
         return this._call(method, path, { body, auth, headers: { ...headers, 'x-retried': '1' }, keepalive }).catch((e2) => { throw e2; });
       }
@@ -236,8 +339,10 @@ export class QuranLab {
       const why = typeof a.why === 'string' ? a.why : 'refused';
       const known = ORIGIN_CHECK[why];
       const err = known ? new PlatformError(known.status, known.code, `the origin check: ${why}`) : new PlatformError(403, why, 'the origin check');
+      if (known && known.reason) err.reason = known.reason;
       if (typeof a.origin === 'string') err.origin = a.origin;
       if (STOP_CODES.has(err.code)) { this.stopped = err.code; this.stoppedError = err; }
+      this._refusal(err);
       this._originError = err;
     } catch (_) { /* the check was not reached either */ }
     return this._originError;
@@ -366,13 +471,17 @@ export class QuranLab {
     if (saved && saved.etag && !nearExpiry && samePin) headers['if-none-match'] = saved.etag;
     const r = await this._call('GET', `/v1/config?${q}`, { headers, raw: true });
     this.configCheckedAt = this.clock();
-    if (r.status === 304 && saved) { this.config = saved.cfg; this.configFresh = true; this._noticeSdkLatest(); return this.config; }
+    if (r.status === 304 && saved) { this.config = saved.cfg; this.configFresh = true; this._accepted(); this._noticeSdkLatest(); return this.config; }
     if (r.status >= 400) {
       let e = {};
       try { e = await r.json(); } catch (_) { /* none */ }
       const err = new PlatformError(r.status, e.error || 'http_' + r.status, e.message);
       if (typeof e.min_sdk === 'string') err.minSdk = e.min_sdk;
-      if (STOP_CODES.has(err.code)) { this.stopped = err.code; this.stoppedError = err; }
+      if (typeof e.reason === 'string') err.reason = e.reason;
+      const stop = stopReasonOf(err.reason);
+      if ((r.status === 401 || r.status === 403) && (err.code !== 'invalid_token' || stop)) this.refusedError = err;
+      if (STOP_CODES.has(err.code) || stop) { this.stopped = err.code; this.stoppedError = err; }
+      this._refusal(err);
       throw err;
     }
     const body = new Uint8Array(await r.arrayBuffer());
@@ -385,6 +494,7 @@ export class QuranLab {
     }
     this.config = cfg;
     this.configFresh = true;
+    this._accepted(); // a config that verified: the server accepts this key
     this.state.set('config', { cfg, pin, etag: r.headers.get('etag'), sig: r.headers.get('x-qlab-signature'), kid: r.headers.get('x-qlab-key-id') });
     if (cfg.flags && cfg.flags.analytics === false) this.telemetry.clear();
     this.telemetry.enabled = this.analyticsOn && !(cfg.flags && cfg.flags.analytics === false);
@@ -406,8 +516,9 @@ export class QuranLab {
 
   /**
    * Where the model for this app lives on the CDN (SPEC 2a): the config names a version and a build; the files
-   * are fetched by the build's URL, which never changes content. Returns { url, headers, version, build,
-   * modelId, pin } (pin: the config's answer to a pinned version it could not serve, or null).
+   * are fetched by the build's URL, which never changes content. Returns { url, version, build, modelId, pin }
+   * (pin: the config's answer to a pinned version it could not serve, or null). The requests' headers are
+   * modelHeaders().
    */
   async modelSource() {
     const pinned = this.modelVersionPin || null;
@@ -432,7 +543,6 @@ export class QuranLab {
     if (REGIONAL_CDN.test(base)) base += '/hf';
     const pin = cfg.pin && typeof cfg.pin === 'object' && typeof cfg.pin.version === 'string' ? { version: cfg.pin.version, status: String(cfg.pin.status || '') } : null;
     return { url: `${base}/${enc(rec.model)}/${enc(rec.revision)}/${enc(rec.folder || 'sdk/' + rec.model_id)}/`,
-      headers: { 'x-qlab-key': this.key, ...(this.origin ? { origin: this.origin } : {}) },
       version: this.modelRevision, build: this.modelBuild, modelId: rec.model_id || null, pin };
   }
 

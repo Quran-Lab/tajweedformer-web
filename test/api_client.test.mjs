@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 import { TajweedClient, TajweedModel, TajweedSession, TajweedHeads, TajweedError } from '../web/index.js';
 import { createClient, resetClientForTests } from '../web/api/client.js';
 import { openModel } from '../web/api/model.js';
-import { memoryReader, sha256Hex } from '../web/tajweed/manifest.js';
+import { sha256Hex } from '../web/tajweed/manifest.js';
+import { memoryReader } from './helpers/readers.mjs';
 import { build3, stubPlatform, seamsFor, fakeHost, audioFor, KEY, testKeyHex, CLIP_TOKENS } from './helpers/model3.mjs';
 import { calFixture } from './tajweed/folder.mjs';
 

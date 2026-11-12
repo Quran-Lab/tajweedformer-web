@@ -1,17 +1,21 @@
-// What the model heard in a recording, from Node, with a model folder on disk.
+// What the model heard in a recording, from Node.
 //
-//   node examples/node.mjs <model folder> <audio.f32le, mono 16 kHz>
+//   QURANLAB_KEY=qlk_v1_... node examples/node.mjs <app id> <audio.f32le, mono 16 kHz>
 //   ffmpeg -i take.wav -f f32le -ac 1 -ar 16000 take.f32   (one way to get the raw samples)
 //
+// The key is your app's desktop key from sdk.quranlab.ai, the app id the one you gave that app. The Client
+// downloads the model once, verifies it and keeps it in its storage folder (the default is under ~/.cache);
+// a later run opens it from there, also without a network.
 // Prints each token with its confidence and times, the words, and where the model heard speech.
 import { readFileSync } from 'node:fs';
-import { TajweedModel } from '@quran-lab/tajweedformer';
-import { dirReader } from '@quran-lab/tajweedformer/node';
+import { TajweedClient } from '@quran-lab/tajweedformer';
 
-const [dir, audio] = process.argv.slice(2);
-if (!dir || !audio) { console.error('usage: node examples/node.mjs <model folder> <audio.f32>'); process.exit(2); }
+const [appId, audio] = process.argv.slice(2);
+const key = process.env.QURANLAB_KEY;
+if (!key || !appId || !audio) { console.error('usage: QURANLAB_KEY=qlk_v1_... node examples/node.mjs <app id> <audio.f32>'); process.exit(2); }
 
-const model = await TajweedModel.open(dirReader(dir));
+const client = await TajweedClient.create({ key, appId });
+const model = await client.model();
 console.log(`model ${model.id} ${model.version} (build ${model.build.slice(0, 8)}), context ${model.defaultContext}, ${model.chunkMs()} ms chunks`);
 
 const buf = readFileSync(audio);
@@ -27,3 +31,4 @@ for (const t of heads.decoded().tokens) {
 for (const w of heads.decoded().words) console.log(`word ${w.index}: ${w.text} (${w.firstMs} to ${w.lastMs} ms)`);
 console.log('heads:', heads.names.join(', '));
 await model.close();
+await client.close();

@@ -41,7 +41,7 @@ import { H0, fnv1a64, hex, bytesOf, take, checkClip, CONTEXTS } from './helpers/
 import { wasmArgs } from '../web/platform/node-hook.js';
 import { topK, RANKED_HEADS, decodeFrames } from '../web/tajweed/decode.js';
 import { HEAD_SPECS } from '../web/tajweed/heads.js';
-import { dirReader } from '../web/node.js';
+import { dirReader } from './helpers/readers.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 // no default: the folders are on one PC only, and the test skips without them

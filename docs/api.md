@@ -1,4 +1,4 @@
-# @quran-lab/tajweedformer 3.0.2: API
+# @quran-lab/tajweedformer 3.1.0: API
 
 The whole public surface. Every type is in [`web/index.d.ts`](../web/index.d.ts); a test keeps this page, the
 type definitions and the package's exports in step. The names and the call order are the same in the Android,
@@ -9,7 +9,6 @@ Apple and C SDKs.
 | Import | What |
 | --- | --- |
 | `@quran-lab/tajweedformer` | everything below |
-| `@quran-lab/tajweedformer/node` | Node only: `dirReader(dir)`, a model folder on disk as a reader for `TajweedModel.open` |
 
 ## Call order
 
@@ -57,9 +56,19 @@ browser that gives no connection type).
 
 ## TajweedModel
 
+A Model comes from `client.model()`, and only from there (3.1.0): no call takes a model as a folder, a URL, a
+reader or bytes, and the Client opens only a build it downloaded itself on this device. When an answer of
+Quran Lab refuses the key or the app with one of the reasons `key_revoked`, `key_unknown`, `app_not_allowed`,
+`origin_not_allowed`, `key_type_mismatch`, `app_blocked` or `developer_not_approved`, `client.model()` and
+`client.prefetch()` fail with that refusal's error (`invalid_key` for a revoked or unknown key, else
+`server_rejected`), also with the model on the device and at a later start without a network, until Quran Lab
+accepts the key again. With the refusal the SDK removes the downloaded model from the browser (what
+`removeModels()` removes); once the key is accepted again the model is downloaded again. An answer without one
+of these reasons never does this. A Model that is already open when the refusal arrives keeps running until the
+app closes it.
+
 | Member | |
 | --- | --- |
-| `TajweedModel.open(folder)` | Promise of a Model from a folder at hand: a URL, a directory path (Node), a reader, or `{ path: bytes }`. Verified as a downloaded one. |
 | `id`, `version`, `build` | `"v4.0"`, `"4.0.0"`, the build id (diagnostics only). |
 | `contexts`, `defaultContext`, `chunkMs(context?)` | The context names, the one a Session uses by default, a context's chunk length in ms. |
 | `tokens` | A `TajweedTokens`: `count`, `blank`, `wordBar`, `name(id)`, `id(name)`. |
@@ -148,7 +157,8 @@ letter first); `0 <= flagged <= checked <= 100000`.
 
 A refusal of the server is `server_rejected`, and its `message` and `fix` say what to do for the server's reason
 (the account has no access yet, the key is of another type or environment, the key belongs to another app, the
-page's origin is not on the key, a production key on a local address). A page whose origin is not on its key
+page's origin is not on the key, a production key on a local address, the app is blocked or paused, a model
+request this install may not make). A page whose origin is not on its key
 gets no answer from the API at all; the SDK then asks Quran Lab's origin check once per page load and raises
 that refusal instead of `needs_connection`. `runtime_unsupported` is a browser or a Node without something the
 SDK needs (its `message` names it). `network_not_permitted` is in the shared catalogue for the other SDKs; the

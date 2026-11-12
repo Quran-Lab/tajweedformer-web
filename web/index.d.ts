@@ -1,4 +1,4 @@
-// Type definitions for @quran-lab/tajweedformer 3.0.2: the whole public surface, and nothing else.
+// Type definitions for @quran-lab/tajweedformer 3.1.0: the whole public surface, and nothing else.
 // Five concepts: Client, Model, Session, Heads, Backend. Call order: Client, model, listen, read.
 
 /** Every failure the SDK raises. `code` is stable and the same in every TajweedFormer SDK. */
@@ -148,7 +148,7 @@ export interface TajweedReference {
   units(surah: number, ayah: number): Promise<{ units: number[]; words: number[]; wordCount: number }>;
 }
 
-/** A sample clip of the model folder (its self-test set). */
+/** A sample clip of the model (its self-test set). */
 export interface TajweedClip {
   readonly name: string;
   readonly kind: string;
@@ -173,11 +173,9 @@ export interface TajweedSessionOptions {
   onEvent?: (event: TajweedEvent) => void;
 }
 
-/** One verified model build on this device. Holds the engine (in a Worker in browsers). */
+/** One verified model build on this device, from `client.model()`. Holds the engine (in a Worker in browsers). */
 export declare class TajweedModel {
   private constructor();
-  /** Open a folder already at hand: a URL, a directory path (Node), a reader, or the files in memory. */
-  static open(folder: string | { read(path: string): Promise<Uint8Array | null> } | Record<string, Uint8Array>): Promise<TajweedModel>;
   readonly id: string;
   readonly version: string;
   /** The build id, for diagnostics only. */

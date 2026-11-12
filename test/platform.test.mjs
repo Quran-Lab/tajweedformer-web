@@ -64,9 +64,9 @@ test('launch: unattested token, register (new install once), signed config verif
   assert.equal(attest.headers.origin, 'https://app.example');
   const reg = api.log.find((x) => x.path === '/v1/register');
   assert.equal(reg.body.new_install, true);
-  assert.equal(reg.body.sdk_version, '3.0.2');
+  assert.equal(reg.body.sdk_version, '3.1.0');
   const cfgReq = api.log.find((x) => x.path === '/v1/config');
-  assert.match(cfgReq.query, /sdk=3\.0\.2/);
+  assert.match(cfgReq.query, /sdk=3\.1\.0/);
   assert.match(cfgReq.query, /bucket=\d+/);
   // second launch on the same storage and UTC day: no register (once per day); config answered 304 from the stored ETag
   api.log.length = 0;
@@ -86,7 +86,14 @@ test('launch: unattested token, register (new install once), signed config verif
   // the model source from the recommended model
   const src = await ql2.modelSource();
   assert.equal(src.url, 'https://cdn.quranlab.ai/models/Quran-Lab/tajweedformer-v4/abc123/sdk/v4.0/');
-  assert.equal(src.headers['x-qlab-key'], 'qlk_v1_test_aaaaaaaaaaaaaaaaaaaaaa');
+  // 3.1.0: the source carries no headers; a model request's headers are made in one place: the install's token
+  // and, in 3.1.0, the key too
+  assert.equal(src.headers, undefined);
+  const sent = await ql2.modelHeaders();
+  assert.deepEqual(Object.keys(sent).sort(), ['authorization', 'origin', 'x-qlab-key']);
+  assert.equal(sent['x-qlab-key'], 'qlk_v1_test_aaaaaaaaaaaaaaaaaaaaaa');
+  assert.equal(sent.authorization, `Bearer ${await ql2.token()}`);
+  assert.match(sent.authorization, /^Bearer \S+$/);
 });
 
 test('config: a tampered body, an unknown kid, an expired config are refused; the last good one stays', async () => {
@@ -128,7 +135,7 @@ test('telemetry v2 deltas: closed body with the 2.0.1 fields, sealed at a send p
   const [p] = ql.telemetry.pending();
   assert.deepEqual(Object.keys(p), ['v', 'day', 'product', 'platform', 'sdk_version', 'app_version', 'device', 'cohorts', 'coverage',
     'ayahs', 'words', 'surah_ayahs', 'rule_checks', 'rule_flags', 'reported', 'report_id']);
-  assert.equal(p.v, 2); assert.equal(p.product, 'web'); assert.equal(p.day, '2026-11-06'); assert.equal(p.sdk_version, '3.0.2');
+  assert.equal(p.v, 2); assert.equal(p.product, 'web'); assert.equal(p.day, '2026-11-06'); assert.equal(p.sdk_version, '3.1.0');
   const c = p.cohorts[0];
   assert.equal(c.sessions, 1); assert.equal(c.minutes, 0.5); assert.equal(c.chunks, 3);
   assert.deepEqual(c.latency_ms, { le_20: 1, le_40: 1, gt_320: 1 });
@@ -223,8 +230,8 @@ test('sharing state: never before a session with feedback; first ask, two re-ask
   const ar = copyFor('ar-EG');
   assert.equal(ar.lang, 'ar'); assert.equal(ar.dir, 'rtl'); assert.equal(copyFor('ur').dir, 'rtl'); assert.equal(copyFor('en').dir, 'ltr');
   assert.equal(copyFor('xx').lang, 'en');
-  assert.equal(ar.consentVersion, 'share-2026-11-09');
-  assert.equal(ar.version, '2026-11-09.1'); assert.equal(ar.deleteTiming, 'immediate');
+  assert.equal(ar.consentVersion, 'share-2026-11-12');
+  assert.equal(ar.version, '2026-11-12.1'); assert.equal(ar.deleteTiming, 'immediate');
   assert.ok(copyFor('en').t('sheet.hadith').length > 20 && copyFor('en').t('sheet.hadith_ref') === 'Sahih Muslim 1631');
   assert.match(copyFor('en').minutes(1), /1 minute of/);
   assert.match(copyFor('en').minutes(12), /12 minutes/);

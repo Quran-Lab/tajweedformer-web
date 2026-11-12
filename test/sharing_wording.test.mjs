@@ -28,7 +28,7 @@ const skipAudio = have ? false : 'dist/tajweedformer-opus.mjs is not built (npm 
 const DECK = copyFor('en').consentVersion;
 
 test('the shared vector: every case (canonical bytes, sha256, version) and every refused input', () => {
-  assert.equal(DECK, 'share-2026-11-09');
+  assert.equal(DECK, 'share-2026-11-12');
   for (const c of vector.cases) {
     assert.equal(c.base, DECK, 'the vector is made for the bundled deck');
     const ov = validateWording(c.overrides);
@@ -84,7 +84,8 @@ test('a wording change changes what a new grant records: an existing grant keeps
   assert.equal(ctl.state.sharing, true);
   assert.equal(ctl.state.grantTextSha256, null, 'the deck\'s wording: no hash');
   const c1 = ctl.setWording({ 'sheet.what': 'Your recitation audio and the app\'s version. Nothing else.' });
-  assert.equal(c1.version, 'custom-df8c4e50965be0005aaca5d6', 'the vector\'s case');
+  assert.equal(c1.version, vector.cases.find((c) => c.name === 'one disclosure line reworded').consent_version, 'the vector\'s case');
+  assert.match(c1.version, /^custom-[0-9a-f]{24}$/);
   assert.equal(ctl.copy.t('sheet.what'), 'Your recitation audio and the app\'s version. Nothing else.');
   assert.equal(ctl.state.sharing, true, 'a grant to the deck keeps sharing under the app\'s wording');
   assert.equal(await ctl.sessionCompleted(), null, 'and is not asked again');

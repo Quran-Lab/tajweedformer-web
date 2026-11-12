@@ -54,6 +54,21 @@ export function serverRejected(reason, values = {}, options = {}) {
   return err;
 }
 
+/**
+ * The reasons that stop a model on this device (SPEC 15.3; the vector model_gate.json's `stop_reasons`). An
+ * answer of the server stops a model exactly when its JSON body carries a `reason` of this list; an answer
+ * without one never does, whatever its status and its `error`. THE ONE LIST: the server's, in one place.
+ */
+export const MODEL_STOP_REASONS = Object.freeze(['key_revoked', 'key_unknown', 'app_not_allowed', 'origin_not_allowed',
+  'key_type_mismatch', 'app_blocked', 'developer_not_approved']);
+/** The stop reasons whose error is `invalid_key` (the vector's `key_reasons`); the others are server_rejected. */
+export const MODEL_KEY_REASONS = Object.freeze(['key_revoked', 'key_unknown']);
+/** The stop reason an answer carries (its body's `reason` when it is of the list), or null: no stop. */
+export const stopReasonOf = (reason) => (typeof reason === 'string' && MODEL_STOP_REASONS.includes(reason) ? reason : null);
+
+/** The {detail} of download_failed for the CDN's 429 `model_limit` (SPEC 15.4). */
+export const MODEL_LIMIT_DETAIL = "Quran Lab's daily limit for model downloads is reached; try again later";
+
 /** An invalid argument, the API's most common refusal. */
 export const invalid = (detail) => new TajweedError('invalid_argument', { detail });
 
@@ -82,12 +97,26 @@ export function toTajweedError(e, { fallback = 'engine_failed', sdk = '', origin
   if (name === 'DeliveryError') {
     if (code === 'checksum_mismatch') return make('checksum_mismatch', { file: e.path || message });
     if (code === 'aborted') return make('cancelled');
-    if (code === 'http' && e.status === 401) return make('invalid_key');
-    if (code === 'http' && e.status === 403) return serverRejected(e.reason || 'http_403', { origin }, { cause: e });
+    if (code === 'http' && (e.status === 401 || e.status === 403)) {
+      // a model request the CDN refused: a revoked or unknown key is the key's error (also on a 401
+      // invalid_token, which is then not renewed); else the answer's `reason` first, then its `error`, when the
+      // catalogue has an entry for it; else a bare 401 is the key, and a 403 is a refusal with the code as its detail
+      if (MODEL_KEY_REASONS.includes(e.reason)) return make('invalid_key');
+      const why = [e.reason, e.error].find((x) => typeof x === 'string' && Object.prototype.hasOwnProperty.call(REASONS, x));
+      if (why) return serverRejected(why, { origin }, { cause: e });
+      // the token was renewed once and is refused again: the download failed, the key is not at fault
+      if (e.status === 401 && e.error === 'invalid_token') return make('download_failed');
+      if (e.status === 401) return make('invalid_key');
+      return serverRejected(e.error || e.reason || 'http_403', { origin }, { cause: e });
+    }
+    // the daily limit of model downloads: try later, never a refusal
+    if (code === 'http' && e.status === 429 && e.error === 'model_limit') return make('download_failed', { detail: MODEL_LIMIT_DETAIL });
     if (code === 'offline' && e.nothingCached) return make('needs_connection');
     return make('download_failed');
   }
   if (name === 'PlatformError') {
+    // a revoked or unknown key, whatever `error` says (401 invalid_key, or a 401 invalid_token that is then not renewed)
+    if (MODEL_KEY_REASONS.includes(e.reason)) return make('invalid_key');
     // the answer's `reason` first: when the catalogue has an entry for it, that refusal, whatever `error` says
     if (typeof e.reason === 'string' && Object.prototype.hasOwnProperty.call(REASONS, e.reason)) return serverRejected(e.reason, { origin: e.origin || origin }, { cause: e });
     if (code === 'invalid_key' || code === 'unauthorized') return make('invalid_key');

@@ -9,7 +9,6 @@ import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import * as entry from '../web/index.js';
-import * as nodeEntry from '../web/node.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const read = (p) => readFileSync(path.join(root, p), 'utf8');
@@ -24,13 +23,14 @@ const PUBLIC_TYPES = ['TajweedClient', 'TajweedModel', 'TajweedSession', 'Tajwee
 const UI_COMPONENTS = ['QuranLabConsent', 'QuranLabSharingSettings'];
 const RUNTIME = ['TajweedClient', 'TajweedModel', 'TajweedSession', 'TajweedHeads', 'TajweedError', 'Microphone', ...UI_COMPONENTS];
 
-test('the package has one entry point and ./node, with type definitions for each', () => {
+test('the package has one entry point with its type definitions; there is no ./node entry (3.1.0)', () => {
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(pkg.version, '3.0.2');
-  assert.deepEqual(Object.keys(pkg.exports), ['.', './node', './package.json']);
+  assert.equal(pkg.version, '3.1.0');
+  assert.deepEqual(Object.keys(pkg.exports), ['.', './package.json']);
   // ".": the Node entry under the node condition, the browser entry for everything else (a bundler, a CDN)
   assert.deepEqual(pkg.exports['.'], { types: './web/index.d.ts', node: './web/index.node.js', default: './web/index.js' });
-  assert.deepEqual(pkg.exports['./node'], { types: './web/node.d.ts', default: './web/node.js' });
+  // 3.1.0: the entry that gave a folder reader is gone, with its files
+  for (const f of ['web/node.js', 'web/node.d.ts']) assert.equal(existsSync(new URL(`../${f}`, import.meta.url)), false, f);
   assert.ok(!pkg.files.some((f) => /scorer/.test(f)));
   assert.ok(!Object.keys(pkg.scripts).some((s) => /scorer/.test(s)));
 });
@@ -42,14 +42,16 @@ test('the public type list is NAMING.md section 8 plus the sharing UI components
   assert.equal(new Set(names).size, names.length);
   assert.ok(!/^export\s+\*|^export\s+\{/m.test(dts), 'no re-export in the type definitions');
   assert.equal(PUBLIC_TYPES.length, 23);
-  const ndts = read('web/node.d.ts');
-  assert.deepEqual([...ndts.matchAll(/^export\s+declare\s+function\s+(\w+)/gm)].map((m) => m[1]), ['dirReader']);
+  // 3.1.0: no public declaration takes a model as a folder, a URL, a reader or bytes
+  assert.equal(/static\s+open\s*\(/.test(dts.slice(dts.indexOf('export declare class TajweedModel'), dts.indexOf('export declare class TajweedModel') + 4000)), false, 'TajweedModel has no static open');
+  assert.equal(/dirReader|urlReader|memoryReader/.test(dts), false);
 });
 
 test('the runtime exports are the classes of that list, and nothing else', () => {
   assert.deepEqual(Object.keys(entry).sort(), RUNTIME.slice().sort());
   for (const k of RUNTIME) assert.equal(typeof entry[k], 'function', k);
-  assert.deepEqual(Object.keys(nodeEntry), ['dirReader']);
+  assert.equal(entry.TajweedModel.open, undefined, 'TajweedModel.open is not there');
+  assert.equal(Object.getOwnPropertyNames(entry.TajweedModel).includes('open'), false);
 });
 
 test('docs/api.md covers the surface: every public type, every public member of the classes, every error code', async () => {

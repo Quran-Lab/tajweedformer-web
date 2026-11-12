@@ -2,10 +2,10 @@
 export const DECKS = {
  "ar": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-09.1",
+  "version": "2026-11-12.1",
   "lang": "ar",
   "dir": "rtl",
-  "consent_version": "share-2026-11-09",
+  "consent_version": "share-2026-11-12",
   "delete_days": 0,
   "delete_timing": "immediate",
   "strings": {
@@ -15,7 +15,7 @@ export const DECKS = {
    "sheet.hadith_ref": "صحيح مسلم 1631",
    "sheet.mistakes": "أخطاؤك هي الجزء الأثمن، فهي تُعلّم النموذج كيف يصوّب للمتعلم التالي برفق.",
    "sheet.what": "التسجيل الصوتي لجلسات تلاوتك في هذا التطبيق أثناء استماعه، وتفاصيل تقنية أساسية مثل إصدار النموذج ونوع الجهاز. دون اسم، أو جهات اتصال، أو موقع جغرافي.",
-   "sheet.who": "Quran Lab، وهو وقف. النماذج التي يدرّبها مجانية للجميع دائماً، ولا تُباع أبداً.",
+   "sheet.who": "Quran Lab، وهو وقف. النماذج التي يدرّبها مجانية للجميع دائماً، ولا تُباع أبداً. لا يستمع أي إنسان إلى تسجيلاتك أبداً: البرامج وحدها تتعلّم منها.",
    "sheet.control": "يمكنك التوقف في أي وقت وحذف ما شاركته من الإعدادات.",
    "sheet.share": "مشاركة تلاواتي",
    "sheet.not_now": "ليس الآن",
@@ -27,7 +27,7 @@ export const DECKS = {
    "settings.toggle": "مشاركة تلاواتي",
    "settings.what": "ما الذي تتم مشاركته",
    "settings.delete": "حذف ما شاركته",
-   "what.detail": "عند تفعيل المشاركة، يُرسل التسجيل الصوتي لجلسات تلاوتك في هذا التطبيق إلى Quran Lab، مع تفاصيل تقنية عامة (إصدار النموذج، نوع الجهاز، إصدار النظام، واليوم)، ورمز عشوائي خاص بهذا التثبيت. ولا نجمع أبداً اسمك أو حسابك أو جهات اتصالك أو موقعك أو معرّفات جهازك. تُحفظ التسجيلات في الاتحاد الأوروبي وتُستخدم فقط لتحسين نماذج تلاوة القرآن الكريم المجانية. إيقاف المشاركة يوقف الإرسال فوراً، ويمكنك حذف كل ما شاركته من الإعدادات في أي وقت: حيث يُحذف من خوادم Quran Lab في الحال.",
+   "what.detail": "عند تفعيل المشاركة، يُرسل التسجيل الصوتي لجلسات تلاوتك في هذا التطبيق إلى Quran Lab، مع تفاصيل تقنية عامة (إصدار النموذج، نوع الجهاز، إصدار النظام، واليوم)، ورمز عشوائي خاص بهذا التثبيت. ولا نجمع أبداً اسمك أو حسابك أو جهات اتصالك أو موقعك أو معرّفات جهازك. تُحفظ التسجيلات في الاتحاد الأوروبي وتُستخدم فقط لتحسين نماذج تلاوة القرآن الكريم المجانية. لا يستمع أي إنسان إلى تسجيلاتك أبداً: البرامج وحدها تتعلّم منها. إيقاف المشاركة يوقف الإرسال فوراً، ويمكنك حذف كل ما شاركته من الإعدادات في أي وقت: حيث يُحذف من خوادم Quran Lab في الحال.",
    "delete.confirm": "ستُحذف تلاواتك التي شاركتها من خوادم Quran Lab فوراً. لا يمكن التراجع عن هذا الإجراء.",
    "delete.action": "حذف",
    "delete.cancel": "إلغاء",
@@ -64,10 +64,10 @@ export const DECKS = {
  },
  "bn": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-09.1",
+  "version": "2026-11-12.1",
   "lang": "bn",
   "dir": "ltr",
-  "consent_version": "share-2026-11-09",
+  "consent_version": "share-2026-11-12",
   "delete_days": 0,
   "delete_timing": "immediate",
   "strings": {
@@ -77,7 +77,7 @@ export const DECKS = {
    "sheet.hadith_ref": "সহিহ মুসলিম 1631",
    "sheet.mistakes": "আপনার ভুলগুলোই এখানে সবচেয়ে মূল্যবান অংশ। এগুলো পরবর্তী শিক্ষার্থীকে নম্রভাবে ভুল শুধরে দিতে মডেলটিকে শেখায়।",
    "sheet.what": "অ্যাপটি শোনার সময় এতে আপনার তিলাওয়াতের অডিও এবং মডেল ভার্সন ও ডিভাইসের ধরনের মতো সাধারণ কিছু কারিগরি তথ্য। কোনো নাম, যোগাযোগের তথ্য বা লোকেশন নয়।",
-   "sheet.who": "Quran Lab, একটি ওয়াকফ। এর তৈরি মডেলগুলো সবার জন্য চিরকাল সম্পূর্ণ বিনামূল্যে এবং এগুলো কখনোই বিক্রি করা হয় না।",
+   "sheet.who": "Quran Lab, একটি ওয়াকফ। এর তৈরি মডেলগুলো সবার জন্য চিরকাল সম্পূর্ণ বিনামূল্যে এবং এগুলো কখনোই বিক্রি করা হয় না। কোনো মানুষ কখনোই আপনার রেকর্ডিং শোনে না: এগুলো থেকে কেবল সফটওয়্যারই শেখে।",
    "sheet.control": "আপনি যেকোনো সময় এটি বন্ধ করতে পারেন এবং যা শেয়ার করেছেন তা সেটিংস থেকে মুছে ফেলতে পারেন।",
    "sheet.share": "আমার তিলাওয়াত শেয়ার করুন",
    "sheet.not_now": "এখন নয়",
@@ -89,7 +89,7 @@ export const DECKS = {
    "settings.toggle": "আমার তিলাওয়াত শেয়ার করুন",
    "settings.what": "যা শেয়ার করা হয়",
    "settings.delete": "শেয়ার করা তিলাওয়াত মুছুন",
-   "what.detail": "শেয়ারিং চালু থাকলে, এই অ্যাপে আপনার তিলাওয়াত সেশনের অডিও Quran Lab-এ পাঠানো হয়। এর সাথে থাকে সাধারণ কিছু কারিগরি তথ্য (মডেল সংস্করণ, ডিভাইসের ধরন, সিস্টেম সংস্করণ, দিন) এবং এই ইনস্টলেশনের জন্য একটি র‍্যান্ডম কোড। আপনার নাম, অ্যাকাউন্ট, কনট্যাক্ট, লোকেশন বা ডিভাইস শনাক্তকারী তথ্য কখনোই নেওয়া হয় না। এটি ইইউ (EU)-তে সংরক্ষিত থাকে এবং কেবল বিনামূল্যে ব্যবহারযোগ্য কুরআন তিলাওয়াত মডেলগুলোর মানোন্নয়নে ব্যবহৃত হয়। শেয়ারিং বন্ধ করলে সাথে সাথেই আপলোড বন্ধ হয়ে যায়, আর সেটিংস থেকে যেকোনো সময় আপনি শেয়ার করা সবকিছু মুছে ফেলতে পারেন: Quran Lab-এর সার্ভার থেকে এটি সাথে সাথেই মুছে ফেলা হয়।",
+   "what.detail": "শেয়ারিং চালু থাকলে, এই অ্যাপে আপনার তিলাওয়াত সেশনের অডিও Quran Lab-এ পাঠানো হয়। এর সাথে থাকে সাধারণ কিছু কারিগরি তথ্য (মডেল সংস্করণ, ডিভাইসের ধরন, সিস্টেম সংস্করণ, দিন) এবং এই ইনস্টলেশনের জন্য একটি র‍্যান্ডম কোড। আপনার নাম, অ্যাকাউন্ট, কনট্যাক্ট, লোকেশন বা ডিভাইস শনাক্তকারী তথ্য কখনোই নেওয়া হয় না। এটি ইইউ (EU)-তে সংরক্ষিত থাকে এবং কেবল বিনামূল্যে ব্যবহারযোগ্য কুরআন তিলাওয়াত মডেলগুলোর মানোন্নয়নে ব্যবহৃত হয়। কোনো মানুষ কখনোই আপনার রেকর্ডিং শোনে না: এগুলো থেকে কেবল সফটওয়্যারই শেখে। শেয়ারিং বন্ধ করলে সাথে সাথেই আপলোড বন্ধ হয়ে যায়, আর সেটিংস থেকে যেকোনো সময় আপনি শেয়ার করা সবকিছু মুছে ফেলতে পারেন: Quran Lab-এর সার্ভার থেকে এটি সাথে সাথেই মুছে ফেলা হয়।",
    "delete.confirm": "আপনার শেয়ার করা তিলাওয়াতগুলো সাথে সাথেই Quran Lab-এর সার্ভার থেকে মুছে ফেলা হবে। এটি আর ফিরিয়ে আনা সম্ভব নয়।",
    "delete.action": "মুছে ফেলুন",
    "delete.cancel": "বাতিল করুন",
@@ -122,10 +122,10 @@ export const DECKS = {
  },
  "en": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-09.1",
+  "version": "2026-11-12.1",
   "lang": "en",
   "dir": "ltr",
-  "consent_version": "share-2026-11-09",
+  "consent_version": "share-2026-11-12",
   "delete_days": 0,
   "delete_timing": "immediate",
   "strings": {
@@ -135,7 +135,7 @@ export const DECKS = {
    "sheet.hadith_ref": "Sahih Muslim 1631",
    "sheet.mistakes": "Your mistakes are the most valuable part. They teach the model to correct the next learner gently.",
    "sheet.what": "The audio of your recitation sessions in this app, while it listens, and basic technical details such as the model version and device type. No name, no contacts, no location.",
-   "sheet.who": "Quran Lab, a waqf. The models it trains are free for everyone, forever, and are never sold.",
+   "sheet.who": "Quran Lab, a waqf. The models it trains are free for everyone, forever, and are never sold. No human ever listens to your recordings: only software learns from them.",
    "sheet.control": "You can stop at any time and delete what you shared from the settings.",
    "sheet.share": "Share my recitations",
    "sheet.not_now": "Not now",
@@ -147,7 +147,7 @@ export const DECKS = {
    "settings.toggle": "Share my recitations",
    "settings.what": "What is shared",
    "settings.delete": "Delete what I shared",
-   "what.detail": "When sharing is on, the audio of your recitation sessions in this app is sent to Quran Lab, with coarse technical details (model version, device type, system version, the day) and a random code for this install. Never your name, account, contacts, location or device identifiers. It is stored in the EU and used only to improve free Quran recitation models. Turning sharing off stops uploads at once, and you can delete everything you shared from the settings at any time: it is removed from Quran Lab's servers right away.",
+   "what.detail": "When sharing is on, the audio of your recitation sessions in this app is sent to Quran Lab, with coarse technical details (model version, device type, system version, the day) and a random code for this install. Never your name, account, contacts, location or device identifiers. It is stored in the EU and used only to improve free Quran recitation models. No human ever listens to your recordings: only software learns from them. Turning sharing off stops uploads at once, and you can delete everything you shared from the settings at any time: it is removed from Quran Lab's servers right away.",
    "delete.confirm": "Your shared recitations will be deleted from Quran Lab's servers right away. This cannot be undone.",
    "delete.action": "Delete",
    "delete.cancel": "Cancel",
@@ -180,10 +180,10 @@ export const DECKS = {
  },
  "fr": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-09.1",
+  "version": "2026-11-12.1",
   "lang": "fr",
   "dir": "ltr",
-  "consent_version": "share-2026-11-09",
+  "consent_version": "share-2026-11-12",
   "delete_days": 0,
   "delete_timing": "immediate",
   "strings": {
@@ -193,7 +193,7 @@ export const DECKS = {
    "sheet.hadith_ref": "Sahih Muslim 1631",
    "sheet.mistakes": "Vos erreurs sont ce qu'il y a de plus précieux. Elles apprennent au modèle à corriger le prochain apprenant avec douceur.",
    "sheet.what": "L'enregistrement audio de vos séances de récitation dans cette application lorsqu'elle est à l'écoute, et des détails techniques simples comme la version du modèle et le type d'appareil. Aucun nom, aucun contact, aucune localisation.",
-   "sheet.who": "Quran Lab, un waqf. Les modèles entraînés sont gratuits pour tous, pour toujours, et ne sont jamais vendus.",
+   "sheet.who": "Quran Lab, un waqf. Les modèles entraînés sont gratuits pour tous, pour toujours, et ne sont jamais vendus. Aucun humain n'écoute jamais vos enregistrements : seuls des logiciels apprennent à partir d'eux.",
    "sheet.control": "Vous pouvez arrêter à tout moment et supprimer ce que vous avez partagé depuis les paramètres.",
    "sheet.share": "Partager mes récitations",
    "sheet.not_now": "Pas maintenant",
@@ -205,7 +205,7 @@ export const DECKS = {
    "settings.toggle": "Partager mes récitations",
    "settings.what": "Ce qui est partagé",
    "settings.delete": "Supprimer mes partages",
-   "what.detail": "Lorsque le partage est activé, l'audio de vos séances de récitation dans cette application est envoyé à Quran Lab, avec quelques informations techniques générales (version du modèle, type d'appareil, version du système, date) et un code aléatoire propre à cette installation. Jamais votre nom, votre compte, vos contacts, votre localisation ou les identifiants de votre appareil. Ces données sont stockées dans l'Union européenne et servent uniquement à améliorer des modèles gratuits de récitation du Coran. Désactiver le partage interrompt immédiatement les envois, et vous pouvez supprimer tout ce que vous avez partagé à tout moment depuis les paramètres : vos données sont immédiatement effacées des serveurs de Quran Lab.",
+   "what.detail": "Lorsque le partage est activé, l'audio de vos séances de récitation dans cette application est envoyé à Quran Lab, avec quelques informations techniques générales (version du modèle, type d'appareil, version du système, date) et un code aléatoire propre à cette installation. Jamais votre nom, votre compte, vos contacts, votre localisation ou les identifiants de votre appareil. Ces données sont stockées dans l'Union européenne et servent uniquement à améliorer des modèles gratuits de récitation du Coran. Aucun humain n'écoute jamais vos enregistrements : seuls des logiciels apprennent à partir d'eux. Désactiver le partage interrompt immédiatement les envois, et vous pouvez supprimer tout ce que vous avez partagé à tout moment depuis les paramètres : vos données sont immédiatement effacées des serveurs de Quran Lab.",
    "delete.confirm": "Vos récitations partagées seront immédiatement supprimées des serveurs de Quran Lab. Cette action est irréversible.",
    "delete.action": "Supprimer",
    "delete.cancel": "Annuler",
@@ -239,10 +239,10 @@ export const DECKS = {
  },
  "id": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-09.1",
+  "version": "2026-11-12.1",
   "lang": "id",
   "dir": "ltr",
-  "consent_version": "share-2026-11-09",
+  "consent_version": "share-2026-11-12",
   "delete_days": 0,
   "delete_timing": "immediate",
   "strings": {
@@ -252,7 +252,7 @@ export const DECKS = {
    "sheet.hadith_ref": "Shahih Muslim 1631",
    "sheet.mistakes": "Kekeliruan bacaan Anda justru bagian yang paling berharga. Dari situ, model ini belajar cara mengoreksi pembelajar berikutnya dengan lembut.",
    "sheet.what": "Audio dari sesi bacaan Anda di aplikasi ini saat aplikasi menyimak, serta informasi teknis dasar seperti versi model dan jenis perangkat. Tanpa nama, tanpa kontak, tanpa lokasi.",
-   "sheet.who": "Quran Lab, sebuah inisiatif wakaf. Model yang dilatih di sini gratis untuk siapa saja, selamanya, dan tidak pernah diperjualbelikan.",
+   "sheet.who": "Quran Lab, sebuah inisiatif wakaf. Model yang dilatih di sini gratis untuk siapa saja, selamanya, dan tidak pernah diperjualbelikan. Tidak ada manusia yang mendengarkan rekaman Anda, kapan pun: hanya perangkat lunak yang belajar darinya.",
    "sheet.control": "Anda bisa berhenti kapan saja dan menghapus apa yang telah Anda bagikan melalui menu pengaturan.",
    "sheet.share": "Bagikan bacaan saya",
    "sheet.not_now": "Nanti saja",
@@ -264,7 +264,7 @@ export const DECKS = {
    "settings.toggle": "Bagikan bacaan saya",
    "settings.what": "Data yang dibagikan",
    "settings.delete": "Hapus rekaman yang dibagikan",
-   "what.detail": "Ketika fitur berbagi aktif, rekaman audio tilawah Anda di aplikasi ini akan dikirim ke Quran Lab, bersama rincian teknis umum (versi model, tipe perangkat, versi sistem, hari), dan kode acak untuk instalasi ini. Sama sekali tanpa nama, akun, kontak, lokasi, ataupun tanda pengenal perangkat Anda. Data disimpan di Uni Eropa dan hanya digunakan untuk menyempurnakan model tilawah Al-Qur'an gratis. Mematikan fitur berbagi akan langsung menghentikan pengiriman, dan Anda dapat menghapus semua yang telah dibagikan kapan saja melalui pengaturan: data akan langsung dihapus dari server Quran Lab saat itu juga.",
+   "what.detail": "Ketika fitur berbagi aktif, rekaman audio tilawah Anda di aplikasi ini akan dikirim ke Quran Lab, bersama rincian teknis umum (versi model, tipe perangkat, versi sistem, hari), dan kode acak untuk instalasi ini. Sama sekali tanpa nama, akun, kontak, lokasi, ataupun tanda pengenal perangkat Anda. Data disimpan di Uni Eropa dan hanya digunakan untuk menyempurnakan model tilawah Al-Qur'an gratis. Tidak ada manusia yang mendengarkan rekaman Anda, kapan pun: hanya perangkat lunak yang belajar darinya. Mematikan fitur berbagi akan langsung menghentikan pengiriman, dan Anda dapat menghapus semua yang telah dibagikan kapan saja melalui pengaturan: data akan langsung dihapus dari server Quran Lab saat itu juga.",
    "delete.confirm": "Rekaman tilawah yang Anda bagikan akan langsung dihapus dari server Quran Lab saat itu juga. Tindakan ini tidak dapat dibatalkan.",
    "delete.action": "Hapus rekaman",
    "delete.cancel": "Batal hapus",
@@ -296,10 +296,10 @@ export const DECKS = {
  },
  "ms": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-09.1",
+  "version": "2026-11-12.1",
   "lang": "ms",
   "dir": "ltr",
-  "consent_version": "share-2026-11-09",
+  "consent_version": "share-2026-11-12",
   "delete_days": 0,
   "delete_timing": "immediate",
   "strings": {
@@ -309,7 +309,7 @@ export const DECKS = {
    "sheet.hadith_ref": "Sahih Muslim 1631",
    "sheet.mistakes": "Kesilapan anda adalah bahagian yang paling bernilai. Ia mengajar model ini menegur pelajar seterusnya dengan lembut.",
    "sheet.what": "Audio daripada sesi bacaan anda dalam aplikasi ini semasa ia mendengar, serta maklumat teknikal asas seperti versi model dan jenis peranti. Tiada nama, senarai kenalan mahupun lokasi.",
-   "sheet.who": "Quran Lab, sebuah inisiatif wakaf. Model yang dilatih adalah percuma untuk semua, selama-lamanya, dan tidak akan sesekali dijual.",
+   "sheet.who": "Quran Lab, sebuah inisiatif wakaf. Model yang dilatih adalah percuma untuk semua, selama-lamanya, dan tidak akan sesekali dijual. Tiada manusia yang mendengar rakaman anda sama sekali: hanya perisian yang belajar daripadanya.",
    "sheet.control": "Anda boleh berhenti pada bila-bila masa dan memadam apa yang telah dikongsi melalui tetapan.",
    "sheet.share": "Kongsi bacaan saya",
    "sheet.not_now": "Bukan sekarang",
@@ -321,7 +321,7 @@ export const DECKS = {
    "settings.toggle": "Kongsi bacaan saya",
    "settings.what": "Maklumat yang dikongsi",
    "settings.delete": "Padam apa yang dikongsi",
-   "what.detail": "Apabila perkongsian diaktifkan, audio sesi bacaan anda dalam aplikasi ini akan dihantar kepada Quran Lab bersama butiran teknikal umum (versi model, jenis peranti, versi sistem, hari) dan kod rawak bagi pemasangan ini. Nama, akaun, kenalan, lokasi atau pengecam peranti anda tidak akan diambil sama sekali. Data ini disimpan di EU dan hanya digunakan untuk menambah baik model bacaan al-Quran percuma. Mematikan perkongsian akan menghentikan muat naik serta-merta, dan anda boleh memadamkan semua yang telah dikongsi melalui tetapan pada bila-bila masa: ia akan dipadamkan daripada pelayan Quran Lab serta-merta.",
+   "what.detail": "Apabila perkongsian diaktifkan, audio sesi bacaan anda dalam aplikasi ini akan dihantar kepada Quran Lab bersama butiran teknikal umum (versi model, jenis peranti, versi sistem, hari) dan kod rawak bagi pemasangan ini. Nama, akaun, kenalan, lokasi atau pengecam peranti anda tidak akan diambil sama sekali. Data ini disimpan di EU dan hanya digunakan untuk menambah baik model bacaan al-Quran percuma. Tiada manusia yang mendengar rakaman anda sama sekali: hanya perisian yang belajar daripadanya. Mematikan perkongsian akan menghentikan muat naik serta-merta, dan anda boleh memadamkan semua yang telah dikongsi melalui tetapan pada bila-bila masa: ia akan dipadamkan daripada pelayan Quran Lab serta-merta.",
    "delete.confirm": "Rakaman bacaan yang anda kongsi akan dipadamkan daripada pelayan Quran Lab serta-merta. Tindakan ini tidak boleh dibatalkan.",
    "delete.action": "Padam",
    "delete.cancel": "Batal",
@@ -353,10 +353,10 @@ export const DECKS = {
  },
  "tr": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-09.1",
+  "version": "2026-11-12.1",
   "lang": "tr",
   "dir": "ltr",
-  "consent_version": "share-2026-11-09",
+  "consent_version": "share-2026-11-12",
   "delete_days": 0,
   "delete_timing": "immediate",
   "strings": {
@@ -366,7 +366,7 @@ export const DECKS = {
    "sheet.hadith_ref": "Sahih Müslim 1631",
    "sheet.mistakes": "Hatalarınız işin en kıymetli kısmıdır. Modele, bir sonraki talebeyi incitmeden, nazikçe düzeltmeyi öğretirler.",
    "sheet.what": "Uygulama dinlerken yapılan tilavet kayıtlarınız ile model sürümü ve cihaz türü gibi temel teknik detaylar. İsim, rehber veya konum asla paylaşılmaz.",
-   "sheet.who": "Quran Lab bir vakıftır. Geliştirdiği modeller herkes için daima ücretsizdir ve asla satılmaz.",
+   "sheet.who": "Quran Lab bir vakıftır. Geliştirdiği modeller herkes için daima ücretsizdir ve asla satılmaz. Kayıtlarınızı hiçbir insan asla dinlemez: onlardan yalnızca yazılım öğrenir.",
    "sheet.control": "Dilediğiniz an paylaşımı durdurabilir ve paylaştıklarınızı ayarlar bölümünden silebilirsiniz.",
    "sheet.share": "Tilavetlerimi paylaş",
    "sheet.not_now": "Şimdi değil",
@@ -378,7 +378,7 @@ export const DECKS = {
    "settings.toggle": "Tilavetlerimi paylaş",
    "settings.what": "Neler paylaşılır",
    "settings.delete": "Paylaştıklarımı sil",
-   "what.detail": "Paylaşım açık olduğunda, bu uygulamadaki kıraat çalışmalarınızın ses kayıtları; temel teknik ayrıntılar (model sürümü, cihaz türü, sistem sürümü, gün) ve bu kuruluma özel rastgele bir kodla birlikte Quran Lab'e gönderilir. İsminiz, hesabınız, kişileriniz, konumunuz veya cihaz tanıtıcılarınız asla alınmaz. Veriler AB içinde saklanır ve sadece ücretsiz Kur'an kıraat modellerini geliştirmek için kullanılır. Paylaşımı kapattığınız anda yüklemeler durur ve paylaştığınız her şeyi ayarlardan dilediğiniz zaman silebilirsiniz: veriler Quran Lab sunucularından anında kaldırılır.",
+   "what.detail": "Paylaşım açık olduğunda, bu uygulamadaki kıraat çalışmalarınızın ses kayıtları; temel teknik ayrıntılar (model sürümü, cihaz türü, sistem sürümü, gün) ve bu kuruluma özel rastgele bir kodla birlikte Quran Lab'e gönderilir. İsminiz, hesabınız, kişileriniz, konumunuz veya cihaz tanıtıcılarınız asla alınmaz. Veriler AB içinde saklanır ve sadece ücretsiz Kur'an kıraat modellerini geliştirmek için kullanılır. Kayıtlarınızı hiçbir insan asla dinlemez: onlardan yalnızca yazılım öğrenir. Paylaşımı kapattığınız anda yüklemeler durur ve paylaştığınız her şeyi ayarlardan dilediğiniz zaman silebilirsiniz: veriler Quran Lab sunucularından anında kaldırılır.",
    "delete.confirm": "Paylaştığınız kıraat kayıtları Quran Lab sunucularından anında silinecektir. Bu işlem geri alınamaz.",
    "delete.action": "Paylaşılanları sil",
    "delete.cancel": "İptal et",
@@ -411,10 +411,10 @@ export const DECKS = {
  },
  "ur": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-09.1",
+  "version": "2026-11-12.1",
   "lang": "ur",
   "dir": "rtl",
-  "consent_version": "share-2026-11-09",
+  "consent_version": "share-2026-11-12",
   "delete_days": 0,
   "delete_timing": "immediate",
   "strings": {
@@ -424,7 +424,7 @@ export const DECKS = {
    "sheet.hadith_ref": "صحیح مسلم 1631",
    "sheet.mistakes": "آپ کی غلطیاں سب سے زیادہ قیمتی ہیں۔ ان سے ماڈل سیکھتا ہے کہ اگلے سیکھنے والے کی نرمی سے کیسے اصلاح کی جائے۔",
    "sheet.what": "اس ایپ میں آپ کی تلاوت کی آڈیو جب ایپ سن رہی ہو، اور بنیادی تکنیکی تفصیلات جیسے ماڈل کا ورژن اور ڈیوائس کی قسم۔ کوئی نام، رابطے یا لوکیشن شامل نہیں۔",
-   "sheet.who": "Quran Lab، جو کہ ایک وقف ہے۔ اس کے تیار کردہ ماڈلز ہمیشہ سب کے لیے مفت رہیں گے اور کبھی بیچے نہیں جائیں گے۔",
+   "sheet.who": "Quran Lab، جو کہ ایک وقف ہے۔ اس کے تیار کردہ ماڈلز ہمیشہ سب کے لیے مفت رہیں گے اور کبھی بیچے نہیں جائیں گے۔ کوئی انسان آپ کی ریکارڈنگز کبھی نہیں سنتا: ان سے صرف سافٹ ویئر سیکھتا ہے۔",
    "sheet.control": "آپ کسی بھی وقت اسے روک سکتے ہیں اور سیٹنگز سے اپنا شیئر کردہ ڈیٹا ڈیلیٹ کر سکتے ہیں۔",
    "sheet.share": "میری تلاوتیں شیئر کریں",
    "sheet.not_now": "ابھی نہیں",
@@ -436,7 +436,7 @@ export const DECKS = {
    "settings.toggle": "میری تلاوتیں شیئر کریں",
    "settings.what": "کیا شیئر کیا جاتا ہے",
    "settings.delete": "شیئر کردہ مواد مٹائیں",
-   "what.detail": "جب شیئرنگ آن ہو، تو اس ایپ میں آپ کی تلاوت کی آڈیو Quran Lab کو بھیجی جاتی ہے، جس کے ساتھ کچھ بنیادی تکنیکی تفصیلات (ماڈل ورژن، ڈیوائس کی قسم، سسٹم ورژن اور دن) اور اس انسٹالیشن کا ایک بے ترتیب کوڈ شامل ہوتا ہے۔ آپ کا نام، اکاؤنٹ، رابطے، لوکیشن یا ڈیوائس کی ذاتی شناخت کبھی بھی شامل نہیں کی جاتی۔ یہ ڈیٹا EU میں محفوظ کیا جاتا ہے اور اسے صرف تلاوتِ قرآن کے مفت ماڈلز کو بہتر بنانے کے لیے استعمال کیا جاتا ہے۔ شیئرنگ بند کرنے سے اپ لوڈز فوراً رک جاتے ہیں، اور آپ سیٹنگز میں جا کر کسی بھی وقت اپنا شیئر کردہ تمام مواد ڈیلیٹ کر سکتے ہیں: اسے اسی وقت Quran Lab کے سرورز سے مٹا دیا جاتا ہے۔",
+   "what.detail": "جب شیئرنگ آن ہو، تو اس ایپ میں آپ کی تلاوت کی آڈیو Quran Lab کو بھیجی جاتی ہے، جس کے ساتھ کچھ بنیادی تکنیکی تفصیلات (ماڈل ورژن، ڈیوائس کی قسم، سسٹم ورژن اور دن) اور اس انسٹالیشن کا ایک بے ترتیب کوڈ شامل ہوتا ہے۔ آپ کا نام، اکاؤنٹ، رابطے، لوکیشن یا ڈیوائس کی ذاتی شناخت کبھی بھی شامل نہیں کی جاتی۔ یہ ڈیٹا EU میں محفوظ کیا جاتا ہے اور اسے صرف تلاوتِ قرآن کے مفت ماڈلز کو بہتر بنانے کے لیے استعمال کیا جاتا ہے۔ کوئی انسان آپ کی ریکارڈنگز کبھی نہیں سنتا: ان سے صرف سافٹ ویئر سیکھتا ہے۔ شیئرنگ بند کرنے سے اپ لوڈز فوراً رک جاتے ہیں، اور آپ سیٹنگز میں جا کر کسی بھی وقت اپنا شیئر کردہ تمام مواد ڈیلیٹ کر سکتے ہیں: اسے اسی وقت Quran Lab کے سرورز سے مٹا دیا جاتا ہے۔",
    "delete.confirm": "آپ کی شیئر کردہ تلاوتیں فوراً Quran Lab کے سرورز سے ڈیلیٹ کر دی جائیں گی۔ اس عمل کو واپس نہیں لایا جا سکتا۔",
    "delete.action": "ڈیلیٹ کریں",
    "delete.cancel": "منسوخ کریں",
@@ -466,5 +466,40 @@ export const DECKS = {
    "verified_at": "2026-11-07",
    "note": "established translation published by HadeethEnc"
   }
+ }
+};
+/** The deck files these were made from: name and SHA-256 of the exact bytes (the contract's sharing_copy/READY). */
+export const DECK_SOURCES = {
+ "ar": {
+  "file": "ar.json",
+  "sha256": "b8a3402a262ac0f295af5e485ae99804fcbab0dde44f403dc9f38e1bc18be5f0"
+ },
+ "bn": {
+  "file": "bn.json",
+  "sha256": "56225ba6ebe642793b288d13b82874f9ada8184df8e83ea679aac3ca28a01acb"
+ },
+ "en": {
+  "file": "en.json",
+  "sha256": "1600ab0625db9dab1483d1a2bfd0f0ec9e0e636880909a2d47df2eb7fefd52c0"
+ },
+ "fr": {
+  "file": "fr.json",
+  "sha256": "aba381efd20462db4864e8328b9a2f231597ffbffac7f42096b89e59e0950be2"
+ },
+ "id": {
+  "file": "id.json",
+  "sha256": "8d32f968b66b6b9176a3e2c152c69903a96fa20601d53f47d23cf3d20edba4f5"
+ },
+ "ms": {
+  "file": "ms.json",
+  "sha256": "78bd9055b9c3f1ffa05efee1a15778897ee27f7d15aa1887142682d80f21848c"
+ },
+ "tr": {
+  "file": "tr.json",
+  "sha256": "258a04a68c4e4d44739ca73da170a052cdb2a2f41914e5067314982190e0b9d9"
+ },
+ "ur": {
+  "file": "ur.json",
+  "sha256": "6d50705ea642f30711207b7093337a15cb7afba5d12b5c4d80bf0fe7e192c1d1"
  }
 };

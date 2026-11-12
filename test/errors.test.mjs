@@ -17,7 +17,7 @@ import { PlatformError } from '../web/platform/client.js';
 // the folder of the shared 3.0 contract (errors.json, vectors/), where there is one
 const SHARED = process.env.TAJWEED_CONTRACT_30 ? path.join(process.env.TAJWEED_CONTRACT_30, 'errors.json') : '';
 // the SHA-256 of the shared catalogue this SDK was built with; changes only together with the embedded copy
-const RECORDED_SHA256 = '9d692efed682a65f5b1d2fb0afbe0df37aad790884a0cb9cf5479ca77889e631';
+const RECORDED_SHA256 = '04b264b9d820f865a0bfd4d695e17a07b2ae6b1be318324c91f3177d322cd510';
 
 test('the embedded catalogue is the shared errors.json, byte for byte', { skip: existsSync(SHARED) ? false : 'TAJWEED_CONTRACT_30 is not set (the folder of the shared 3.0 contract)' }, () => {
   assert.ok(Buffer.from(ERRORS_JSON, 'utf8').equals(readFileSync(SHARED)), 'run: node scripts/gen_errors.mjs <errors.json>');

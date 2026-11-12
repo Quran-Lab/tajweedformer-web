@@ -12,7 +12,7 @@
 // signature use WebCrypto (globalThis.crypto.subtle), present in every current browser and in Node 20 and later.
 
 /** The version of this SDK, compared with a manifest's min_sdk_version. */
-export const SDK_VERSION = '3.0.2';
+export const SDK_VERSION = '3.1.0';
 
 /** Manifest formats this SDK reads. */
 export const SUPPORTED_MANIFEST_FORMATS = Object.freeze([1, 2, 3]);
@@ -378,26 +378,6 @@ export async function verifySignedTexts(m, trustedKeys = [QURANLAB_PUBLIC_KEY_HE
 // Readers: where a folder's bytes come from. A reader is { read(path) -> Promise<Uint8Array|null> }
 // (null: no such file). Paths are the manifest's, "/"-separated and already checked safe.
 // ---------------------------------------------------------------------------------------------
-
-/** A folder held in memory: { 'manifest.json': bytes, 'c16_l64/layers.zfw': bytes, ... }. */
-export function memoryReader(files) {
-  const map = new Map(Object.entries(files || {}));
-  return { async read(path) { const d = map.get(path); return d === undefined ? null : asBytes(d); } };
-}
-
-/** A folder served over HTTP(S): `baseUrl` + path, with `fetch` (or the one given). A 404 is a
- * missing file; any other failure throws. */
-export function urlReader(baseUrl, fetchImpl = globalThis.fetch) {
-  const base = String(baseUrl).endsWith('/') ? String(baseUrl) : String(baseUrl) + '/';
-  return {
-    async read(path) {
-      const r = await fetchImpl(base + path.split('/').map(encodeURIComponent).join('/'));
-      if (r.status === 404) return null;
-      if (!r.ok) throw new ModelFolderError('file_missing', `${path}: HTTP ${r.status}`, path);
-      return new Uint8Array(await r.arrayBuffer());
-    },
-  };
-}
 
 /**
  * The acceptance checks of a manifest file, in their fixed order (the first that fails decides the code):
