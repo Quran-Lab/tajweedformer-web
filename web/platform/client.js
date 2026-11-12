@@ -11,7 +11,7 @@ import { localState } from './storage.js';
 import { QURANLAB_PUBLIC_KEY_HEX, hexToBytes, bytesToHex } from '../tajweed/manifest.js';
 import { noticeSdkLatest } from './update-notice.js';
 
-export const SDK_VERSION = '3.0.1';
+export const SDK_VERSION = '3.0.2';
 export const API_URL = 'https://api.quranlab.ai';
 export const CDN_URL = 'https://cdn.quranlab.ai';
 /** Where model files are served: {base}/{owner}/{repo}/{revision}/{path}. The signed config's `base`

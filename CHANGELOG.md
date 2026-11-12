@@ -1,5 +1,65 @@
 # Changelog
 
+## 3.0.2
+
+A fix for recitation sharing: a recording that was waiting when the learner turned sharing off is never
+uploaded later.
+No change of the API.
+
+- **Fixed: recordings that were waiting when sharing was turned off could stay on the device and be uploaded
+  when sharing was turned on again** (the first "Known" point of 3.0.1). A queue of recordings exists through the
+  Client since 2.0.1, so each of these begins with that version unless it says otherwise:
+  - Nothing on the device said under which consent a recording was made. Whatever was left in the queue was
+    uploaded once sharing was on again.
+  - Turning sharing off in a page that had not recorded a take deleted nothing: the queue is loaded by the
+    first take, and the off only stopped a queue that was loaded.
+  - Nothing deleted leftover recordings when the page started with sharing off. The console line of 3.0.1 that
+    said such a recording "is deleted at the next start" was not true.
+  - When the device's storage refused to delete a recording (a file in use), the off call of 3.0.1 tried again
+    recording by recording and took 21 s for nine recordings where it promises 3 s. Before 3.0.1 the off call
+    failed at the first such recording and left the others.
+  - In the same page, a recording the off call could not delete was read back from storage and uploaded when
+    sharing came on again. This form is 3.0.1's own; before it the failed off call left the whole queue.
+  - "Delete what I shared" stopped the queue late: in 3.0.1 after it had looked up the contributor key, so an
+    upload pass that ran in that moment still sent a waiting recording; before 3.0.1 only after Quran Lab had
+    answered.
+  - The off of an accepted "delete what I shared" was stored after Quran Lab's answer (3.0.1), so a page that
+    was closed in between started again with sharing on.
+  - A write of the learner's answer that the device refused (localStorage over its quota) was neither reported
+    nor tried again, and the page went on reading the old answer: an off that could not be stored read as on
+    in the same page. In Node the failed write was thrown out of `sharing.setOn(false)` before the uploads
+    were stopped. Since 2.0.0 (the second "Known" point of 3.0.1).
+
+  The shared test for this (nine waiting recordings whose deletion fails; the page ends where the case says
+  so) fails on 3.0.1 in every run of each of its five cases, and where sharing comes on again all nine
+  recordings are uploaded (317,344 bytes of audio in the test). On 3.0.2 every case passes 20 of 20 runs and
+  the test's server receives no request for a recording of an earlier consent.
+- **The rule now.** The SDK keeps a count of the learner's changes of mind (sharing turned off, an accepted
+  deletion, sharing coming on) and stores it in the same write as the learner's answer. Every recording carries
+  the count it was begun under, on the device only: it is not part of what is uploaded. A recording whose count
+  is not the one in force is never loaded for upload and is deleted when the page starts, before every upload
+  pass and when sharing is turned off, also in a page that has not recorded a take. Quran Lab's own pause of
+  sharing (the signed config) is not the learner's no and keeps the queue. A queue left by an earlier version
+  carries no count: it is uploaded as before while sharing stayed on, and deleted at the first start when it
+  did not.
+- **"Delete what I shared", the order.** Before anything else, and before any wait, the call stops the uploads
+  and stores the learner's answer as off. A page that starts after this one was closed there finds sharing off
+  and deletes the waiting recordings. So does a second page of the same site that loads while the deletion is
+  being asked: if Quran Lab then does not take the deletion, sharing is on as before and those recordings are
+  gone, not uploaded. What your app sees does not change while Quran Lab is asked: `isOn` stays what it was;
+  accepted, it turns false once; not taken, the earlier answer is stored again and nothing changed. When the
+  device cannot store the off (a full quota), Quran Lab is asked all the same, and the off is stored as soon
+  as the device can: once more when the queue is deleted, and with every later write of the answer. One case
+  remains and is accepted: the off was stored, Quran Lab does not take the deletion, the write that puts the
+  earlier answer back fails, and the page ends before a retry succeeds. Sharing is then off at the next
+  start, never an upload; the learner turns it on again with the switch and is not asked again.
+- **When the device cannot store the learner's answer**, the page goes by the answer in force, not by the
+  stored one: an off holds at once, a recording made after sharing came on again is uploaded, and the answer is
+  stored with the next write. A page that starts meanwhile has only what is stored.
+- The off call keeps its 3 s when the device refuses to delete: it tries again for at most 1.5 s. What is left
+  is never uploaded and is deleted at the next pass or start, with one console line per recording.
+- In production the sharing sheet has so far been offered on iOS and macOS only.
+
 ## 3.0.1
 
 A fix for recitation sharing, and one change of behaviour that comes with it.

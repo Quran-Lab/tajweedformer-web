@@ -1,4 +1,4 @@
-// Type definitions for @quran-lab/tajweedformer 3.0.1: the whole public surface, and nothing else.
+// Type definitions for @quran-lab/tajweedformer 3.0.2: the whole public surface, and nothing else.
 // Five concepts: Client, Model, Session, Heads, Backend. Call order: Client, model, listen, read.
 
 /** Every failure the SDK raises. `code` is stable and the same in every TajweedFormer SDK. */
@@ -86,7 +86,8 @@ export interface TajweedSharing {
   readonly isAvailable: boolean;
   /** The learner said yes. */
   readonly isOn: boolean;
-  /** The settings switch. Off stops uploads at once and deletes the unsent queue. */
+  /** The settings switch. Off starts no upload request from the call on, aborts the one in flight (what the
+   * browser or the system had already buffered of that segment may still go out) and deletes the unsent queue. */
   /** Off: the promise resolves when the uploads in flight are aborted and the unsent queue is gone. */
   setOn(on: boolean): Promise<void>;
   /** Ask now, if an ask is still allowed (at most three; a yes is never asked again). */

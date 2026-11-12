@@ -161,7 +161,7 @@ function cdn(manifestBytes) {
 }
 
 test('delivery: cachedReader + ModelFolder.open (signature required) accept the 519235d0 manifest', async () => {
-  assert.equal(SDK_VERSION, '3.0.1');
+  assert.equal(SDK_VERSION, '3.0.2');
   const { fetch, log } = cdn(RAW['519235d0']);
   const reader = cachedReader({ baseUrl: 'https://cdn.test/sdk/', fetch, store: false });
   const f = await ModelFolder.open(reader, { requireSignature: true, verify: 'on-read' });

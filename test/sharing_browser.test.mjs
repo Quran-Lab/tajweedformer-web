@@ -3,7 +3,8 @@
 // session uploads whole; a session left open when the page is closed is recovered and uploaded after
 // a reload (the IndexedDB outbox resumes on the next load). Since 2.0.3: two takes in a row are one
 // recording with its take list, and a hidden page closes the open recording. Skipped without Chrome or
-// puppeteer-core (CHROME_PATH picks the browser).
+// puppeteer-core (CHROME_PATH picks the browser). Since 3.0.2 (R5, SPEC 11.7): recordings a page left in the
+// IndexedDB queue under an earlier consent are never uploaded by the next page, and are deleted there.
 import test from 'node:test';
 import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
@@ -50,6 +51,10 @@ window.stubFetch = async (url, init = {}) => {
 window.mk = async () => S.createSharing({ api: 'https://api.test', fetch: window.stubFetch, storage: await S.indexedDbStorage('qls-test'),
   tokenProvider: async () => ({ token: 'qlt_v1.x.y', attested: false }), flags: { contributions: true, upload_trust: { web: 'capped' } },
   consentVersion: 'deck-1' });
+// a pipeline with its own database and the learner's count of consent changes (R5)
+window.mkWith = async (o) => S.createSharing({ api: 'https://api.test', fetch: window.stubFetch, storage: await S.indexedDbStorage(o.db),
+  tokenProvider: async () => ({ token: 'qlt_v1.x.y', attested: false }), flags: { contributions: true, upload_trust: { web: 'capped' } },
+  consentVersion: 'deck-1', epoch: () => o.epoch });
 window.noise = (n, seed) => { const x = new Float32Array(n); let s = seed >>> 0; for (let i = 0; i < n; i++) { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; x[i] = (s / 4294967296 * 2 - 1) * 0.2; } return x; };
 window.ready = true;
 </script>`;
@@ -152,6 +157,72 @@ test('sharing in headless Chrome: IndexedDB outbox, lazy libopus, recovery after
     assert.equal(r2.item.segments, 2);
     assert.equal(r2.objs.length, 2);
     t.diagnostic(`after a reload: the open session recovered from IndexedDB and uploaded (${r2.item.segments} segments, ${r2.item.durationMs} ms, not completed)`);
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test('R5 in headless Chrome: nine recordings a page left in the IndexedDB queue under an earlier consent are not uploaded by the next page, and are deleted', { skip, timeout: 300000 }, async (t) => {
+  const server = createServer(async (req, res) => {
+    const p = new URL(req.url, 'http://x').pathname;
+    if (p === '/') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(PAGE); return; }
+    const f = path.join(root, path.normalize(decodeURIComponent(p)).replace(/^([\\/])+/, ''));
+    if (!f.startsWith(root)) { res.writeHead(403); res.end(); return; }
+    try { const b = await readFile(f); res.writeHead(200, { 'content-type': TYPES[path.extname(f)] || 'application/octet-stream' }); res.end(b); } catch (_) { res.writeHead(404); res.end(); }
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
+  try {
+    const page = await browser.newPage();
+    await page.goto(origin + '/');
+    await page.waitForFunction('window.ready === true');
+    // a page with sharing on (count 1) and no network: nine recordings of 3 s wait in IndexedDB
+    const left = await page.evaluate(async () => {
+      const sh = await window.mkWith({ db: 'qls-r5', epoch: 1 });
+      sh.client.fetch = async () => { throw new TypeError('offline'); };
+      for (let k = 0; k < 9; k++) {
+        const s = await sh.startSession({ inputSampleRate: 48000, inputRoute: 'built_in', decode: { backend: 'exact' } });
+        const x = window.noise(48000 * 3, 20 + k);
+        for (let at = 0; at < x.length; at += 480) s.push(x.subarray(at, at + 480));
+        await s.finish();
+        await sh.closeRecording();
+      }
+      await sh.outbox.drain({ ignoringBackoff: true }).catch(() => {});
+      const ids = [];
+      for (const id of await sh.storage.sessions()) if ((await sh.storage.list(id)).some((f) => f.endsWith('.opus'))) ids.push(id);
+      return ids;
+    });
+    assert.equal(left.length, 9, 'nine recordings wait in the IndexedDB queue');
+    // the page goes away with the queue as it is; in the next page the learner's count is 3 (sharing was turned
+    // off, and on again): sharing is on, the network is there, upload passes run
+    await page.reload();
+    await page.waitForFunction('window.ready === true');
+    const r = await page.evaluate(async (ids) => {
+      localStorage.setItem('log', '[]');
+      localStorage.setItem('objs', '{}');
+      const sh = await window.mkWith({ db: 'qls-r5', epoch: 3 });
+      await sh.outbox.resume();
+      for (let i = 0; i < 5; i++) await sh.outbox.drain({ ignoringBackoff: true });
+      const before = { starts: JSON.parse(localStorage.getItem('log')).filter((e) => e[1] === '/v1/uploads').length,
+        still: (await sh.storage.sessions()).filter((id) => ids.includes(id)).length };
+      // a recording made now, under the count in force, goes up
+      const s = await sh.startSession({ inputSampleRate: 48000, inputRoute: 'built_in', decode: { backend: 'exact' } });
+      const x = window.noise(48000 * 3, 99);
+      for (let at = 0; at < x.length; at += 480) s.push(x.subarray(at, at + 480));
+      await s.finish();
+      await sh.closeRecording();
+      for (let i = 0; i < 50 && (await sh.outbox.pending()).length; i++) await sh.outbox.drain({ ignoringBackoff: true });
+      const objs = Object.keys(JSON.parse(localStorage.getItem('objs') || '{}'));
+      return { before, starts: JSON.parse(localStorage.getItem('log')).filter((e) => e[1] === '/v1/uploads').length,
+        theirs: objs.filter((k) => ids.some((id) => k.includes(id))).length, fresh: objs.filter((k) => k.includes(s.id)).length,
+        item: await sh.outbox.item(s.id) };
+    }, left);
+    assert.deepEqual(r.before, { starts: 0, still: 0 }, 'no upload was started for the nine, and they are gone from IndexedDB');
+    assert.equal(r.theirs, 0, 'no audio of the nine reached the storage');
+    assert.deepEqual([r.starts, r.fresh, r.item.status], [1, 1, 'uploaded'], 'the recording made in the new page is the only one uploaded');
+    t.diagnostic('IndexedDB: nine recordings of an earlier consent deleted by the next page, none uploaded; the new recording uploaded');
   } finally {
     await browser.close();
     server.close();

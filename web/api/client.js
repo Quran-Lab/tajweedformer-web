@@ -338,8 +338,9 @@ function makeSharing(client) {
     get isAvailable() { return ql.sharingAllowed(); },
     /** The learner said yes. */
     get isOn() { return ctl.state.s.consent === 'granted'; },
-    /** The settings switch. Off stops uploads at once and deletes the unsent queue; the promise resolves when
-     * that is done (within 3 s and a few file removals, whatever was in flight). */
+    /** The settings switch. Off starts no upload request from the call on, aborts the one in flight (what the
+     * browser or the system had already buffered of that segment may still go out) and deletes the unsent queue;
+     * the promise resolves when that is done (within 3 s and a few file removals, whatever was in flight). */
     setOn(on) { if (on) need(); return Promise.resolve(ctl.setSharing(!!on)).then(() => {}); },
     /** Ask now, if an ask is still allowed (at most three; a yes is never asked again). Resolves with the answer or null. */
     async ask() { need(); return ctl.askNow(); },

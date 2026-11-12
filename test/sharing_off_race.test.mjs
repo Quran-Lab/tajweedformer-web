@@ -181,10 +181,19 @@ async function run({ held, action, then = null, bound = BOUND }) {
     const old = readdirSync(path.join(dir, 'outbox'))[0];
     stuck.armed = true;
     openGate();
-    const passes = [sharing.outbox.drain({ ignoringBackoff: true }).catch(() => {})];
+    let passError = null;
+    const passes = [sharing.outbox.drain({ ignoringBackoff: true }).catch((e) => { passError = e; })];
     const inFlight = () => (held === 'token' ? stuck.token : held === 'storage' || held === 'write' ? stuck.storage : server.held);
     for (let i = 0; i < 2000 && !inFlight(); i++) await tick(1);
-    assert.equal(!!inFlight(), true, `${held} is in flight`);
+    if (!inFlight()) {
+      // what there is to go by when the request to hold never started
+      const files = readdirSync(path.join(dir, 'outbox', old)).join(' ');
+      let item = null;
+      try { item = JSON.parse(readFileSync(path.join(dir, 'outbox', old, 'item.json'), 'utf8')); } catch (_) { item = null; }
+      assert.fail(`${held} is not in flight. The first pass: ${passError ? `failed with ${(passError && passError.code) || ''} ${String((passError && passError.message) || passError).slice(0, 200)}` : 'no error'}; `
+        + `requests: ${server.seen.map((e) => `${e.kind}${e.done ? '' : '(open)'}`).join(' ') || 'none'}; files: ${files}; `
+        + `item: ${item ? `state ${item.state}, takeList ${item.takeList}, uploaded ${(item.uploaded || []).length}, lastError ${item.lastError}, nextAttempt ${item.nextAttempt}, takeListNext ${item.takeListNext}` : 'none'}`);
+    }
     assert.equal(unsentOnDisk(dir).length > 0, true, 'the recording is in the queue on disk');
     // the files of the recording when the learner acts: the upload pass waits for what is held and the capture
     // has ended, so every write has settled. Exactly the expected names: one more, one less or a temporary

@@ -115,7 +115,10 @@ export async function createSharing(o) {
     get: async () => ({ seq: await storage.getGlobal('take_seq'), prevEnd: await storage.getGlobal('prev_end') }),
     set: ({ seq, prevEnd }) => { Promise.resolve(storage.setGlobal('take_seq', seq || null)).catch(() => {}); Promise.resolve(storage.setGlobal('prev_end', prevEnd)).catch(() => {}); },
   };
-  const recorder = new ShareRecorder({ make: (c) => new ShareCapture(c), flags, clock, timers: o.timers, onInstall: (v) => install.set(v) });
+  // the count of the learner's consent changes (the controller's `state.changes`): a recording is stamped with it
+  // at its creation, and one whose stamp is no longer the count is never uploaded (outbox.js, _scan)
+  const epoch = () => { const n = typeof opts.epoch === 'function' ? opts.epoch() : 0; return Number.isInteger(n) ? n : 0; };
+  const recorder = new ShareRecorder({ make: (c) => new ShareCapture({ ...c, epoch: Number.isInteger(c.epoch) ? c.epoch : epoch() }), flags, clock, timers: o.timers, onInstall: (v) => install.set(v) });
   try {
     const was = (await install.get()) || {};
     if (Number.isInteger(was.seq) && was.seq > 0) recorder.seq = was.seq;
@@ -124,7 +127,7 @@ export async function createSharing(o) {
   const outbox = new Outbox({ storage, client, tokenProvider, flags, enabled,
     turnstile: async () => (opts.turnstile ? opts.turnstile() : null), platform: o.platform || 'web', contributor, clock: o.clock,
     onChange: (x) => opts.onChange && opts.onChange(x), onError: (e) => opts.onError && opts.onError(e), random: o.random, ladder,
-    onIssue: (kind, code) => opts.onIssue && opts.onIssue(kind, code), log: (m) => (opts.log ? opts.log(m) : console.warn(m)),
+    onIssue: (kind, code) => opts.onIssue && opts.onIssue(kind, code), log: (m) => (opts.log ? opts.log(m) : console.warn(m)), epoch,
     // sharing went off: the recording being captured ends at once (its files go with the queue)
     onStop: () => recorder.stop() });
   let opus = null;
@@ -197,7 +200,8 @@ export async function createSharing(o) {
         return r.status === 200 ? r.body : null;
       } catch (_) { return null; }
     },
-    /** Sharing went off: uploads stop at once, the unsent queue is deleted. */
+    /** Sharing went off: no upload request is started any more, the one in flight is aborted, the unsent queue
+     * is deleted. */
     stop: () => outbox.stop(),
     /**
      * A shared session (a take): nothing is written until the first push; when sharing is off (enabled() or
@@ -226,13 +230,19 @@ let live = null; // the pipeline once it is made (resetSharingForTests reaches i
 /**
  * The page's sharing pipeline, made by the first createSharingSession and updated by later ones:
  * `outbox.resume()` at load (sessions a closed page left go up), `outbox.stop()` when the learner
- * turns sharing off (uploads stop at once, the queue is deleted, the open recording with it).
+ * turns sharing off (no upload request is started any more, the one in flight is aborted, the queue is
+ * deleted, the open recording with it).
  */
 export const outbox = {
   async resume() { if (shared) await (await shared).outbox.resume(); },
   async stop() { if (shared) await (await shared).outbox.stop(); },
   /** The queue stands still and keeps everything (while the server is asked to delete what was shared). */
   async pause() { if (shared) await (await shared).outbox.pause(); },
+  /** The part of pause() that needs no wait (the first thing "delete what I shared" does): from this line no
+   * pass sends or writes. Nothing before the pipeline exists (there is no pass then). */
+  hold() { if (live) live.outbox.hold(); },
+  /** Deletes what a stop left on the device; resolves with how many such recordings are still there. */
+  async sweep() { return shared ? (await shared).outbox.sweep() : 0; },
   /** The app went to the background: the open recording closes now (with a take running, when it ends). */
   async background() { if (shared) await (await shared).background(); },
   /** The app is in the foreground again. */
@@ -265,8 +275,9 @@ export const outbox = {
  */
 export async function createSharingSession(o) {
   const sharing = await outbox.configure(o);
+  // `stamp`: the count of consent changes the caller read BEFORE it looked at the consent for this take
   const s = await sharing.startSession({ inputSampleRate: o.inputSampleRate, inputRoute: o.inputRoute, decode: o.decodeInfo || {},
-    ...(Number.isFinite(o.startedAt) ? { startedAt: o.startedAt } : {}) });
+    ...(Number.isFinite(o.startedAt) ? { startedAt: o.startedAt } : {}), ...(Number.isInteger(o.stamp) ? { epoch: o.stamp } : {}) });
   return Object.assign(s, { outbox: sharing.outbox, sharing });
 }
 
@@ -286,8 +297,8 @@ export function resetSharingForTests() {
 export class ShareCapture {
   constructor({ storage, outbox, opus, enabled, consentVersion, consentTextSha256 = null, contributor, contributorKey = null, recoveryHash = null, device, day, inputSampleRate,
     inputRoute = 'unknown',
-    decode = {}, serial, plan = SEGMENT_PLAN, settings = OPUS_SETTINGS, ladder = null, takeSeq = null, gapMsPrev = null }) {
-    Object.assign(this, { storage, outbox, opus, enabled, plan, settings, serial, ladder });
+    decode = {}, serial, plan = SEGMENT_PLAN, settings = OPUS_SETTINGS, ladder = null, takeSeq = null, gapMsPrev = null, epoch = 0 }) {
+    Object.assign(this, { storage, outbox, opus, enabled, plan, settings, serial, ladder, epoch });
     // segment 1 opens at the rung in force when the capture starts
     if (ladder) this.settings = { ...settings, bitrate: ladder.bitrate };
     /** segment number -> bit/s, as each segment opened */
@@ -341,7 +352,7 @@ export class ShareCapture {
         onSegmentOpen: ({ n, bitrate }) => {
           this.bitrates[n] = bitrate;
           const bitrates = { ...this.bitrates };
-          this._queue(() => writeJson(s, id, FILES.capture, { preSkip: this.writer.preSkip, bitrates }));
+          this._queue(() => writeJson(s, id, FILES.capture, { preSkip: this.writer.preSkip, bitrates, epoch: this.epoch }));
         },
         onPage: (n, bytes) => this._queue(() => s.append(id, segmentName(n) + '.opus', bytes)),
         onSegment: (seg) => {
@@ -356,7 +367,7 @@ export class ShareCapture {
       const preSkip = this.writer.preSkip;
       // the session JSON and capture.json before the first page lands
       this.io = this.io.then(() => Promise.all([s.write(id, FILES.session, new TextEncoder().encode(this.session)),
-        writeJson(s, id, FILES.capture, { preSkip, bitrates: {} })]));
+        writeJson(s, id, FILES.capture, { preSkip, bitrates: {}, epoch: this.epoch })]));
     }
     this.writer.append(pcm instanceof Float32Array ? pcm : Float32Array.from(pcm));
   }
