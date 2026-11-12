@@ -11,6 +11,7 @@ import { TajweedError } from '../web/index.js';
 import { createClient, resetClientForTests } from '../web/api/client.js';
 import { serverRejected, REJECTION_REASONS, RUNTIME_MINIMUM, toTajweedError } from '../web/api/errors.js';
 import { ERRORS_JSON } from '../web/api/errors-catalogue.js';
+import { SDK_VERSION } from '../web/platform/client.js';
 import { ModelFolderError } from '../web/tajweed/manifest.js';
 import { build3, stubPlatform, seamsFor, KEY, ORIGIN } from './helpers/model3.mjs';
 
@@ -178,7 +179,9 @@ test('refusals.json: the answer\'s reason is read first; every case gives exactl
     const client = await createClient({ key: KEY }, seamsFor(api, { fetch, origin: v.app }));
     const e = await raised(client.model());
     assert.ok(e instanceof TajweedError, c.name);
-    assert.deepEqual([e.code, e.message, e.fix], [c.expect.code, c.expect.message, c.expect.fix], c.name);
+    // the vector was made for SDK 3.0.0: where a message names the running SDK, it names this one
+    const message = c.expect.message.replace(`this is ${v.sdk}`, `this is ${SDK_VERSION}`);
+    assert.deepEqual([e.code, e.message, e.fix], [c.expect.code, message, c.expect.fix], c.name);
     const d = await client.diagnose();
     assert.deepEqual([d.key.accepted, d.key.reason, d.lastError], [false, c.expect.code, c.expect.code], `${c.name}: diagnose`);
     assert.equal(asked.includes('/v1/origin-check'), false, `${c.name}: the server answered, the origin check is not asked`);

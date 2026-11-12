@@ -117,6 +117,8 @@ for (const c of vector.cases) test(`sharing_30.json: ${c.name}`, async () => {
       if (!on) await rec.stop();
       assert.deepEqual({ ring_samples: rec.ringSamples }, e.expect, where);
     } else if (e.event === 'delete') {
+      // an accepted "delete what I shared": sharing goes off with it, and only a `sharing` event turns it on again
+      on = false;
       await rec.stop();
       rec.forgetInstall();
       assert.deepEqual({ ring_samples: rec.ringSamples }, e.expect, where);
@@ -166,7 +168,7 @@ test('the same cases with the timers checked every 50 ms: an earlier look at the
         await t.finish({ endedAt: e.end_wall_ms });
       } else if (e.event === 'background') { walk(e.wall_ms); await rec.background(); rec.foreground(); }
       else if (e.event === 'sharing') { on = e.on; if (!on) await rec.stop(); }
-      else if (e.event === 'delete') { await rec.stop(); rec.forgetInstall(); }
+      else if (e.event === 'delete') { on = false; await rec.stop(); rec.forgetInstall(); }
       await rec.settled();
     }
     s.to(s.now + MAX_JOIN_MS + 5000);

@@ -35,7 +35,7 @@ test('model(): the version and the build; telemetry and register carry them; a s
   assert.equal(model.version, '4.0.0');
   assert.equal(model.build, build.build);
   const cfg = api.log.find((x) => x.path === '/v1/config');
-  assert.match(cfg.query, /sdk=3\.0\.0/);
+  assert.match(cfg.query, /sdk=3\.0\.1/);
   assert.ok(!/model_version/.test(cfg.query), 'no pin, no model_version');
   // a take, then the day's delta: the cohort is (version, build, context, backend); the download names both
   const s = model.session();
@@ -85,7 +85,7 @@ test('pinning by version: model_version goes with the config request; an unavail
 test('the manifest\'s acceptance checks reach the app as catalogue codes', async () => {
   const cases = [
     [await build3({ version: null }), 'model_incompatible'],              // a 2.x build: no model version
-    [await build3({ minSdk: '3.0.1' }), 'model_incompatible'],
+    [await build3({ minSdk: '3.0.2' }), 'model_incompatible'],
     [await build3({ version: '4.0' }), 'model_invalid'],
     [await build3({ signed: false }), 'signature_invalid'],
   ];
@@ -153,7 +153,7 @@ test('a first run without a network is needs_connection, not a timeout; after a 
 
 test('no model build for this SDK yet: model() and prefetch() are model_unavailable, diagnose() says so, nothing loops', async () => {
   const { client, api } = await setup({ build: null });
-  await assert.rejects(client.model(), (e) => code('model_unavailable')(e) && /3\.0\.0/.test(e.message));
+  await assert.rejects(client.model(), (e) => code('model_unavailable')(e) && /3\.0\.1/.test(e.message));
   await assert.rejects(client.prefetch(), code('model_unavailable'));
   const d = await client.diagnose();
   assert.deepEqual(valid(d), []);
@@ -257,12 +257,12 @@ test('the reference data: not in the model\'s set, fetched on request, looked up
 
 test('diagnose(): the report for a healthy client and for each failure it names, each valid against the shared schema', async () => {
   // healthy, with a newer SDK announced
-  let { client, api } = await setup({ sdkLatest: { version: '3.0.1', severity: 'recommended', url: 'https://sdk.quranlab.ai/changelog' } });
+  let { client, api } = await setup({ sdkLatest: { version: '3.0.2', severity: 'recommended', url: 'https://sdk.quranlab.ai/changelog' } });
   let d = await client.diagnose();
   assert.deepEqual(Object.keys(d), ['sdk', 'key', 'config', 'model', 'context', 'backend', 'microphone', 'storage', 'lastError', 'droppedChunks', 'connection']);
   assert.deepEqual(Object.keys(d), JSON.parse(readFileSync(new URL('./vectors30/names.json', import.meta.url), 'utf8')).diagnosis.fields);
   assert.deepEqual(valid(d), []);
-  assert.deepEqual(d, { sdk: { version: '3.0.0', latest: '3.0.1' }, key: { accepted: true, reason: null }, config: 'fresh', model: null, context: null, backend: null,
+  assert.deepEqual(d, { sdk: { version: '3.0.1', latest: '3.0.2' }, key: { accepted: true, reason: null }, config: 'fresh', model: null, context: null, backend: null,
     microphone: 'none', storage: { models: [], sharingQueueBytes: 0 }, lastError: null, droppedChunks: 0, connection: 'unknown' });
   const model = await client.model();
   d = await client.diagnose();
@@ -273,7 +273,9 @@ test('diagnose(): the report for a healthy client and for each failure it names,
   assert.throws(() => client.model('nope'), code('invalid_argument'));
   await model.close();
   d = await client.diagnose();
-  assert.deepEqual([d.model, d.backend], [{ version: '4.0.0', build: build.build, verified: false }, null], 'a model on the device that is not open now');
+  // a model on the device that is not open now: what a Session would run on is still known (3.0.1; it was null)
+  assert.deepEqual([d.model, d.context, d.backend], [{ version: '4.0.0', build: build.build, verified: false }, 'c16_l64', { kind: 'cpu', name: 'wasm', stage: 'cpu', reason: null }]);
+  assert.deepEqual(valid(d), []);
   // nothing in the report names the app, the key or a path
   assert.ok(!/qlk_|app\.example|https?:|[A-Za-z]:[\\/]/.test(JSON.stringify(d)));
   await client.close();
@@ -291,7 +293,7 @@ test('diagnose(): the report for a healthy client and for each failure it names,
     assert.deepEqual([d.key, d.lastError], [{ accepted: false, reason }, last], error);
     const failure = await client.model().then(() => null, (e) => e);
     assert.ok(code(last)(failure), `${error}: model() fails with ${failure && failure.code}`);
-    if (error === 'sdk_too_old') { assert.match(failure.message, /needs SDK 3\.2\.0 or later; this is 3\.0\.0/); assert.match(failure.fix, /3\.2\.0/); }
+    if (error === 'sdk_too_old') { assert.match(failure.message, /needs SDK 3\.2\.0 or later; this is 3\.0\.1/); assert.match(failure.fix, /3\.2\.0/); }
     await client.close();
   }
   // a stored config that expired and no network: stale
@@ -329,4 +331,32 @@ test('prefetch({ unmeteredOnly }): waits on a metered connection, downloads on a
     if (!downloads) assert.equal(r.bytesTotal > 0, true, 'it reports what is still to come');
     await client.close();
   }
+});
+
+test('diagnose() with no Model open reports the context and the backend a Session would run on, from the stored state', async () => {
+  // a first run downloads the model; the config names the context for this app
+  let { client, api, seams } = await setup({ inference: { context: 'c8_l64' } });
+  let d = await client.diagnose();
+  assert.deepEqual([d.model, d.context, d.backend], [null, null, null], 'nothing on the device yet');
+  const model = await client.model();
+  assert.equal((await client.diagnose()).context, 'c8_l64');
+  await model.close();
+  await client.close();
+  // a later start, before the app has asked for the model: the stored manifest and the signed config know
+  resetClientForTests();
+  client = await createClient({ key: KEY, appVersion: '1.0' }, seamsFor(api, { state: seams.state, store: seams.store }));
+  d = await client.diagnose();
+  assert.deepEqual(valid(d), []);
+  assert.deepEqual([d.model, d.context, d.backend], [{ version: '4.0.0', build: build.build, verified: false }, 'c8_l64', { kind: 'cpu', name: 'wasm', stage: 'cpu', reason: null }]);
+  // the config no longer names a context: the manifest's default
+  api.state.inference = undefined;
+  api.state.configVersion++;
+  await client._ql.refreshConfig();
+  d = await client.diagnose();
+  assert.equal(d.context, 'c16_l64');
+  // the model files removed: nothing is on the device, and the report says so
+  await client.removeModels();
+  d = await client.diagnose();
+  assert.deepEqual([d.model, d.context, d.backend], [null, null, null]);
+  await client.close();
 });

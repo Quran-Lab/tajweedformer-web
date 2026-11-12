@@ -1,4 +1,4 @@
-# @quran-lab/tajweedformer 3.0.0: API
+# @quran-lab/tajweedformer 3.0.1: API
 
 The whole public surface. Every type is in [`web/index.d.ts`](../web/index.d.ts); a test keeps this page, the
 type definitions and the package's exports in step. The names and the call order are the same in the Android,
@@ -48,7 +48,8 @@ One per page (per process in Node): `create` while another Client is open fails 
 
 `TajweedDiagnosis`: `sdk` (`version`, `latest`), `key` (`accepted`: true, false or null while no answer was seen;
 `reason`), `config` (`'fresh'`, `'stale'`, `'none'`), `model` (null, or `version`, `build`, `verified`),
-`context`, `backend` (a `TajweedBackend` or null), `microphone` (`'granted'`, `'denied'`, `'notAsked'`, `'none'`),
+`context` and `backend` (what a Session of the default context would run on now, with or without an open Model;
+null when no model is on the device), `microphone` (`'granted'`, `'denied'`, `'notAsked'`, `'none'`),
 `storage`, `lastError` (a code or null), `droppedChunks` (waiting chunks dropped because the app did not read
 `chunks`, since the Client was made), `connection` (`'unmetered'`, `'metered'`, `'none'`, or `'unknown'` where the
 runtime cannot tell: Node, a browser without the Network Information API such as Safari and Firefox, and a
@@ -117,8 +118,10 @@ Head names: `log_probs`, `inter1_log_probs`, `inter4_log_probs`, `id_log_probs`,
 
 ## TajweedSharing
 
-`isAvailable`, `isOn`, `setOn(on)`, `ask()`, `feed(samples, sampleRate)`, `items()` (a promise), `summary()`,
-`delete()`, `recoveryCode`, `setWording(overrides)`. The elements `QuranLabConsent` (`<quranlab-consent>`) and
+`isAvailable`, `isOn`, `setOn(on)` (a promise: off resolves when every upload in flight is aborted and the
+unsent queue is gone, within 3 s), `ask()`, `feed(samples, sampleRate)`, `items()` (a promise), `summary()`,
+`delete()` (a promise: accepted by Quran Lab it also turns sharing off; not taken, it rejects and nothing
+changed), `recoveryCode`, `setWording(overrides)`. The elements `QuranLabConsent` (`<quranlab-consent>`) and
 `QuranLabSharingSettings` (`<quranlab-sharing-settings>`, set its `client`) are the SDK's sheets.
 
 ## TajweedAnalytics

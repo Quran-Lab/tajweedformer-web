@@ -124,13 +124,16 @@ export function enableSharing(ql, o = {}) {
     /** Ask now, at the app's own moment, if an ask is still allowed (three at most; never after a yes). Resolves
      * with the learner's answer, or null when no ask is allowed or an app's own UI answers later. */
     askNow() { return ctl.sessionCompleted({ now: true }); },
-    /** The settings switch: off stops uploads at once and deletes the unsent queue (the open recording with it). */
+    /** The settings switch: off stops uploads at once and deletes the unsent queue (the open recording with it).
+     * Returns a promise: resolved when that is done (off), or at once (on). */
     setSharing(on, opts) {
       state.setSharing(on, opts);
-      if (!on && ctl.outbox) ctl.outbox.stop();
+      // off: a promise that resolves when the uploads in flight are aborted and the unsent queue is gone
+      if (!on) return ctl.outbox ? Promise.resolve(ctl.outbox.stop()).catch(() => {}) : Promise.resolve();
       // on again in the same page: the pipeline that off stopped takes sessions again (before 2.0.3 it stayed
       // stopped until the next page load, so nothing was shared after off and on)
-      else if (on && ctl.outbox) Promise.resolve(ctl.outbox.resume()).catch(() => {});
+      if (ctl.outbox) Promise.resolve(ctl.outbox.resume()).catch(() => {});
+      return Promise.resolve();
     },
     /** The app went to the background (2.0.3): the shared recording that takes in a row keep open closes now.
      * The platform client calls it when the page is hidden; call it yourself where the app knows better. */
@@ -145,13 +148,26 @@ export function enableSharing(ql, o = {}) {
       const contributor = ql.contributor();
       const key = await contributorKey(contributor, { create: false });
       if (!key) { ql.resetContributor(); return { deleted: 0, objects: 0 }; } // never shared from here
-      const r = await deleteWithKey(ql, key);
+      // the queue stands still before the server is asked (uploads in flight are aborted, nothing is deleted
+      // yet), so nothing arrives there after the delete
+      if (ctl.outbox && ctl.outbox.pause) await ctl.outbox.pause();
+      let r;
+      try { r = await deleteWithKey(ql, key); } catch (e) {
+        // the server did not take it: nothing changes. Sharing is as it was, nothing on the device was deleted,
+        // the queue goes on with the recording that was in flight
+        if (ctl.outbox && state.sharing) Promise.resolve(ctl.outbox.resume()).catch(() => {});
+        throw e;
+      }
+      // accepted (3.0.1): sharing is off. The learner turns it on again with the switch and is never asked
+      // again; the next shared recording has a new contributor. The unsent queue goes with it.
+      state.setSharing(false);
+      if (ctl.outbox) await Promise.resolve(ctl.outbox.stop()).catch(() => {});
       await forgetContributorKey(contributor);
       ql.resetContributor();
       ql.state.set('sharing.recovery', null);
       // the count of shared recordings starts again with the new contributor
       ql.state.set('sharing.install', null);
-      if (ctl.outbox) { ctl.outbox.stop(); if (ctl.outbox.forgetInstall) ctl.outbox.forgetInstall().catch(() => {}); }
+      if (ctl.outbox && ctl.outbox.forgetInstall) ctl.outbox.forgetInstall().catch(() => {});
       return r;
     },
     /** "Show my recovery code": for the learner's eyes only (call it from a confirm step in your UI). */

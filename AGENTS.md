@@ -68,7 +68,7 @@ Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai) and paste 
 - **Linked to [sdk.quranlab.ai](https://sdk.quranlab.ai):** a web key, the signed config (which model
   build your app gets, the response time), anonymous daily telemetry, issue reports, and opt-in
   recitation sharing with the SDK's own consent sheet.
-- **Version:** 3.0.0, on npm as `@quran-lab/tajweedformer`. What has run where: the test suite on every push
+- **Version:** 3.0.1, on npm as `@quran-lab/tajweedformer`. What has run where: the test suite on every push
   (Linux, with the engine and libopus built there), and, with a real model folder that a public runner does
   not have, the 35 conformance clips bit for bit in Node and in Chrome (`npm run proof`).
 
@@ -80,9 +80,9 @@ One model, one engine, the same bits on every platform. Each SDK compiles the sa
 | Repository | What it is | Platforms | Install |
 | - | - | - | - |
 | [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+ on arm64-v8a and armeabi-v7a, desktop JVM | Maven Central `ai.quranlab:tajweedformer:3.0.0` |
-| [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "3.0.0"`, product `TajweedFormer` |
+| [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "3.0.1"`, product `TajweedFormer` |
 | [tajweedformer-web](https://github.com/Quran-Lab/tajweedformer-web) | WebAssembly SDK with SIMD128 | Browsers, Node 20+ | `npm install @quran-lab/tajweedformer` |
-| [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake `FetchContent`, tag 3.0.0 |
+| [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake `FetchContent`, tag 3.0.1 |
 | [tajweedformer-engine](https://github.com/Quran-Lab/tajweedformer-engine) | The engine: exact C runtime, inference library, conformance suite | everything above | Git submodule |
 
 The model is Quran-Lab/tajweedformer-v4 (`sdk/v4.0`), hosted by Quran Lab and served by
@@ -98,7 +98,7 @@ per-class thresholds) your users see, without shipping a new build.
 npm install @quran-lab/tajweedformer
 ```
 
-With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.0.0/web/index.js`. The package has one entry point; in Node, `@quran-lab/tajweedformer/node` adds the reader for a model folder on disk.
+With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.0.1/web/index.js`. The package has one entry point; in Node, `@quran-lab/tajweedformer/node` adds the reader for a model folder on disk.
 
 ## Before you start
 
@@ -402,12 +402,12 @@ listens (Ogg Opus, uploaded in the background, resumable).
 | - | - |
 | `isAvailable` | Quran Lab's config allows sharing for this app. |
 | `isOn` | The learner said yes. |
-| `setOn(on)` | The settings switch. Off stops uploads at once and deletes the unsent queue. |
+| `setOn(on)` | The settings switch. Off aborts every upload request in flight and deletes the unsent queue; nothing is sent after the call. It returns a promise that resolves when the queue is gone (within 3 s, whatever was in flight). |
 | `ask()` | Ask now, at your own moment, if an ask is still allowed. |
 | `feed(samples, sampleRate)` | Audio your app already captures outside takes (see below). |
 | `items()` | The outbox: each recording's status (a promise). |
 | `summary()` | The learner's summary, for a thank-you line. |
-| `delete()` | "Delete what I shared". Only this browser's non-extractable key can sign it: no app key or token can delete a learner's recordings. |
+| `delete()` | "Delete what I shared". Only this browser's non-extractable key can sign it: no app key or token can delete a learner's recordings. Uploads stand still while Quran Lab is asked. When Quran Lab accepts, the unsent queue is deleted too and sharing is off (`isOn` false, since 3.0.1): the learner turns it on again with the switch, is not asked again, and shares under a new contributor from then on. When Quran Lab does not take it (an error, or no answer), the promise rejects and nothing changed: sharing is still on and the queue goes on. |
 | `recoveryCode` | The code for deletion when the device is lost. |
 | `setWording(overrides)` | Your own wording, `{ 'sheet.title': '...' }` with the deck's keys; `null` restores the SDK's. The learner then agrees to your text, recorded under its own consent version. |
 
