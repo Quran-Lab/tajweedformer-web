@@ -28,6 +28,10 @@ export const FILES = Object.freeze({ session: 'session.json', capture: 'capture.
 const DAY_MS = 86400000;
 /** Unsent sessions older than this are deleted (PLATFORM_CLIENT 10.4). */
 export const MAX_AGE_MS = 7 * DAY_MS;
+/** How long stop() waits for an upload pass to leave the session it is in before it deletes the queue (ms). */
+export const STOP_WAIT_MS = 3000;
+// what a wait of a pass resolves with when sharing went off meanwhile
+const OFF = Symbol('sharing went off');
 // One segment PUT at a time, in segment order, as the Android, Apple and C SDKs do. Two in parallel (2.0.1 before
 // this fix) let the second segment start first whenever its bytes were read from storage first, so after an outage
 // or a relaunch a session could arrive as seg-00002, seg-00001, ... (the server accepts any order, but Quran Lab wants
@@ -288,6 +292,10 @@ export class Outbox {
     this.running = null;
     this.again = false;
     this.stopped = false;
+    this.stopping = null; // the stop in progress (a promise): no pass starts and resume() waits while it is at work
+    this._givenUp = null; // a pass the off call waited its whole bound for
+    this.removed = new Set(); // sessions deleted with the queue (their ids are never used again)
+    this._offWaiters = new Set(); // waits of a pass that end when sharing goes off (the app's token and Turnstile callbacks)
     this.wakeTimer = null;
     this.seqTop = 0;
   }
@@ -339,24 +347,115 @@ export class Outbox {
   }
 
   /** Starts an upload pass (also at load, when a segment closes and when a retry is due). */
-  resume() { this.stopped = false; return this.drain(); }
+  async resume() {
+    // a stop still at work deletes the queue first: what was recorded before the learner turned sharing off is
+    // never sent because they turned it on again
+    while (this.stopping) await this.stopping.catch(() => {});
+    this.stopped = false;
+    return this.drain();
+  }
 
-  /** Sharing was turned off: in-flight PUTs aborted, every session not fully uploaded deleted at
+  /** Sharing was turned off: every request in flight aborted, every session not fully uploaded deleted at
    * once, the recording being captured with them (`onStop`: also between takes, where no push would notice),
-   * and take lists still waiting dropped (nothing is sent after a withdrawal). */
-  async stop() {
+   * and take lists still waiting dropped (nothing is sent after a withdrawal). Resolves when the queue is gone:
+   * within STOP_WAIT_MS and a few file removals, whatever was in flight. */
+  stop() { return this._off(true); }
+
+  /**
+   * The queue stops and keeps everything: the requests in flight are aborted, the pass leaves, nothing is deleted.
+   * resume() goes on with the recording that was in flight. For "delete what I shared": the queue stands still
+   * while the server is asked.
+   */
+  pause() { return this._off(false); }
+
+  _off(remove) {
+    // from this line on nothing is sent and no pass writes: every request and every write of a pass asks _live()
     this.stopped = true;
+    const before = this.stopping;
+    const p = (async () => {
+      if (before) await before.catch(() => {});
+      await this._halt();
+      if (remove) await this._deleteQueue();
+    })().finally(() => { if (this.stopping === p) this.stopping = null; });
+    this.stopping = p;
+    return p;
+  }
+
+  // the pass leaves the session it is in
+  async _halt() {
     for (const c of this.inFlight.values()) c.abort();
     this.inFlight.clear();
+    for (const w of [...this._offWaiters]) w();
     if (this.wakeTimer) { clearTimeout(this.wakeTimer); this.wakeTimer = null; }
-    if (this.running) await this.running.catch(() => {});
+    // its requests were aborted above and its waits ended. At most STOP_WAIT_MS for anything else (a storage call
+    // that does not come back); a pass that leaves later finds its session gone and writes nothing.
+    // A pass that was already waited for its whole bound is not waited for again (a delete pauses, asks the
+    // server, then stops: one bound in all).
+    if (!this.running || this.running === this._givenUp) return;
+    let timer = null;
+    const pass = this.running;
+    const left = (async () => { while (this.running) await this.running.catch(() => {}); return true; })();
+    const gone = await Promise.race([left, new Promise((r) => { timer = setTimeout(() => r(false), STOP_WAIT_MS); })]);
+    clearTimeout(timer);
+    if (!gone) this._givenUp = pass;
+  }
+
+  async _deleteQueue() {
     if (this.onStop) { try { await this.onStop(); } catch (_) { /* the capture's own end */ } }
     await this._scan();
     for (const r of [...this.records.values()]) {
-      if (r.state === 'active' && !activeCaptures.has(r.id)) { await this.storage.removeSession(r.id); this.records.delete(r.id); }
+      if (r.state === 'active' && !activeCaptures.has(r.id)) await this._remove(r.id);
       else if (r.takeList === 'pending') await this._takesDone(r, 'dropped', 'sharing_off');
     }
+    // a second look at the disk itself: nothing unsent may be left, whatever the records say
+    for (const id of await this.storage.sessions()) {
+      if (activeCaptures.has(id)) continue;
+      const item = await readJson(this.storage, id, FILES.item);
+      if (!item || item.state === 'active') await this._remove(id);
+    }
     this.waiting.clear();
+  }
+
+  // one session out of the queue, on disk and in memory. A delete that fails is tried again (a file of the
+  // folder can be open for a moment on Windows); it never keeps the other sessions from being deleted.
+  async _remove(id) {
+    this.removed.add(id);
+    this.records.delete(id);
+    this.waiting.delete(id);
+    for (let i = 0; ; i++) {
+      try { await this.storage.removeSession(id); return; } catch (e) {
+        if (i >= 10) { if (this.log) this.log(`TajweedFormer sharing: a queued recording could not be deleted (${(e && e.code) || e}); it is deleted at the next start`); return; }
+        await new Promise((r) => setTimeout(r, 20 * (i + 1)));
+      }
+    }
+  }
+
+  /** Whether a pass may send or write now: sharing is on, and no stop was asked for. */
+  _live() { return !this.stopped && this.enabled(); }
+
+  // One request of a pass. Not made when sharing is off; abortable by stop(); null when it was aborted or
+  // sharing went off while it was in flight, so its answer is neither written nor acted on.
+  async _request(key, send) {
+    if (!this._live()) return null;
+    const ctrl = new AbortController();
+    this.inFlight.set(key, ctrl);
+    try {
+      const r = await send(ctrl.signal);
+      return this._live() ? r : null;
+    } catch (e) {
+      if ((e && e.name === 'AbortError') || !this._live()) return null;
+      throw e;
+    } finally { if (this.inFlight.get(key) === ctrl) this.inFlight.delete(key); }
+  }
+
+  // A wait of a pass for something of the app's (its token, its Turnstile widget): ends with OFF when sharing
+  // goes off, so a callback that never answers does not keep a pass inside a session.
+  _untilOff(promise) {
+    if (!this._live()) return Promise.resolve(OFF);
+    let done;
+    const off = new Promise((r) => { done = () => r(OFF); });
+    this._offWaiters.add(done);
+    return Promise.race([Promise.resolve(promise), off]).finally(() => this._offWaiters.delete(done));
   }
 
   /** Takes a session out before the server has it. */
@@ -372,17 +471,19 @@ export class Outbox {
 
   /** One upload pass, after any pass already running. */
   async drain({ ignoringBackoff = false } = {}) {
+    while (this.stopping) await this.stopping.catch(() => {});
+    if (this.stopped) return;
     if (this.running) {
       this.again = true;
       while (this.running) await this.running.catch(() => {});
-      if (!this.again) return;
+      if (!this.again || this.stopped) return;
     }
     this.again = false;
     this.running = (async () => {
       try { await this._pass(ignoringBackoff); } finally { this._scheduleWake(); }
     })();
     try { await this.running; } finally { this.running = null; }
-    if (this.again) await this.drain({ ignoringBackoff });
+    if (this.again && !this.stopped) await this.drain({ ignoringBackoff });
   }
 
   /** Whether this install may upload now: the app/learner switch, the config's contributions flag and
@@ -405,8 +506,10 @@ export class Outbox {
   // ---- the pass ----
 
   async _pass(ignoringBackoff) {
+    if (this.stopped) return;
     await this._scan();
     await this._expire();
+    if (this.stopped) return;
     const allowed = this.uploadAllowed();
     const now = this.clock();
     const due = [...this.records.values()].filter((r) => r.state === 'active' && (ignoringBackoff || !r.nextAttempt || r.nextAttempt <= now))
@@ -419,10 +522,11 @@ export class Outbox {
     for (const id of due) {
       if (this.stopped) return;
       let token;
-      try { token = await this.tokenProvider(); } catch (e) {
+      try { token = await this._untilOff(this.tokenProvider()); } catch (e) {
         await this._retry(id, `token: ${e && e.message || e}`);
         return;
       }
+      if (token === OFF || !this._live()) return;
       if (!token || !token.token) { await this._retry(id, 'no token'); return; }
       if (allowed.tier === 'attested' && !token.attested) {
         await this._retry(id, 'attestation_required: this install has no attested token; sharing paused', { long: true });
@@ -433,7 +537,8 @@ export class Outbox {
     for (const id of lists()) {
       if (this.stopped) return;
       let token = null;
-      try { token = await this.tokenProvider(); } catch (_) { token = null; }
+      try { token = await this._untilOff(this.tokenProvider()); } catch (_) { token = null; }
+      if (token === OFF || !this._live()) return;
       if (!token || !token.token) { await this._takesRetry(this.records.get(id), 'no token'); return; }
       if (!(await this._sendTakes(id, token.token))) return;
     }
@@ -450,10 +555,13 @@ export class Outbox {
       if (!ms.length) return true;
       const session = await s.read(id, FILES.session);
       if (!session) return true;
+      if (!this._live()) return false;
       rec.attempts++;
       await this._save(rec);
-      const turnstile = this.turnstile && (this.flags() || {}).capped_limits?.turnstile_web ? await this.turnstile() : null;
-      const r = await this.client.start({ id, session: dec.decode(session), token, turnstile });
+      const turnstile = this.turnstile && (this.flags() || {}).capped_limits?.turnstile_web ? await this._untilOff(this.turnstile()) : null;
+      if (turnstile === OFF) return false;
+      const r = await this._request(`${id}/start`, (signal) => this.client.start({ id, session: dec.decode(session), token, turnstile, signal }));
+      if (!r) return false; // sharing went off: nothing of the answer is kept
       const urls = await this._answer(id, r);
       if (!urls) return r.status !== 0;
       rec = this.records.get(id);
@@ -468,6 +576,7 @@ export class Outbox {
       for (const m of todo.slice(i, i + PARALLEL)) {
         rec = this.records.get(id);
         if (!rec || rec.state !== 'active') return true;
+        if (!this._live()) return false;
         if (!(rec.urls || []).some((u) => u.n === m.n && freshUrl(u, this.clock()))) {
           const ok = await this._fetchUrls(id, m.n, token);
           if (!ok.ok) return !ok.offline;
@@ -485,6 +594,7 @@ export class Outbox {
     }
     rec = this.records.get(id);
     if (!rec || rec.state !== 'active') return true;
+    if (!this._live()) return false;
     // while the session runs: the next batch once 5 unused URLs remain
     const lastUrl = Math.max(0, ...(rec.urls || []).map((u) => u.n));
     if (!end && lastUrl > 0 && lastUrl - (ms.length ? ms[ms.length - 1].n : 0) <= 5) {
@@ -523,14 +633,20 @@ export class Outbox {
     // under the contributor the recording was made by (its session JSON), as the server checks
     const ses = await readJson(s, id, FILES.session);
     const contributor = ses && typeof ses.contributor === 'string' ? ses.contributor : await this.contributor();
+    if (!this._live()) return false;
     rec.takeListAttempts = (rec.takeListAttempts || 0) + 1;
-    let r = await this.client.takes({ id, body, contributor, token });
+    let r = await this._request(`${id}/takes`, (signal) => this.client.takes({ id, body, contributor, token, signal }));
+    if (!r) return false; // sharing went off: stop() drops the list
     if (r.status === 401) {
       // the token renewed, the same body once more
       if (this.tokenProvider.invalidate) await this.tokenProvider.invalidate();
       let fresh = null;
-      try { fresh = await this.tokenProvider(); } catch (_) { fresh = null; }
-      if (fresh && fresh.token && !this.stopped) r = await this.client.takes({ id, body, contributor, token: fresh.token });
+      try { fresh = await this._untilOff(this.tokenProvider()); } catch (_) { fresh = null; }
+      if (fresh === OFF) return false;
+      if (fresh && fresh.token) {
+        r = await this._request(`${id}/takes`, (signal) => this.client.takes({ id, body, contributor, token: fresh.token, signal }));
+        if (!r) return false;
+      }
     }
     rec = this.records.get(id);
     if (!rec || rec.takeList !== 'pending' || this.stopped) return true; // sharing went off meanwhile
@@ -568,7 +684,7 @@ export class Outbox {
     rec.takeListNext = null;
     rec.takeListError = state === 'sent' ? null : why;
     await this.storage.remove(rec.id, FILES.takes);
-    await this._save(rec);
+    await this._save(rec, { byStop: why === 'sharing_off' });
   }
 
   // again later, with the outbox's backoff (30 s doubling to 6 h, jittered)
@@ -587,14 +703,10 @@ export class Outbox {
     const key = `${id}/${name}`;
     const bytes = await this.storage.read(id, name);
     if (!bytes) return 'stop';
-    const ctrl = new AbortController();
-    this.inFlight.set(key, ctrl);
-    let r;
-    try { r = await this.client.put({ url: u.url, bytes, signal: ctrl.signal }); } catch (e) {
-      return 'stop'; // aborted: sharing went off
-    } finally { this.inFlight.delete(key); }
+    const r = await this._request(key, (signal) => this.client.put({ url: u.url, bytes, signal }));
+    if (!r) return 'stop'; // not sent, aborted, or sharing went off while it was in flight
     const rec = this.records.get(id);
-    if (!rec || rec.state !== 'active' || this.stopped) return 'stop';
+    if (!rec || rec.state !== 'active') return 'stop';
     this._networkResult(r.status);
     if (r.status === 0) { await this._retry(id, `PUT ${name}: ${r.error}`); return 'offline'; }
     if (r.status >= 200 && r.status < 300) {
@@ -618,7 +730,8 @@ export class Outbox {
   // URLs for segments from..from+19, merged into the item
   async _fetchUrls(id, from, token) {
     const contributor = await this.contributor();
-    const r = await this.client.urls({ id, from, contributor, token });
+    const r = await this._request(`${id}/urls`, (signal) => this.client.urls({ id, from, contributor, token, signal }));
+    if (!r) return { ok: false, offline: true }; // sharing went off: the pass ends here
     const urls = await this._answer(id, r);
     const rec = this.records.get(id);
     if (!urls) {
@@ -678,7 +791,7 @@ export class Outbox {
 
   async _retry(id, why, { immediately = false, long = false } = {}) {
     const rec = this.records.get(id);
-    if (!rec) return;
+    if (!rec || this.stopped) return;
     rec.lastError = why;
     const n = Math.max(1, rec.attempts);
     const base = long ? 6 * 3600 : Math.min(30 * 2 ** Math.min(n - 1, 16), 6 * 3600);
@@ -717,7 +830,7 @@ export class Outbox {
 
   async _note(id, why) {
     const rec = this.records.get(id);
-    if (!rec || rec.lastError === why) return;
+    if (!rec || rec.lastError === why || this.stopped) return;
     rec.lastError = why;
     await this._save(rec);
   }
@@ -764,9 +877,14 @@ export class Outbox {
     }
   }
 
-  async _save(rec) {
+  async _save(rec, { byStop = false } = {}) {
+    if (this.removed.has(rec.id)) return; // deleted with the queue: a pass that comes back late never brings it back
     this.records.set(rec.id, rec);
+    if (this.stopped && !byStop) return; // sharing is off: a pass writes nothing more (stop() itself may)
     await writeJson(this.storage, rec.id, FILES.item, rec);
+    // the write came back after the recording was deleted with the queue (a storage call that took longer than
+    // the off call waits): it has made the folder anew, so the recording is deleted again
+    if (this.removed.has(rec.id)) { await this._remove(rec.id); return; }
     if (this.onChange) this.onChange(await this._snapshot(rec));
   }
 

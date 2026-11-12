@@ -31,7 +31,8 @@ export async function stubApi(flags) {
     }
     if (u.pathname === '/v1/attest') return json(200, { token: 'qlt_v1.test.sig', expires_in: 86400, attested: false });
     if (u.pathname === '/v1/contributions/challenge') return json(200, { nonce: 'd1.1790000000.AAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBB', expires_in: 300 });
-    if (u.pathname === '/v1/contributions/delete') { state.deletes++; return json(202, { ok: true }); }
+    // state.deleteStatus: the server does not take the delete (an error status)
+    if (u.pathname === '/v1/contributions/delete') { if (state.deleteStatus) return json(state.deleteStatus, { error: 'unavailable' }); state.deletes++; return json(202, { ok: true }); }
     if (h.authorization !== 'Bearer qlt_v1.test.sig') return json(401, { error: 'invalid_token' });
     if (u.pathname === '/v1/register') { state.registers.push(JSON.parse(init.body)); return json(200, { ok: true }); }
     if (u.pathname === '/v1/config') {

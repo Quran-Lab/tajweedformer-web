@@ -168,13 +168,25 @@ export async function createSharing(o) {
     contributorId: contributor,
     /** A new contributor id kept in this storage (when the app does not manage it). */
     async resetContributor() { await storage.setGlobal('contributor', null); return contributor(); },
-    /** "Delete what I shared" with the device key (PLATFORM_CLIENT 9.1): `sign(bytes)` signs with it.
-     * The unsent queue goes too; the controller then deletes the key, id and code. */
+    /** "Delete what I shared" with the device key (PLATFORM_CLIENT 9.1): `sign(bytes)` signs with it. Accepted by
+     * the server: the unsent queue goes too and the pipeline is off until outbox.resume() (3.0.1: an accepted
+     * delete turns sharing off); the controller then deletes the key, id and code. Not taken by the server:
+     * it rejects, and nothing changed. */
     async deleteShared({ app, sign }) {
-      const r = await client.deleteShared({ app, contributor: await contributor(), sign });
+      // the queue stands still before the server is asked (uploads in flight are aborted, nothing is deleted yet),
+      // so nothing arrives there after the delete
+      const who = await contributor();
+      await outbox.pause();
+      let r;
+      try { r = await client.deleteShared({ app, contributor: who, sign }); } catch (e) {
+        // the server did not take it: nothing changes. Sharing is as it was, nothing on the device was deleted,
+        // the queue goes on with the recording that was in flight
+        Promise.resolve(outbox.resume()).catch(() => {});
+        throw e;
+      }
+      // accepted: the unsent queue goes too, and sharing is off until the learner turns it on again (resume())
       await outbox.stop();
       recorder.forgetInstall();
-      outbox.stopped = false;
       return r;
     },
     /** Real aggregate numbers for the gratitude line, or null when the call fails. */
@@ -219,6 +231,8 @@ let live = null; // the pipeline once it is made (resetSharingForTests reaches i
 export const outbox = {
   async resume() { if (shared) await (await shared).outbox.resume(); },
   async stop() { if (shared) await (await shared).outbox.stop(); },
+  /** The queue stands still and keeps everything (while the server is asked to delete what was shared). */
+  async pause() { if (shared) await (await shared).outbox.pause(); },
   /** The app went to the background: the open recording closes now (with a take running, when it ends). */
   async background() { if (shared) await (await shared).background(); },
   /** The app is in the foreground again. */

@@ -14,7 +14,7 @@ import { sdkLatestOf } from '../platform/update-notice.js';
 import { cachedReader, defaultStore, profilePaths } from '../tajweed/delivery.js';
 import { ModelFolder, MODEL_VERSION_RE, QURANLAB_PUBLIC_KEY_HEX, sha256Hex, compareModelVersions } from '../tajweed/manifest.js';
 import { enableSharing } from '../consent/index.js';
-import { openModel } from './model.js';
+import { openModel, resolveContext } from './model.js';
 import { WASM_BACKEND } from './session.js';
 import { microphonePermission } from './microphone.js';
 import { TajweedError, toTajweedError, invalid } from './errors.js';
@@ -211,6 +211,22 @@ export class TajweedClient {
    */
   storage() { this._guard(); return this._storage(); }
 
+  // The default context of the model last used on this device, read from its stored manifest and the signed
+  // config as a Session would resolve it; null when that model's manifest is not on the device.
+  async _storedContext(last) {
+    if (!last || !last.build) return null;
+    try {
+      const store = this._i.store;
+      for (const k of await store.keys('manifest/')) {
+        const raw = await store.get(k);
+        if (!raw || (await sha256Hex(raw)).slice(0, 40) !== last.build) continue;
+        const manifest = JSON.parse(new TextDecoder().decode(raw));
+        return resolveContext(null, this._ql.config, manifest).context || null;
+      }
+    } catch (_) { /* a store that cannot be read knows no model */ }
+    return null;
+  }
+
   async _storage() {
     const store = this._i.store, out = { models: [], sharingQueueBytes: 0 };
     try {
@@ -274,13 +290,16 @@ export class TajweedClient {
     const fresh = ql.config && ql.config.expires_at * 1000 > now;
     const m = this._model && !this._model._closed ? this._model : null;
     const last = i.state.get('model.last');
+    const onDevice = m ? null : await this._storedContext(last);
     return {
       sdk: { version: SDK_VERSION, latest: latest && MODEL_VERSION_RE.test(latest.version) ? latest.version : null },
       key,
       config: fresh ? 'fresh' : (ql.config || (stored && stored.cfg) ? 'stale' : 'none'),
       model: m ? { version: m.version, build: m.build, verified: true } : (last && last.version ? { version: last.version, build: last.build, verified: false } : null),
-      context: m ? m.defaultContext : null,
-      backend: m ? { ...WASM_BACKEND } : null,
+      // what a Session of the default context would run on now, with or without an open Model: without one, from
+      // the stored state (the model's manifest on this device and the signed config)
+      context: m ? m.defaultContext : onDevice,
+      backend: m || onDevice ? { ...WASM_BACKEND } : null,
       microphone: await microphonePermission((i.seams && i.seams.microphone) || {}),
       storage: await this._storage(),
       lastError: this._lastError,
@@ -319,8 +338,9 @@ function makeSharing(client) {
     get isAvailable() { return ql.sharingAllowed(); },
     /** The learner said yes. */
     get isOn() { return ctl.state.s.consent === 'granted'; },
-    /** The settings switch. Off stops uploads at once and deletes the unsent queue. */
-    setOn(on) { if (on) need(); ctl.setSharing(!!on); },
+    /** The settings switch. Off stops uploads at once and deletes the unsent queue; the promise resolves when
+     * that is done (within 3 s and a few file removals, whatever was in flight). */
+    setOn(on) { if (on) need(); return Promise.resolve(ctl.setSharing(!!on)).then(() => {}); },
     /** Ask now, if an ask is still allowed (at most three; a yes is never asked again). Resolves with the answer or null. */
     async ask() { need(); return ctl.askNow(); },
     /** Audio the app already captures outside takes (SPEC 11.2): kept for the pre-roll and tail of shared recordings only. */
@@ -329,7 +349,8 @@ function makeSharing(client) {
     async items() { return ctl.outbox ? ctl.outbox.items() : []; },
     /** The learner's summary (the gratitude line), or null. */
     summary() { return ql.contributionSummary(); },
-    /** "Delete what I shared". */
+    /** "Delete what I shared". Accepted by Quran Lab: what was shared and the unsent queue are deleted and
+     * sharing is off (isOn false) until the learner turns it on again. Not taken: it rejects and nothing changed. */
     delete() { return ctl.deleteShared(); },
     /** The code for deletion when the device is lost, or null before the first shared recording. */
     get recoveryCode() { return ctl.recoveryCode(); },

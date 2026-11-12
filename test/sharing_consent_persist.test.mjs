@@ -267,3 +267,40 @@ test('withdrawal and deletion under an old version (a 2.0.0 grant)', { skip: ski
   for (let i = 0; i < 30; i++) await ctl.sessionCompleted({ feedback: true });
   assert.equal(asked.length, 0, 'never asked, before or after');
 }));
+
+test('delete what I shared (3.0.1): a delete the server does not take changes nothing; an accepted one turns sharing off, nobody is asked again, and on again shares under a new contributor',
+  { skip: skipAudio }, () => inDir('share-delete-rule-', async () => {
+    const api = await stubApi({ contributions: true });
+    const pcm = clip16k(12);
+    const ql = await client(api, { state: memoryState() });
+    const { ctl, asked } = wired(ql);
+    await ctl.setSharing(true);
+    const first = await shareOne(api, ctl, pcm);
+    await ctl.closeRecording(); // no take follows: the next take is a recording of its own
+    const who = ql.contributor();
+    assert.equal(first.contributor, who);
+    const code = ctl.recoveryCode();
+    // the server does not take the delete: the call reports it, and nothing changed
+    api.state.deleteStatus = 503;
+    await assert.rejects(ctl.deleteShared());
+    assert.equal(api.state.deletes, 0);
+    assert.deepEqual([ctl.state.sharing, ql.contributor(), ctl.recoveryCode()], [true, who, code], 'sharing is still on, the same contributor, the same recovery code');
+    const second = await shareOne(api, ctl, pcm);
+    await ctl.closeRecording();
+    assert.equal(second.contributor, who, 'the queue goes on: the next take is shared as before');
+    // the server accepts: sharing is off, and stays off without a word to the learner
+    api.state.deleteStatus = null;
+    await ctl.deleteShared();
+    assert.equal(api.state.deletes, 1);
+    assert.equal(ctl.state.sharing, false, 'an accepted delete turns sharing off');
+    const before = api.state.starts.length;
+    await listen(ctl, pcm, { complete: false });
+    for (let i = 0; i < 30; i++) await ctl.sessionCompleted({ feedback: true });
+    assert.equal(api.state.starts.length, before, 'nothing is shared while it is off');
+    assert.equal(asked.length, 0, 'nobody is asked again');
+    // the learner turns it on with the switch: shared again, under a new contributor
+    await ctl.setSharing(true);
+    const third = await shareOne(api, ctl, pcm);
+    assert.match(third.contributor, /^[0-9a-f]{32}$/);
+    assert.notEqual(third.contributor, who, 'a new contributor after the delete');
+  }));

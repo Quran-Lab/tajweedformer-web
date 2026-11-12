@@ -1,6 +1,6 @@
 {
   "name": "@quran-lab/tajweedformer",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "TajweedFormer for browsers and Node, a pure inference SDK: the exact engine in WebAssembly (bit-identical to the native engine, in a Worker in browsers), cached and verified model delivery, every head of the network, the decoded layer (top-1 and runner-up, confidence, timings, speech and silence), one call from microphone to output, and the Quran Lab client (signed config, telemetry, opt-in recitation sharing).",
   "type": "module",
   "main": "web/index.js",
@@ -45,7 +45,7 @@
     "build:all": "bash scripts/build.sh && bash scripts/build_opus.sh",
     "bench": "bash scripts/bench.sh",
     "bench:rt": "node test/pool_bench.mjs",
-    "test": "node --max-old-space-size=2048 --expose-gc --test --test-concurrency=4 --test-timeout=300000 \"test/*.test.mjs\"",
+    "test": "node --max-old-space-size=2048 --expose-gc --test --test-concurrency=3 --test-timeout=300000 \"test/*.test.mjs\"",
     "test:wasm": "node test/smoke.mjs",
     "conformance": "bash scripts/conformance.sh",
     "serve": "node scripts/serve.mjs",

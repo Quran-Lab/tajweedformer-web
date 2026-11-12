@@ -1,0 +1,206 @@
+{
+ "format": "quranlab.sdk-sharing-off-cases/1",
+ "about": "SDK 3.0.1: turning sharing off, or deleting what was shared, while an upload is in flight (SPEC.md section 11.7; make_sharing_off.py). Each case is a situation a test builds with a stub server: a recording is being uploaded, the stub HOLDS the request named by `held` (it does not answer), the learner does `action`, and where `then` is `on` turns sharing on again as soon as the call returned. `assert` lists what must hold, each as `key: sentence`. Every case is run `runs` times; a report gives runs passed of `runs` per case.",
+ "rules": {
+  "R1": "after the off call returns, no byte of audio leaves the device, whatever was in flight",
+  "R2": "the off call returns within off_bound_ms even when a request hangs",
+  "R3": "nothing unsent remains on the device after off or after delete, also after the held request came back",
+  "R4": "turning sharing on again afterwards works in the same run"
+ },
+ "off_bound_ms": 3000,
+ "runs": 20,
+ "cases": [
+  {
+   "name": "put held, off",
+   "held": "put",
+   "held_what": "a segment PUT to its upload URL",
+   "action": "off",
+   "action_what": "the learner turns sharing off (the settings switch, setOn(false))",
+   "then": null,
+   "assert": [
+    "returns_within_bound: the call returns within off_bound_ms and does not throw, although the held request never answers by itself",
+    "no_request_after: no start, URL, PUT or take-list request STARTS after the call was made",
+    "no_audio_after: zero bytes of audio are sent after the call returned: neither a PUT that starts after the call was made nor the rest of a PUT that was in flight (an SDK says how many bytes its transport may already have handed to the system)",
+    "nothing_unsent_on_device: when the call returns, no unsent recording, segment or state file of the queue is left on the device (on disk, not only in memory)",
+    "still_nothing_after_release: the held request is then let go (it answers 200): the queue is still empty and still nothing was sent"
+   ]
+  },
+  {
+   "name": "put held, delete",
+   "held": "put",
+   "held_what": "a segment PUT to its upload URL",
+   "action": "delete",
+   "action_what": "the learner deletes what they shared (delete), and the server accepts the deletion",
+   "then": null,
+   "assert": [
+    "returns_within_bound: the call returns within off_bound_ms and does not throw, although the held request never answers by itself",
+    "no_request_after: no start, URL, PUT or take-list request STARTS after the call was made",
+    "no_audio_after: zero bytes of audio are sent after the call returned: neither a PUT that starts after the call was made nor the rest of a PUT that was in flight (an SDK says how many bytes its transport may already have handed to the system)",
+    "nothing_unsent_on_device: when the call returns, no unsent recording, segment or state file of the queue is left on the device (on disk, not only in memory)",
+    "still_nothing_after_release: the held request is then let go (it answers 200): the queue is still empty and still nothing was sent",
+    "queue_stopped_before_the_server_is_asked: no upload request starts between the delete call and the server's answer to it",
+    "sharing_is_off_after_an_accepted_delete: sharing is off when the call returns, and the learner is not asked again (asking has ended)",
+    "on_again_works: the learner turns sharing on with the switch; a recording made after that is uploaded in the same run, under a new contributor"
+   ]
+  },
+  {
+   "name": "start held, off",
+   "held": "start",
+   "held_what": "the start of the upload (POST /v1/uploads)",
+   "action": "off",
+   "action_what": "the learner turns sharing off (the settings switch, setOn(false))",
+   "then": null,
+   "assert": [
+    "returns_within_bound: the call returns within off_bound_ms and does not throw, although the held request never answers by itself",
+    "no_request_after: no start, URL, PUT or take-list request STARTS after the call was made",
+    "no_audio_after: zero bytes of audio are sent after the call returned: neither a PUT that starts after the call was made nor the rest of a PUT that was in flight (an SDK says how many bytes its transport may already have handed to the system)",
+    "nothing_unsent_on_device: when the call returns, no unsent recording, segment or state file of the queue is left on the device (on disk, not only in memory)",
+    "still_nothing_after_release: the held request is then let go (it answers 200): the queue is still empty and still nothing was sent"
+   ]
+  },
+  {
+   "name": "start held, delete",
+   "held": "start",
+   "held_what": "the start of the upload (POST /v1/uploads)",
+   "action": "delete",
+   "action_what": "the learner deletes what they shared (delete), and the server accepts the deletion",
+   "then": null,
+   "assert": [
+    "returns_within_bound: the call returns within off_bound_ms and does not throw, although the held request never answers by itself",
+    "no_request_after: no start, URL, PUT or take-list request STARTS after the call was made",
+    "no_audio_after: zero bytes of audio are sent after the call returned: neither a PUT that starts after the call was made nor the rest of a PUT that was in flight (an SDK says how many bytes its transport may already have handed to the system)",
+    "nothing_unsent_on_device: when the call returns, no unsent recording, segment or state file of the queue is left on the device (on disk, not only in memory)",
+    "still_nothing_after_release: the held request is then let go (it answers 200): the queue is still empty and still nothing was sent",
+    "queue_stopped_before_the_server_is_asked: no upload request starts between the delete call and the server's answer to it",
+    "sharing_is_off_after_an_accepted_delete: sharing is off when the call returns, and the learner is not asked again (asking has ended)",
+    "on_again_works: the learner turns sharing on with the switch; a recording made after that is uploaded in the same run, under a new contributor"
+   ]
+  },
+  {
+   "name": "urls held, off",
+   "held": "urls",
+   "held_what": "a batch of upload URLs",
+   "action": "off",
+   "action_what": "the learner turns sharing off (the settings switch, setOn(false))",
+   "then": null,
+   "assert": [
+    "returns_within_bound: the call returns within off_bound_ms and does not throw, although the held request never answers by itself",
+    "no_request_after: no start, URL, PUT or take-list request STARTS after the call was made",
+    "no_audio_after: zero bytes of audio are sent after the call returned: neither a PUT that starts after the call was made nor the rest of a PUT that was in flight (an SDK says how many bytes its transport may already have handed to the system)",
+    "nothing_unsent_on_device: when the call returns, no unsent recording, segment or state file of the queue is left on the device (on disk, not only in memory)",
+    "still_nothing_after_release: the held request is then let go (it answers 200): the queue is still empty and still nothing was sent"
+   ]
+  },
+  {
+   "name": "urls held, delete",
+   "held": "urls",
+   "held_what": "a batch of upload URLs",
+   "action": "delete",
+   "action_what": "the learner deletes what they shared (delete), and the server accepts the deletion",
+   "then": null,
+   "assert": [
+    "returns_within_bound: the call returns within off_bound_ms and does not throw, although the held request never answers by itself",
+    "no_request_after: no start, URL, PUT or take-list request STARTS after the call was made",
+    "no_audio_after: zero bytes of audio are sent after the call returned: neither a PUT that starts after the call was made nor the rest of a PUT that was in flight (an SDK says how many bytes its transport may already have handed to the system)",
+    "nothing_unsent_on_device: when the call returns, no unsent recording, segment or state file of the queue is left on the device (on disk, not only in memory)",
+    "still_nothing_after_release: the held request is then let go (it answers 200): the queue is still empty and still nothing was sent",
+    "queue_stopped_before_the_server_is_asked: no upload request starts between the delete call and the server's answer to it",
+    "sharing_is_off_after_an_accepted_delete: sharing is off when the call returns, and the learner is not asked again (asking has ended)",
+    "on_again_works: the learner turns sharing on with the switch; a recording made after that is uploaded in the same run, under a new contributor"
+   ]
+  },
+  {
+   "name": "takes held, off",
+   "held": "takes",
+   "held_what": "the take list of an uploaded recording",
+   "action": "off",
+   "action_what": "the learner turns sharing off (the settings switch, setOn(false))",
+   "then": null,
+   "assert": [
+    "returns_within_bound: the call returns within off_bound_ms and does not throw, although the held request never answers by itself",
+    "no_request_after: no start, URL, PUT or take-list request STARTS after the call was made",
+    "no_audio_after: zero bytes of audio are sent after the call returned: neither a PUT that starts after the call was made nor the rest of a PUT that was in flight (an SDK says how many bytes its transport may already have handed to the system)",
+    "nothing_unsent_on_device: when the call returns, no unsent recording, segment or state file of the queue is left on the device (on disk, not only in memory)",
+    "still_nothing_after_release: the held request is then let go (it answers 200): the queue is still empty and still nothing was sent"
+   ]
+  },
+  {
+   "name": "takes held, delete",
+   "held": "takes",
+   "held_what": "the take list of an uploaded recording",
+   "action": "delete",
+   "action_what": "the learner deletes what they shared (delete), and the server accepts the deletion",
+   "then": null,
+   "assert": [
+    "returns_within_bound: the call returns within off_bound_ms and does not throw, although the held request never answers by itself",
+    "no_request_after: no start, URL, PUT or take-list request STARTS after the call was made",
+    "no_audio_after: zero bytes of audio are sent after the call returned: neither a PUT that starts after the call was made nor the rest of a PUT that was in flight (an SDK says how many bytes its transport may already have handed to the system)",
+    "nothing_unsent_on_device: when the call returns, no unsent recording, segment or state file of the queue is left on the device (on disk, not only in memory)",
+    "still_nothing_after_release: the held request is then let go (it answers 200): the queue is still empty and still nothing was sent",
+    "queue_stopped_before_the_server_is_asked: no upload request starts between the delete call and the server's answer to it",
+    "sharing_is_off_after_an_accepted_delete: sharing is off when the call returns, and the learner is not asked again (asking has ended)",
+    "on_again_works: the learner turns sharing on with the switch; a recording made after that is uploaded in the same run, under a new contributor"
+   ]
+  },
+  {
+   "name": "put held, delete refused",
+   "held": "put",
+   "held_what": "a segment PUT to its upload URL",
+   "action": "delete_refused",
+   "action_what": "the learner deletes what they shared, and the server does not take it (an error, or no answer)",
+   "then": null,
+   "assert": [
+    "returns_within_bound: the call returns within off_bound_ms of the server's answer and reports the failure",
+    "queue_stopped_before_the_server_is_asked: no upload request starts between the delete call and the server's answer to it",
+    "a_refused_delete_changes_nothing: sharing is still on, and nothing was deleted on the device",
+    "queue_resumes: the recording that was in flight is uploaded in the same run once the held request is let go"
+   ]
+  },
+  {
+   "name": "start held, delete refused",
+   "held": "start",
+   "held_what": "the start of the upload (POST /v1/uploads)",
+   "action": "delete_refused",
+   "action_what": "the learner deletes what they shared, and the server does not take it (an error, or no answer)",
+   "then": null,
+   "assert": [
+    "returns_within_bound: the call returns within off_bound_ms of the server's answer and reports the failure",
+    "queue_stopped_before_the_server_is_asked: no upload request starts between the delete call and the server's answer to it",
+    "a_refused_delete_changes_nothing: sharing is still on, and nothing was deleted on the device",
+    "queue_resumes: the recording that was in flight is uploaded in the same run once the held request is let go"
+   ]
+  },
+  {
+   "name": "put held, off, on again at once",
+   "held": "put",
+   "held_what": "a segment PUT to its upload URL",
+   "action": "off",
+   "action_what": "the learner turns sharing off (the settings switch, setOn(false))",
+   "then": "on",
+   "assert": [
+    "returns_within_bound: the call returns within off_bound_ms and does not throw, although the held request never answers by itself",
+    "no_request_after: no start, URL, PUT or take-list request STARTS after the call was made",
+    "no_audio_after: zero bytes of audio are sent after the call returned: neither a PUT that starts after the call was made nor the rest of a PUT that was in flight (an SDK says how many bytes its transport may already have handed to the system)",
+    "nothing_unsent_on_device: when the call returns, no unsent recording, segment or state file of the queue is left on the device (on disk, not only in memory)",
+    "on_again_works: sharing is turned on again as soon as the off call returned; a recording made after that is uploaded in the same run",
+    "the_old_recording_is_gone: the recording that was in flight at the off call is not uploaded after sharing came back on (it was deleted, not paused)"
+   ]
+  },
+  {
+   "name": "start held, off, on again at once",
+   "held": "start",
+   "held_what": "the start of the upload (POST /v1/uploads)",
+   "action": "off",
+   "action_what": "the learner turns sharing off (the settings switch, setOn(false))",
+   "then": "on",
+   "assert": [
+    "returns_within_bound: the call returns within off_bound_ms and does not throw, although the held request never answers by itself",
+    "no_request_after: no start, URL, PUT or take-list request STARTS after the call was made",
+    "no_audio_after: zero bytes of audio are sent after the call returned: neither a PUT that starts after the call was made nor the rest of a PUT that was in flight (an SDK says how many bytes its transport may already have handed to the system)",
+    "nothing_unsent_on_device: when the call returns, no unsent recording, segment or state file of the queue is left on the device (on disk, not only in memory)",
+    "on_again_works: sharing is turned on again as soon as the off call returned; a recording made after that is uploaded in the same run",
+    "the_old_recording_is_gone: the recording that was in flight at the off call is not uploaded after sharing came back on (it was deleted, not paused)"
+   ]
+  }
+ ]
+}

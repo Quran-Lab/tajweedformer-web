@@ -87,7 +87,7 @@ test('a learner who said "Share" gets the whole session uploaded through the SDK
     assert.equal(m.consent_version, copyFor('en').consentVersion, 'the deck version the learner agreed to');
     assert.equal(m.device_class, 'node');
     assert.ok(Number.isInteger(m.os_major));
-    assert.equal(m.decode.sdk_version, '3.0.0');
+    assert.equal(m.decode.sdk_version, '3.0.1');
     const keys = [...api.state.puts.keys()].sort();
     assert.equal(keys.length, 2, `12 s is two segments (10 s, then the rest): ${keys.join(', ')}`);
     const all = Buffer.concat(keys.map((k) => api.state.puts.get(k)));

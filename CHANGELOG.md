@@ -1,5 +1,34 @@
 # Changelog
 
+## 3.0.1
+
+A fix for recitation sharing, and one change of behaviour that comes with it.
+
+- **Fixed: sharing turned off while a recording was being uploaded.** Since 2.0.0, when a learner turned sharing
+  off, or deleted what they shared, while a recording was on its way up, the SDK did not abort a request to
+  Quran Lab that was in flight (the start of an upload, a batch of upload URLs, a take list). The off call waited
+  for the answer, and with the answer the SDK wrote the recording's state and sent the next segment of that
+  recording, after the learner had turned sharing off. An upload pass that ran while the queue was being deleted
+  could also leave a file of the recording on the device and make the off call fail. A new test that holds each
+  kind of request in flight and then turns sharing off, or deletes, found it: on 3.0.0 it passed 56 of 240 runs,
+  and in 85 runs a segment of audio was sent after the call. Now every request is aborted, nothing is sent or
+  written once the call is made, the call returns within 3 s whatever was in flight, nothing unsent is left on
+  the device (also after the request that was in flight has come back), and turning sharing on again works at
+  once: 240 of 240 runs. One more case of it, found while testing the fix: a write to the device's storage that
+  took longer than the off call waits (3 s) could bring the state file of a deleted recording back afterwards
+  (its ids and counts; no audio). Such a write is now deleted again when it comes back. In production the
+  sharing sheet has so far been offered on iOS and macOS only, so no learner could share from a web app yet.
+- **`sharing.setOn(on)` returns a promise.** Off resolves when the uploads in flight are aborted and the unsent
+  queue is gone.
+- **Changed: an accepted "delete what I shared" turns sharing off** (`sharing.delete()`; `isOn` is false
+  afterwards), on every platform from 3.0.1. The learner turns it on again with the switch, is not asked again,
+  and shares under a new contributor from then on. In 3.0.0 `isOn` stayed true after a delete although that page
+  uploaded nothing more until it was loaded again. A delete Quran Lab does not take (an error, or no answer)
+  changes nothing: the promise rejects, sharing is still on, nothing on the device was deleted and the queue goes
+  on. Uploads stand still while Quran Lab is asked.
+- **Fixed: `client.diagnose()` with no Model open** reports the `context` and the `backend` a Session would run
+  on, from the model on the device and the signed config (both were null).
+
 ## 3.0.0
 
 A breaking release: the SDK is a pure inference SDK with a new, smaller API. How to move an app from 2.x is in
