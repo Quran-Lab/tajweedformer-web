@@ -38,6 +38,12 @@ A fix for recitation sharing, and one change of behaviour that comes with it.
   test with nine such recordings all nine went up. While the storage refuses to delete, the off call can
   also take longer than its 3 s. This is as old as the queue itself (2.0.1). In production the sharing
   sheet has so far been offered on iOS and macOS only, so no learner could have such a queue from a web app.
+- **Known, fixed in 3.0.2: an off the device refuses to store.** When the device refuses to store the
+  learner's answer at the moment sharing is turned off (a full storage quota in a browser, a disk that
+  cannot be written under Node), a browser page reads sharing as on again, and under Node the error leaves
+  `sharing.setOn(false)` before the uploads are stopped; the write is not tried again. This has been so since
+  2.0.0. In production the sharing sheet has so far been offered on iOS and macOS only, so sharing is not on
+  for web apps.
 
 ## 3.0.0
 
