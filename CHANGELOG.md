@@ -29,6 +29,13 @@ A fix for recitation sharing, and one change of behaviour that comes with it.
   on. Uploads stand still while Quran Lab is asked.
 - **Fixed: `client.diagnose()` with no Model open** reports the `context` and the `backend` a Session would run
   on, from the model on the device and the signed config (both were null).
+- **Known, fixed in 3.0.2: recordings left behind by an interrupted stop.** When the page or process ends
+  between turning sharing off and the deletion of the unsent queue (a closed tab, a kill), or when the
+  device's storage refuses to delete a recording, those recordings stay on the device. They are not deleted
+  at the next start, and they are uploaded when the learner turns sharing on again: in a test with nine
+  such recordings all nine went up. While the storage refuses to delete, the off call can also take longer
+  than its 3 s. This is as old as the queue itself (2.0.1). In production the sharing sheet has so far been
+  offered on iOS and macOS only, so no learner could have such a queue from a web app.
 
 ## 3.0.0
 
