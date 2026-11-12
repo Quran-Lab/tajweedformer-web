@@ -402,7 +402,7 @@ listens (Ogg Opus, uploaded in the background, resumable).
 | - | - |
 | `isAvailable` | Quran Lab's config allows sharing for this app. |
 | `isOn` | The learner said yes. |
-| `setOn(on)` | The settings switch. Off aborts every upload request in flight and deletes the unsent queue; nothing is sent after the call. It returns a promise that resolves when the queue is gone (within 3 s, whatever was in flight). |
+| `setOn(on)` | The settings switch. Off aborts every upload request in flight and deletes the unsent queue; the SDK starts no request after the call (what the browser or the system had already buffered of the segment in flight may still go out). It returns a promise that resolves when the queue is gone (within 3 s, whatever was in flight). |
 | `ask()` | Ask now, at your own moment, if an ask is still allowed. |
 | `feed(samples, sampleRate)` | Audio your app already captures outside takes (see below). |
 | `items()` | The outbox: each recording's status (a promise). |

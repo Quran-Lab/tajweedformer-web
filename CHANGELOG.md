@@ -11,10 +11,14 @@ A fix for recitation sharing, and one change of behaviour that comes with it.
   recording, after the learner had turned sharing off. An upload pass that ran while the queue was being deleted
   could also leave a file of the recording on the device and make the off call fail. A new test that holds each
   kind of request in flight and then turns sharing off, or deletes, found it: on 3.0.0 it passed 56 of 240 runs,
-  and in 85 runs a segment of audio was sent after the call. Now every request is aborted, nothing is sent or
-  written once the call is made, the call returns within 3 s whatever was in flight, nothing unsent is left on
-  the device (also after the request that was in flight has come back), and turning sharing on again works at
-  once: 240 of 240 runs. One more case of it, found while testing the fix: a write to the device's storage that
+  and in 85 runs a segment of audio was sent after the call. Now every request is aborted, the SDK starts no
+  request and writes nothing once the call is made, the call returns within 3 s whatever was in flight, nothing
+  unsent is left on the device (also after the request that was in flight has come back), and turning sharing on
+  again works at once: 240 of 240 runs, with 0 bytes arriving at the test's stub after the call. What that
+  cannot promise: bytes of the segment in flight that the browser or the system had already buffered for the
+  connection may still go out after the abort, and that can be the whole segment. Measured on a phone with the
+  Android SDK (Android 11), the system's buffer held 2,220,032 bytes when the request was ended, which is more
+  than one segment; a browser's buffer is not measured. Nothing after that segment is sent. One more case of it, found while testing the fix: a write to the device's storage that
   took longer than the off call waits (3 s) could bring the state file of a deleted recording back afterwards
   (its ids and counts; no audio). Such a write is now deleted again when it comes back. In production the
   sharing sheet has so far been offered on iOS and macOS only, so no learner could share from a web app yet.
