@@ -45,7 +45,7 @@ const tokens = (c) => `
   --_on-accent: var(--ql-accent-fg, ${c.onAccent});
   --_tint: color-mix(in srgb, var(--_accent) ${c.tint}%, var(--_bg));
   --_tint-soft: color-mix(in srgb, var(--_accent) ${c.soft}%, var(--_bg));
-  --_on-tint: var(--_accent);`;
+  --_on-tint: var(--_accent); --_icon: var(--_accent);`;
 
 // Icons: the reference drawing's SVG paths. The row icons are drawn with a CSS mask in the accent, so that each
 // disclosure row is the deck's text alone (one text for a screen reader; the icons are decoration).
@@ -125,7 +125,7 @@ h2 { font-family: var(--ql-title-font, var(--_font)); font-size: ${em(26)}; line
   font-weight: 400; color: var(--_text); }
 .card li + li { border-block-start: 1px solid var(--_divider); }
 .card li::before { content: ""; position: absolute; inset-inline-start: 0; inset-block-start: 14px; inline-size: 22px;
-  block-size: 22px; block-size: 1lh; background-color: var(--_on-tint);
+  block-size: 22px; block-size: 1lh; background-color: var(--_icon);
   -webkit-mask: ${MIC} center / 22px 22px no-repeat; mask: ${MIC} center / 22px 22px no-repeat; }
 .card li:nth-child(2)::before { -webkit-mask-image: ${SHIELD}; mask-image: ${SHIELD}; }
 .card li:nth-child(3)::before { -webkit-mask-image: ${TOGGLE}; mask-image: ${TOGGLE}; }
@@ -222,7 +222,6 @@ const scriptOf = (lang) => { const b = String(lang || '').toLowerCase().split(/[
 
 // ---- colours, computed in script when a sheet is shown (and again when the colour scheme changes)
 const WHITE = [255, 255, 255, 1];
-const NEAR_BLACK = [11, 11, 12, 1];
 const lin = (v) => { const s = v / 255; return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; };
 const luminance = (c) => 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
 /** WCAG contrast of two opaque colours ([r, g, b] in 0..255). */
@@ -262,15 +261,25 @@ function parseColor(value, doc) {
 }
 
 // the properties paint() may set on the element it paints (cleared before each pass)
-const PAINTED = ['--_tint', '--_tint-soft', '--_on-accent', '--_on-tint', '--_card', '--_divider', '--_bar-divider', '--_grabber', '--_switch-off'];
+const PAINTED = ['--_tint', '--_tint-soft', '--_on-accent', '--_on-tint', '--_icon', '--_card', '--_divider', '--_bar-divider', '--_grabber', '--_switch-off'];
+
+/** The contrast the accent's marks need: the two button labels (bold, 16), the icons and the
+ * emblem's glyph take 3 to 1 against what is behind them, 4.5 to 1 when the browser asks for more contrast.
+ * Running text is never in the accent and keeps 4.5 to 1 by its own colours. */
+export function contrastBar(view) {
+  return view && view.matchMedia && view.matchMedia('(prefers-contrast: more)').matches ? 4.5 : 3;
+}
+/** On-accent, the share button's label: white when white has the bar against the accent, else near-black. */
+const onAccentFor = (accent, bar) => (contrastRatio(WHITE, accent) >= bar ? '#FFFFFF' : '#0B0B0C');
 
 /**
  * The colour rules the stylesheet cannot express, for the element that carries the tokens (the sheet's dialog,
- * the settings' section): on-accent is white or near-black, whichever has the higher contrast with the accent
- * (unless the app sets --ql-accent-fg); when the accent as a label on the tint is under 4.5 to 1, the "Not now"
- * label and the icons take the text colour (the fill stays the tint); an app's own background or text colour
- * gives the card, the dividers and the grabber; where color-mix() is missing, the tints are set here.
- * Returns what it decided, or null where there is no browser.
+ * the settings' section), with the bar of contrastBar() (3 to 1, or 4.5 to 1 under prefers-contrast: more):
+ * on-accent is white when white has the bar against the accent, else near-black (unless the app sets
+ * --ql-accent-fg); the "Not now" label and the emblem's glyph stay in the accent when the accent has the bar
+ * against the tint, else they take the text colour; the row icons the same against the card (the fills stay the
+ * accent's); an app's own background or text colour gives the card, the dividers and the grabber; where
+ * color-mix() is missing, the tints are set here. Returns what it decided, or null where there is no browser.
  */
 export function paintColors(el) {
   const doc = el && el.ownerDocument;
@@ -278,6 +287,7 @@ export function paintColors(el) {
   if (!view || typeof view.getComputedStyle !== 'function' || !el.style) return null;
   for (const p of PAINTED) el.style.removeProperty(p);
   const dark = !!(view.matchMedia && view.matchMedia('(prefers-color-scheme: dark)').matches);
+  const bar = contrastBar(view);
   const D = dark ? DARK : LIGHT;
   const cs = view.getComputedStyle(el);
   const own = (p) => cs.getPropertyValue(p).trim() !== '';
@@ -289,21 +299,21 @@ export function paintColors(el) {
   const set = (p, v) => el.style.setProperty(p, v);
   const mixes = !!(view.CSS && typeof view.CSS.supports === 'function' && view.CSS.supports('color', 'color-mix(in srgb, red 50%, blue)'));
   if (!mixes) { set('--_tint', hex(tint)); set('--_tint-soft', hex(mix(accent, bg, D.soft / 100))); }
-  let onAccent = null;
-  if (!own('--ql-accent-fg')) {
-    onAccent = contrastRatio(WHITE, accent) >= contrastRatio(NEAR_BLACK, accent) ? '#FFFFFF' : '#0B0B0C';
-    set('--_on-accent', onAccent);
-  }
-  const accentOnTint = contrastRatio(accent, tint);
-  const fallback = accentOnTint < 4.5;
-  if (fallback) set('--_on-tint', 'var(--_text)');
+  let card = parseColor(D.card, doc);
   if (own('--ql-bg') || own('--ql-fg')) {
     const k = DERIVED[dark ? 'dark' : 'light'];
-    set('--_card', hex(mix(text, bg, k.card))); set('--_divider', hex(mix(text, bg, k.divider)));
+    card = mix(text, bg, k.card);
+    set('--_card', hex(card)); set('--_divider', hex(mix(text, bg, k.divider)));
     set('--_bar-divider', hex(mix(text, bg, k.bar))); set('--_grabber', hex(mix(text, bg, k.grabber)));
     set('--_switch-off', hex(mix(text, bg, k.off)));
   }
-  return { dark, accent: hex(accent), tint: hex(tint), onAccent, accentOnTint, fallback };
+  let onAccent = null;
+  if (!own('--ql-accent-fg')) { onAccent = onAccentFor(accent, bar); set('--_on-accent', onAccent); }
+  const accentOnTint = contrastRatio(accent, tint), accentOnCard = contrastRatio(accent, card);
+  const fallback = accentOnTint < bar, iconFallback = accentOnCard < bar;
+  if (fallback) set('--_on-tint', 'var(--_text)');
+  if (iconFallback) set('--_icon', 'var(--_text)');
+  return { dark, bar, accent: hex(accent), tint: hex(tint), card: hex(card), onAccent, accentOnTint, accentOnCard, fallback, iconFallback };
 }
 
 const Base = globalThis.HTMLElement || class {};
@@ -397,7 +407,8 @@ export class QuranLabConsent extends Base {
       wrap.classList.toggle('at-end', sc.scrollTop >= max - 1);
       wrap.style.setProperty('--_sbw', `${Math.max(0, sc.offsetWidth - sc.clientWidth)}px`);
     };
-    const mq = view.matchMedia ? view.matchMedia('(prefers-color-scheme: dark)') : null;
+    // the colours again when the scheme or the asked-for contrast changes while the sheet is open
+    const mqs = view.matchMedia ? [view.matchMedia('(prefers-color-scheme: dark)'), view.matchMedia('(prefers-contrast: more)')] : [];
     const repaint = () => { this._colors = paintColors(d); };
     let ro = null;
     return {
@@ -406,12 +417,12 @@ export class QuranLabConsent extends Base {
         edges();
         sc.addEventListener('scroll', edges, { passive: true });
         if (typeof view.ResizeObserver === 'function') { ro = new view.ResizeObserver(edges); ro.observe(sc); ro.observe(col); }
-        if (mq && mq.addEventListener) mq.addEventListener('change', repaint);
+        for (const mq of mqs) if (mq.addEventListener) mq.addEventListener('change', repaint);
       },
       stop() {
         sc.removeEventListener('scroll', edges);
         if (ro) ro.disconnect();
-        if (mq && mq.removeEventListener) mq.removeEventListener('change', repaint);
+        for (const mq of mqs) if (mq.removeEventListener) mq.removeEventListener('change', repaint);
       },
     };
   }
@@ -430,12 +441,12 @@ export class QuranLabConsent extends Base {
     el.style.cssText = `all:initial;display:block;box-sizing:border-box;position:fixed;inset-inline:16px;inset-block-end:max(16px, env(safe-area-inset-bottom, 0px));max-inline-size:480px;margin-inline:auto;padding:14px 18px;border-radius:calc(var(--ql-radius, 28px) * 14 / 28);background:var(--ql-accent, ${D.accent});color:var(--ql-accent-fg, ${D.onAccent});font:400 medium/1.5 var(--ql-font, ${STACK});letter-spacing:normal;text-transform:none;text-align:start;white-space:normal;visibility:visible;z-index:2147483647;box-shadow:0 10px 30px rgb(0 0 0 / .25)`;
     applyTheme(el, theme);
     (parent || document.body).appendChild(el);
-    // on-accent: white or near-black, whichever reads better on the accent (unless the app sets --ql-accent-fg)
+    // on-accent: white when white has the bar against the accent, else near-black (unless the app sets --ql-accent-fg)
     try {
       const cs = view.getComputedStyle(el);
       if (!cs.getPropertyValue('--ql-accent-fg').trim()) {
         const a = parseColor(cs.backgroundColor, document);
-        if (a) el.style.color = contrastRatio(WHITE, a) >= contrastRatio(NEAR_BLACK, a) ? '#FFFFFF' : '#0B0B0C';
+        if (a) el.style.color = onAccentFor(over(a, dark ? [28, 28, 30, 1] : WHITE), contrastBar(view));
       }
     } catch (_) { /* the inline default stays */ }
     setTimeout(() => el.remove(), ms);

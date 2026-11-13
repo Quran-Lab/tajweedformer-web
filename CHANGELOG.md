@@ -20,20 +20,23 @@ The sharing sheet has a new design. No word, no consent rule and no call changed
   inside the element, so a rule such as `* { font-size: 30px }` changes nothing in it. The sizes follow the
   browser's own text size (the learner's setting), not the page's root size. Before, its sizes were in rem,
   so a page that changed its root font size changed the sheet.
-- What themes it is what themed it in 3.1.0, set on the element, on an ancestor or through `theme`:
-  `--ql-accent` (the share button, "Not now", the icons; the two tints are made from it), `--ql-accent-fg`
-  (the share button's label; when you do not set it, white or near-black, whichever reads better on your
-  accent), `--ql-bg`, `--ql-fg`, `--ql-muted` (the hadith's reference), `--ql-font` and `--ql-title-font`
-  (font families), and `--ql-radius`, which is still the sheet's corner radius: 28 px by default now (16 px
-  in 3.1.0), and the cards, the buttons and the emblem follow it (18, 14 and 12 px at 28). When your accent
-  does not reach a contrast of 4.5 to 1 as a label on its tint, "Not now" and the icons take the text colour.
-  A theme changes no word, no line and no consent version. The parts of 3.1.0 (`sheet`, `title`, `body`,
-  `primary`, `secondary`, `guardian`) are still there; the name Quran Lab is in none of them.
+- What themes it is what themed it in 3.1.0, set on the element, on an ancestor or through `theme`: `--ql-accent`
+  (the share button, "Not now", the icons; the two tints are made from it), `--ql-accent-fg` (the share button's
+  label; when you do not set it, white when white has a contrast of at least 3 to 1 with your accent, else
+  near-black), `--ql-bg`, `--ql-fg`, `--ql-muted` (the hadith's reference), `--ql-font` and `--ql-title-font`
+  (font families), and `--ql-radius`, which is still the sheet's corner radius: 28 px by default now (16 px in
+  3.1.0), and the cards, the buttons and the emblem follow it (18, 14 and 12 px at 28). When your accent does not
+  reach 3 to 1 against its tint, "Not now" and the emblem's glyph take the text colour, and the icons do when it
+  does not reach 3 to 1 against the card; when the browser asks for more contrast (`prefers-contrast: more`) the
+  bar is 4.5 to 1, for these and for the white label. A theme changes no word, no line and no consent version.
+  The parts of 3.1.0 (`sheet`, `title`, `body`, `primary`, `secondary`, `guardian`) are still there; the name
+  Quran Lab is in none of them.
 - **Changed: two defaults a themed page may notice.** `--ql-radius`, when the page does not set it, is now 28 px
   (16 px in 3.1.0), and a radius you set gives the sheet's corners with the cards, buttons and emblem following
-  it (in 3.1.0 the buttons took 0.6 of it). `--ql-accent-fg`, when the page does not set it, is now white or
-  near-black, whichever reads better on the accent (in 3.1.0 always white): with a light accent of yours, the
-  share button's label turns near-black unless you set `--ql-accent-fg`.
+  it (in 3.1.0 the buttons took 0.6 of it). `--ql-accent-fg`, when the page does not set it, is now white when
+  white has at least 3 to 1 against the accent (4.5 to 1 under `prefers-contrast: more`), else near-black (in
+  3.1.0 always white): with a light accent of yours, a yellow for one, the share button's label turns near-black
+  unless you set `--ql-accent-fg`; a blue like the system's keeps a white label.
 - Unchanged: the words (the eight decks of 3.1.0, `2026-11-12.1`, consent `share-2026-11-12`), when the sheet
   is shown and how often, what `QuranLabConsent.ask()` resolves with, Escape as "Not now", a click beside the
   sheet doing nothing, and the focus kept in the sheet (it now starts on the name, first on the sheet, never
