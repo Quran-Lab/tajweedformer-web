@@ -81,6 +81,8 @@ const shots = [
   ['34_en_light_390x844_guardian_as_it_opens', 'en', 'light', P.w, P.h, { guardian: true }],
   ['35_ar_light_320x568_guardian_text200_scrolled_to_end', 'ar', 'light', 320, 568, { guardian: true, text: 2, end: true }],
   ['36_en_light_390x1600_guardian_whole_sheet', 'en', 'light', P.w, 1600, { guardian: true }],
+  ['37_en_light_390x844_theme_blue_accent', 'en', 'light', P.w, P.h, { theme: { accent: '#007AFF' } }],
+  ['38_en_light_390x844_theme_blue_accent_prefers_contrast_more', 'en', 'light', P.w, P.h, { theme: { accent: '#007AFF' }, contrast: 'more' }],
 ];
 
 const b = await puppeteer.launch({ executablePath: exe, headless: true, args: ['--no-sandbox', '--hide-scrollbars=false'] });
@@ -91,6 +93,11 @@ try {
     const p = await b.newPage();
     await p.setViewport({ width, height, deviceScaleFactor: 2 });
     await p.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: scheme }]);
+    if (o.contrast) {
+      // the device asks for more contrast (all the features in one call: it replaces the emulated set)
+      const cdp = await p.createCDPSession();
+      await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: scheme }, { name: 'prefers-contrast', value: o.contrast }] });
+    }
     if (o.text) {
       // the browser's own text size (Chrome's Settings, Appearance, Font size): the default size of `medium`
       const cdp = await p.createCDPSession();

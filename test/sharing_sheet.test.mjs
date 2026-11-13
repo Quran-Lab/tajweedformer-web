@@ -120,6 +120,8 @@ test('the hadith is shown only when the deck says where it was verified', async 
 
 test('contrast as WCAG defines it (the fallback rule\'s measure)', () => {
   assert.equal(Math.round(contrastRatio([255, 255, 255], [0, 0, 0]) * 100) / 100, 21);
+  // the system's blue with white: 4.0 to 1, over the 3 to 1 of a bold label, under 4.5
+  assert.equal(Math.round(contrastRatio([255, 255, 255], [0, 122, 255]) * 100) / 100, 4.02);
   assert.ok(contrastRatio([14, 107, 88], [255, 255, 255]) > 4.5); // the default accent on white
   assert.ok(contrastRatio([159, 227, 210], [255, 255, 255]) < 4.5);
 });
@@ -163,11 +165,12 @@ test('in headless Chrome: the sheet\'s design', { skip: skipBrowser, timeout: 60
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
-  const open = async (where = '/', { width = 390, height = 844, scheme = 'light', text = 1, motion = 'reduce' } = {}) => {
+  const open = async (where = '/', { width = 390, height = 844, scheme = 'light', text = 1, motion = 'reduce', contrast = 'no-preference' } = {}) => {
     const page = await browser.newPage();
     await page.setViewport({ width, height });
-    await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: scheme }, { name: 'prefers-reduced-motion', value: motion }]);
     const cdp = await page.createCDPSession();
+    await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: scheme }, { name: 'prefers-reduced-motion', value: motion },
+      { name: 'prefers-contrast', value: contrast }] });
     const textSize = (k) => cdp.send('Page.setFontSizes', { fontSizes: { standard: 16 * k, fixed: 13 * k } });
     await textSize(text);
     await page.goto(base + where);
@@ -243,7 +246,7 @@ test('in headless Chrome: the sheet\'s design', { skip: skipBrowser, timeout: 60
       }
     });
 
-    await t.test('colours: the default accent labels "Not now" and the icons; a low-contrast accent takes the text colour there; on-accent follows the accent unless the app sets it; the tints without color-mix', async () => {
+    await t.test('colours: the accent marks take 3 to 1, 4.5 to 1 under prefers-contrast: more; on-accent is white when white has that bar, else near-black; "Not now" and the glyph against the tint, the icons against the card, else the text colour; the tints without color-mix', async () => {
       const read = (page, theme) => page.evaluate((theme) => {
         openSheet({ lang: 'en', theme });
         const r = R(), cs = (el, pseudo) => getComputedStyle(el, pseudo || null);
@@ -253,14 +256,23 @@ test('in headless Chrome: the sheet\'s design', { skip: skipBrowser, timeout: 60
         close1();
         return out;
       }, theme);
+      const marks = (c) => [c.yes, c.no, c.emblem, c.icon];
+      const TEXT = 'rgb(23, 23, 26)', WHITE = 'rgb(255, 255, 255)', NEAR_BLACK = 'rgb(11, 11, 12)', BLUE = 'rgb(0, 122, 255)', GREEN = 'rgb(14, 107, 88)';
       let page = await open();
       let c = await read(page, null);
-      assert.deepEqual([c.no, c.emblem, c.icon, c.yes, c.text], ['rgb(14, 107, 88)', 'rgb(14, 107, 88)', 'rgb(14, 107, 88)', 'rgb(255, 255, 255)', 'rgb(23, 23, 26)'], JSON.stringify(c));
-      assert.equal(c.colors.fallback, false);
+      assert.equal(c.colors.bar, 3);
+      assert.deepEqual([...marks(c), c.text], [WHITE, GREEN, GREEN, GREEN, TEXT], JSON.stringify(c));
+      // the system's blue: white has 4.0 to 1 on it, the accent 3.5 on its tint and 3.7 on the card: all in the accent
+      c = await read(page, { accent: '#007AFF' });
+      assert.deepEqual([c.colors.fallback, c.colors.iconFallback], [false, false], JSON.stringify(c.colors));
+      assert.deepEqual(marks(c), [WHITE, BLUE, BLUE, BLUE], 'blue: a white label, "Not now", the glyph and the icons in the accent');
+      // a yellow accent: under the bar everywhere
+      c = await read(page, { accent: '#FFCC00' });
+      assert.deepEqual(marks(c), [NEAR_BLACK, TEXT, TEXT, TEXT], 'yellow: near-black on it, the text colour beside it');
       c = await read(page, { accent: '#9FE3D2' });
-      assert.equal(c.colors.fallback, true, JSON.stringify(c.colors));
-      assert.deepEqual([c.no, c.emblem, c.icon, c.yes], ['rgb(23, 23, 26)', 'rgb(23, 23, 26)', 'rgb(23, 23, 26)', 'rgb(11, 11, 12)'], 'the text colour; near-black on a light accent');
-      assert.notEqual(c.tint, 'rgb(255, 255, 255)', 'the fill stays the tint');
+      assert.deepEqual([c.colors.fallback, c.colors.iconFallback], [true, true], JSON.stringify(c.colors));
+      assert.deepEqual(marks(c), [NEAR_BLACK, TEXT, TEXT, TEXT], 'a pale accent');
+      assert.notEqual(c.tint, WHITE, 'the fill stays the tint');
       c = await read(page, { accent: '#9FE3D2', accentText: '#123456' });
       assert.equal(c.yes, 'rgb(18, 52, 86)', 'the app\'s own on-accent');
       // without color-mix() (a browser older than the SDK supports), the tints are computed in script
@@ -271,12 +283,31 @@ test('in headless Chrome: the sheet\'s design', { skip: skipBrowser, timeout: 60
       const rgb = (s) => (s.startsWith('color(') ? s.match(/[\d.]+/g).slice(0, 3).map((v) => +v * 255) : s.match(/[\d.]+/g).slice(0, 3).map(Number));
       assert.ok(rgb(mixed.tint).every((v, i) => Math.abs(v - rgb(fallback.tint)[i]) <= 1), `${mixed.tint} ${fallback.tint}`);
       await page.close();
+      // the device asks for more contrast: the 4.5 results
+      page = await open('/', { contrast: 'more' });
+      c = await read(page, { accent: '#007AFF' });
+      assert.equal(c.colors.bar, 4.5);
+      assert.deepEqual(marks(c), [NEAR_BLACK, TEXT, TEXT, TEXT], 'blue under prefers-contrast: more');
+      c = await read(page, null);
+      assert.deepEqual(marks(c), [WHITE, GREEN, GREEN, GREEN], 'the default accent has 4.5 everywhere');
+      c = await read(page, { accent: '#FFCC00' });
+      assert.deepEqual(marks(c), [NEAR_BLACK, TEXT, TEXT, TEXT], 'yellow as before');
+      await page.close();
       page = await open('/', { scheme: 'dark' });
       c = await read(page, null);
-      assert.deepEqual([c.no, c.yes, c.text], ['rgb(98, 210, 182)', 'rgb(11, 11, 12)', 'rgb(244, 244, 246)'], 'dark: the dark accent and near-black on it');
+      assert.deepEqual([c.no, c.yes, c.text], ['rgb(98, 210, 182)', NEAR_BLACK, 'rgb(244, 244, 246)'], 'dark: the dark accent and near-black on it');
       c = await read(page, { accent: '#0E6B58' });
-      assert.equal(c.colors.fallback, true, 'a dark accent on the dark tint');
-      assert.deepEqual([c.no, c.yes], ['rgb(244, 244, 246)', 'rgb(255, 255, 255)']);
+      assert.deepEqual([c.colors.fallback, c.colors.iconFallback], [true, true], 'a dark accent on the dark tint and card');
+      assert.deepEqual([c.no, c.icon, c.yes], ['rgb(244, 244, 246)', 'rgb(244, 244, 246)', WHITE]);
+      await page.close();
+      // the asked-for contrast changes while the sheet is open: the colours follow
+      page = await open();
+      const live = await page.evaluate(() => { openSheet({ lang: 'en', theme: { accent: '#007AFF' } }); return getComputedStyle(R().querySelector('#yes')).color; });
+      const cdp = await page.createCDPSession();
+      await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-contrast', value: 'more' }, { name: 'prefers-reduced-motion', value: 'reduce' }] });
+      await new Promise((r) => setTimeout(r, 100));
+      const after = await page.evaluate(() => { const v = getComputedStyle(R().querySelector('#yes')).color; close1(); return v; });
+      assert.deepEqual([live, after], [WHITE, NEAR_BLACK]);
       await page.close();
     });
 

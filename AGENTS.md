@@ -442,10 +442,8 @@ view with two buttons of the same size. A bottom sheet under 600 px wide, a cent
 above that; light and dark follow `prefers-color-scheme`. Its sizes follow the browser's text size, and
 nothing of the page's styles changes its type. The sheets take these CSS custom properties (on the element,
 on an ancestor, or through `theme`): `--ql-accent` (the share button, "Not now" and the icons; the tints are
-made from it), `--ql-accent-fg` (the share button's label; by default white or near-black, whichever reads
-better on the accent), `--ql-bg`, `--ql-fg`, `--ql-muted`, `--ql-radius` (the sheet's corners, 28px by
-default; the cards, buttons and emblem follow it), `--ql-font` and `--ql-title-font` (font families). An
-accent too light to read as a label on its tint gives "Not now" and the icons the text colour. A theme never
+made from it), `--ql-accent-fg` (the share button's label; by default white when white has 3 to 1 against the accent, else near-black), `--ql-bg`, `--ql-fg`, `--ql-muted`, `--ql-radius` (the sheet's corners, 28px by
+default; the cards, buttons and emblem follow it), `--ql-font` and `--ql-title-font` (font families). An accent under 3 to 1 against its tint gives "Not now" and the emblem's glyph the text colour, and under 3 to 1 against the card the icons too; under `prefers-contrast: more` that bar is 4.5 to 1. A theme never
 changes the words, hides a line or changes the consent version. A call that needs sharing while it is not
 offered fails with `sharing_unavailable`.
 
