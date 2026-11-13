@@ -12,7 +12,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { enableSharing, registerDeck, EN, MAX_ASKS, REASK_GAP, LEGACY_CONSENT_VERSION, SHARING_STATE_KEY } from '../web/consent/index.js';
 import { memoryState } from '../web/platform/index.js';
-import { resetSharingForTests } from '../web/sharing/index.js';
+import { resetSharingForTests, outbox as pipeline } from '../web/sharing/index.js';
+import { dirStorage, readJson, FILES } from '../web/sharing/outbox.js';
 import { stubApi, client, clip16k, listen } from './sharing_stub_api.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -38,13 +39,42 @@ function wired(ql, { lang = 'en', answer = () => ({ yes: true }), wording } = {}
   return { ctl, asked };
 }
 
-/** One shared session uploaded: listen (without the completed hook), then let the outbox send its start. */
+/**
+ * One shared session started: listen (without the completed hook), then wait until the start's ANSWER is stored,
+ * that is, until the outbox's own record of the new recording (item.json in its storage, read here with the SDK's
+ * own storage reader) says `started`. That is what the SDK guarantees about a start. That the server has received
+ * the request says less: the answer may still be on its way, and a pipeline that finds the recording not started
+ * sends the start again (the same recording id; the server takes it as the same start).
+ * Then: exactly one start was sent for it.
+ */
 async function shareOne(api, ctl, pcm) {
   const n = api.state.starts.length;
+  const store = await dirStorage(path.join(process.cwd(), '.quranlab')); // the outbox's Node storage
+  const before = new Set(await store.sessions());
   await listen(ctl, pcm, { complete: false });
-  for (let i = 0; i < 60 && api.state.starts.length <= n; i++) { await ctl.outbox.resume(); await new Promise((r) => setTimeout(r, 50)); }
+  let stored = null;
+  for (let i = 0; i < 120 && !stored; i++) {
+    await ctl.outbox.resume();
+    const fresh = (await store.sessions()).filter((id) => !before.has(id));
+    assert.ok(fresh.length <= 1, `one new recording (found ${fresh.length})`);
+    const rec = fresh.length ? await readJson(store, fresh[0], FILES.item) : null;
+    if (rec && rec.started === true) stored = rec; else await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.ok(stored, 'the start was answered and the answer is stored: the outbox\'s record of the recording says started');
   assert.equal(api.state.starts.length, n + 1, 'one session started');
   return api.state.starts[n];
+}
+
+/**
+ * The app ends and starts again, as far as a test in one process can show it. The page's pipeline is stopped the
+ * way the end of its process stops it: its requests in flight are aborted and its passes leave, nothing is
+ * deleted and nothing is written afterwards (the library's own outbox.pause(), which nothing resumes). Then it is
+ * forgotten, and the next enableSharing makes a new pipeline on the same folder. resetSharingForTests() alone
+ * leaves the old pipeline running beside the new one, which no restart of an app does.
+ */
+async function restart() {
+  await pipeline.pause().catch(() => {});
+  resetSharingForTests();
 }
 
 async function inDir(name, fn) {
@@ -53,8 +83,8 @@ async function inDir(name, fn) {
   process.chdir(dir); // the outbox's Node storage is <cwd>/.quranlab
   resetSharingForTests();
   try { await fn(); } finally {
+    await restart(); // the pipeline of this folder is stopped before the folder goes
     process.chdir(cwd);
-    resetSharingForTests();
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -98,7 +128,7 @@ test('a deck change with a 2.0.1 grant: no ask, sharing stays on, the JSON carri
   assert.equal(w.asked.length, 1);
   assert.equal(w.ctl.state.grantVersion, DECK);
   // a restart with a newer deck in force
-  resetSharingForTests();
+  await restart();
   ql = await client(api, { state: st });
   w = wired(ql, { lang: 'zz' });
   assert.equal(w.ctl.consent.version, NEXT, 'the newer deck is in force');
@@ -123,7 +153,7 @@ registerDeck('yx', { ...EN, lang: 'en', version: '2026-11-12.1', consent_version
 /** A start of the app on 3.1.2 with a stored yes: nothing is asked at the start, after 30 sessions or by the
  * app's own ask, and the next recording carries the stored version (with the stored hash for an own wording). */
 async function keptWithoutAsk(api, st, pcm, want, { wording, hash = null } = {}) {
-  resetSharingForTests();
+  await restart();
   const before = st.get(SHARING_STATE_KEY);
   const w = wired(await client(api, { state: st }), { wording });
   assert.equal(w.ctl.state.sharing, true, 'sharing is on at the start');
@@ -180,7 +210,7 @@ test('upgrade from 3.1.1 to 3.1.2: the state 3.1.1 stored for a yes (under share
   await keptWithoutAsk(api, st, pcm, 'share-2026-11-12');
   assert.equal(st.get(SHARING_STATE_KEY).changes, 1, 'no change of mind was counted');
   // the learner can still turn it off and delete, under that version
-  resetSharingForTests();
+  await restart();
   const off = wired(await client(api, { state: st }));
   await off.ctl.setSharing(false);
   assert.equal(off.ctl.state.sharing, false);
