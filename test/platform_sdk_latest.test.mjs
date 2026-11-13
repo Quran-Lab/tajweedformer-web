@@ -60,23 +60,23 @@ async function capture(fn, nodeEnv) {
 }
 
 test('a newer SDK: one console.warn per launch with the exact line (two configs and two clients still one)', async () => {
-  assert.equal(SDK_VERSION, '3.1.0');
-  const api = await stub({ sdk_latest: { version: '3.1.1', severity: 'recommended', url: URL_OK } });
+  assert.equal(SDK_VERSION, '3.1.1');
+  const api = await stub({ sdk_latest: { version: '3.1.2', severity: 'recommended', url: URL_OK } });
   const lines = await capture(async () => {
     const ql = await launch(api);
     assert.equal(ql.lastError, undefined);
     await ql.refreshConfig(); // a second config in the same launch
     await launch(api, { debug: true }); // a second client in the same launch
   }, 'development');
-  assert.deepEqual(lines, [`Quran Lab SDK 3.1.1 is available (recommended), you have 3.1.0: ${URL_OK}`]);
+  assert.deepEqual(lines, [`Quran Lab SDK 3.1.2 is available (recommended), you have 3.1.1: ${URL_OK}`]);
   // a new launch warns again; a dotted version longer or shorter compares numerically
   api.extra = { sdk_latest: { version: '3.2', severity: 'required', url: URL_OK } };
-  assert.deepEqual(await capture(() => launch(api), undefined), [`Quran Lab SDK 3.2 is available (required), you have 3.1.0: ${URL_OK}`],
+  assert.deepEqual(await capture(() => launch(api), undefined), [`Quran Lab SDK 3.2 is available (required), you have 3.1.1: ${URL_OK}`],
     'Node without NODE_ENV is a development run');
 });
 
 test('equal, older or pre-release versions: nothing', async () => {
-  for (const version of ['3.1.0', '3.1.0.0', '3.0.2', '3.0.0', '2.0.3', '1.9.9', '3.1.1-beta.1', '3.1.1+build']) {
+  for (const version of ['3.1.1', '3.1.1.0', '3.1.0', '3.0.0', '2.0.3', '1.9.9', '3.1.2-beta.1', '3.1.2+build']) {
     const api = await stub({ sdk_latest: { version, severity: 'recommended', url: URL_OK } });
     assert.deepEqual(await capture(() => launch(api, { debug: true })), [], version);
   }
@@ -94,10 +94,10 @@ test('production: silent (NODE_ENV production, or debug: false)', async () => {
 
 test('malformed sdk_latest: ignored, no throw, the config still in force', async () => {
   const bad = [
-    'a string', 42, null, [], ['3.1.1'], {}, { version: 2.2, severity: 'recommended', url: URL_OK },
-    { version: 'latest', severity: 'recommended', url: URL_OK }, { version: '3.1.1', url: URL_OK }, { version: '3.1.1', severity: 3, url: URL_OK },
-    { version: '3.1.1', severity: 'recommended' }, { version: '3.1.1', severity: 'recommended', url: 'http://example.org' },
-    { version: '3.1.1', severity: 'recommended', url: 'not a url' }, { version: '3.1.1', severity: 'recommended', url: { href: URL_OK } },
+    'a string', 42, null, [], ['3.1.2'], {}, { version: 2.2, severity: 'recommended', url: URL_OK },
+    { version: 'latest', severity: 'recommended', url: URL_OK }, { version: '3.1.2', url: URL_OK }, { version: '3.1.2', severity: 3, url: URL_OK },
+    { version: '3.1.2', severity: 'recommended' }, { version: '3.1.2', severity: 'recommended', url: 'http://example.org' },
+    { version: '3.1.2', severity: 'recommended', url: 'not a url' }, { version: '3.1.2', severity: 'recommended', url: { href: URL_OK } },
   ];
   for (const v of bad) {
     const api = await stub({ sdk_latest: v });

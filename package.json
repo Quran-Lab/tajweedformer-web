@@ -1,6 +1,6 @@
 {
   "name": "@quran-lab/tajweedformer",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "TajweedFormer for browsers and Node, a pure inference SDK: the exact engine in WebAssembly (bit-identical to the native engine, in a Worker in browsers), cached and verified model delivery, every head of the network, the decoded layer (top-1 and runner-up, confidence, timings, speech and silence), one call from microphone to output, and the Quran Lab client (signed config, telemetry, opt-in recitation sharing).",
   "type": "module",
   "main": "web/index.js",

@@ -38,7 +38,7 @@ test('model(): the version and the build; telemetry and register carry them; a s
   assert.equal(model.version, '4.0.0');
   assert.equal(model.build, build.build);
   const cfg = api.log.find((x) => x.path === '/v1/config');
-  assert.match(cfg.query, /sdk=3\.1\.0/);
+  assert.match(cfg.query, /sdk=3\.1\.1/);
   assert.ok(!/model_version/.test(cfg.query), 'no pin, no model_version');
   // a take, then the day's delta: the cohort is (version, build, context, backend); the download names both
   const s = model.session();
@@ -88,7 +88,7 @@ test('pinning by version: model_version goes with the config request; an unavail
 test('the manifest\'s acceptance checks reach the app as catalogue codes', async () => {
   const cases = [
     [await build3({ version: null }), 'model_incompatible'],              // a 2.x build: no model version
-    [await build3({ minSdk: '3.1.1' }), 'model_incompatible'],
+    [await build3({ minSdk: '3.1.2' }), 'model_incompatible'],
     [await build3({ version: '4.0' }), 'model_invalid'],
     [await build3({ signed: false }), 'signature_invalid'],
   ];
@@ -160,7 +160,7 @@ test('a first run without a network is needs_connection, not a timeout; after a 
 
 test('no model build for this SDK yet: model() and prefetch() are model_unavailable, diagnose() says so, nothing loops', async () => {
   const { client, api } = await setup({ build: null });
-  await assert.rejects(client.model(), (e) => code('model_unavailable')(e) && /3\.1\.0/.test(e.message));
+  await assert.rejects(client.model(), (e) => code('model_unavailable')(e) && /3\.1\.1/.test(e.message));
   await assert.rejects(client.prefetch(), code('model_unavailable'));
   const d = await client.diagnose();
   assert.deepEqual(valid(d), []);
@@ -264,12 +264,12 @@ test('the reference data: not in the model\'s set, fetched on request, looked up
 
 test('diagnose(): the report for a healthy client and for each failure it names, each valid against the shared schema', async () => {
   // healthy, with a newer SDK announced
-  let { client, api } = await setup({ sdkLatest: { version: '3.1.1', severity: 'recommended', url: 'https://sdk.quranlab.ai/changelog' } });
+  let { client, api } = await setup({ sdkLatest: { version: '3.1.2', severity: 'recommended', url: 'https://sdk.quranlab.ai/changelog' } });
   let d = await client.diagnose();
   assert.deepEqual(Object.keys(d), ['sdk', 'key', 'config', 'model', 'context', 'backend', 'microphone', 'storage', 'lastError', 'droppedChunks', 'connection']);
   assert.deepEqual(Object.keys(d), JSON.parse(readFileSync(new URL('./vectors30/names.json', import.meta.url), 'utf8')).diagnosis.fields);
   assert.deepEqual(valid(d), []);
-  assert.deepEqual(d, { sdk: { version: '3.1.0', latest: '3.1.1' }, key: { accepted: true, reason: null }, config: 'fresh', model: null, context: null, backend: null,
+  assert.deepEqual(d, { sdk: { version: '3.1.1', latest: '3.1.2' }, key: { accepted: true, reason: null }, config: 'fresh', model: null, context: null, backend: null,
     microphone: 'none', storage: { models: [], sharingQueueBytes: 0 }, lastError: null, droppedChunks: 0, connection: 'unknown' });
   const model = await client.model();
   d = await client.diagnose();
@@ -300,7 +300,7 @@ test('diagnose(): the report for a healthy client and for each failure it names,
     assert.deepEqual([d.key, d.lastError], [{ accepted: false, reason }, last], error);
     const failure = await client.model().then(() => null, (e) => e);
     assert.ok(code(last)(failure), `${error}: model() fails with ${failure && failure.code}`);
-    if (error === 'sdk_too_old') { assert.match(failure.message, /needs SDK 3\.2\.0 or later; this is 3\.1\.0/); assert.match(failure.fix, /3\.2\.0/); }
+    if (error === 'sdk_too_old') { assert.match(failure.message, /needs SDK 3\.2\.0 or later; this is 3\.1\.1/); assert.match(failure.fix, /3\.2\.0/); }
     await client.close();
   }
   // a stored config that expired and no network: stale

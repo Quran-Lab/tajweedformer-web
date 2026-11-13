@@ -68,7 +68,7 @@ Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai) and paste 
 - **Linked to [sdk.quranlab.ai](https://sdk.quranlab.ai):** a web key, the signed config (which model
   build your app gets, the response time), anonymous daily telemetry, issue reports, and opt-in
   recitation sharing with the SDK's own consent sheet.
-- **Version:** 3.1.0, on npm as `@quran-lab/tajweedformer`. What has run where: the test suite on every push
+- **Version:** 3.1.1, on npm as `@quran-lab/tajweedformer`. What has run where: the test suite on every push
   (Linux, with the engine and libopus built there), and, in Quran Lab's own check with model files that a
   public runner does not have, the 35 conformance clips bit for bit in Node and in Chrome (`npm run proof`).
 
@@ -80,9 +80,9 @@ One model, one engine, the same bits on every platform. Each SDK compiles the sa
 | Repository | What it is | Platforms | Install |
 | - | - | - | - |
 | [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+ on arm64-v8a and armeabi-v7a, desktop JVM | Maven Central `ai.quranlab:tajweedformer:3.0.1` |
-| [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "3.1.0"`, product `TajweedFormer` |
+| [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "3.1.1"`, product `TajweedFormer` |
 | [tajweedformer-web](https://github.com/Quran-Lab/tajweedformer-web) | WebAssembly SDK with SIMD128 | Browsers, Node 20+ | `npm install @quran-lab/tajweedformer` |
-| [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake `FetchContent`, tag 3.1.0 |
+| [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake `FetchContent`, tag 3.1.1 |
 | [tajweedformer-engine](https://github.com/Quran-Lab/tajweedformer-engine) | The engine: exact C runtime, inference library, conformance suite | everything above | Git submodule |
 
 The model is Quran-Lab/tajweedformer-v4 (`sdk/v4.0`), hosted by Quran Lab and served by
@@ -98,7 +98,7 @@ per-class thresholds) your users see, without shipping a new build.
 npm install @quran-lab/tajweedformer
 ```
 
-With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.1.0/web/index.js`. The package has one entry point, the same in a page and in Node.
+With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.1.1/web/index.js`. The package has one entry point, the same in a page and in Node.
 
 ## Before you start
 
@@ -436,9 +436,18 @@ listens (Ogg Opus, uploaded in the background, resumable).
 | `recoveryCode` | The code for deletion when the device is lost. |
 | `setWording(overrides)` | Your own wording, `{ 'sheet.title': '...' }` with the deck's keys; `null` restores the SDK's. The learner then agrees to your text, recorded under its own consent version. |
 
-The sheets take the CSS custom properties `--ql-accent`, `--ql-accent-fg`, `--ql-bg`, `--ql-fg`,
-`--ql-muted`, `--ql-radius`, `--ql-font` and `--ql-title-font`; the words and the consent version do not
-change. A call that needs sharing while it is not offered fails with `sharing_unavailable`.
+The sheet is the same design as on Apple and Android: the emblem and the name Quran Lab, the title, the
+body, one card with what is shared, who receives it and how to stop, the hadith, and a bar that stays in
+view with two buttons of the same size. A bottom sheet under 600 px wide, a centred card up to 480 px wide
+above that; light and dark follow `prefers-color-scheme`. Its sizes follow the browser's text size, and
+nothing of the page's styles changes its type. The sheets take these CSS custom properties (on the element,
+on an ancestor, or through `theme`): `--ql-accent` (the share button, "Not now" and the icons; the tints are
+made from it), `--ql-accent-fg` (the share button's label; by default white or near-black, whichever reads
+better on the accent), `--ql-bg`, `--ql-fg`, `--ql-muted`, `--ql-radius` (the sheet's corners, 28px by
+default; the cards, buttons and emblem follow it), `--ql-font` and `--ql-title-font` (font families). An
+accent too light to read as a label on its tint gives "Not now" and the icons the text colour. A theme never
+changes the words, hides a line or changes the consent version. A call that needs sharing while it is not
+offered fails with `sharing_unavailable`.
 
 **Takes in a row are one recording.** An app often stops and starts takes while the learner keeps reciting.
 When a take ends, the shared recording stays open for a few seconds (3 s by default): a take that starts

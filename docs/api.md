@@ -1,4 +1,4 @@
-# @quran-lab/tajweedformer 3.1.0: API
+# @quran-lab/tajweedformer 3.1.1: API
 
 The whole public surface. Every type is in [`web/index.d.ts`](../web/index.d.ts); a test keeps this page, the
 type definitions and the package's exports in step. The names and the call order are the same in the Android,
@@ -131,7 +131,16 @@ Head names: `log_probs`, `inter1_log_probs`, `inter4_log_probs`, `id_log_probs`,
 unsent queue is gone, within 3 s; a recording that waited then is never uploaded later), `ask()`, `feed(samples, sampleRate)`, `items()` (a promise), `summary()`,
 `delete()` (a promise: accepted by Quran Lab it also turns sharing off; not taken, it rejects and nothing
 changed; `isOn` does not change while Quran Lab is asked), `recoveryCode`, `setWording(overrides)`. The elements `QuranLabConsent` (`<quranlab-consent>`) and
-`QuranLabSharingSettings` (`<quranlab-sharing-settings>`, set its `client`) are the SDK's sheets.
+`QuranLabSharingSettings` (`<quranlab-sharing-settings>`, set its `client`) are the SDK's sheets. The consent
+sheet is a bottom sheet under 600 px wide and a centred card up to 480 px wide above that, with the same design
+as on Apple and Android. The sheets take these CSS custom properties, on the element, on an ancestor or through
+`theme`: `--ql-accent` (the share button, "Not now" and the icons; the tints are made from it), `--ql-accent-fg`
+(the share button's label; by default white or near-black, whichever reads better on the accent), `--ql-bg`,
+`--ql-fg`, `--ql-muted` (the hadith's reference), `--ql-radius` (the sheet's corners, 28px by default; the cards,
+buttons and emblem follow it), `--ql-font` and `--ql-title-font` (font families). An accent too light to read
+as a label on its tint gives "Not now" and the icons the text colour. Light and dark follow
+`prefers-color-scheme`. The page's other styles do not reach the sheets' type, and their sizes follow the
+browser's text size. A theme never changes the words, hides a line or changes the consent version.
 
 The learner's answer is stored per origin. When the device refuses to store it (a full quota), the page goes
 by the answer in force and stores it with the next write. With two pages of one origin open: an off one page

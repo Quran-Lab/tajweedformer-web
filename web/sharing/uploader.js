@@ -4,7 +4,7 @@
 // signed, valid 7 days); POST /v1/uploads/{id}/urls?from=n answers the next batch, or fresh URLs for
 // the same numbers. Segments go straight to R2 as plain PUTs. Nothing is sent at the end.
 
-export const SDK_VERSION = '3.1.0';
+export const SDK_VERSION = '3.1.1';
 export const INPUT_ROUTES = Object.freeze(['built_in', 'wired', 'usb', 'bluetooth', 'car', 'continuity', 'other', 'unknown']);
 const CONSENT_RE = /^[A-Za-z0-9._-]{1,32}$/;
 const DEVICE_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,23}$/;

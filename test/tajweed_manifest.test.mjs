@@ -1,6 +1,6 @@
 // Model folder loading: the signed text against the shared vector (tajweedformer-coreml
 // publish/testdata/manifest_v2_vector.json, copied to test/tajweed/), and synthetic V4 folders
-// (good, tampered, no calibration, min_sdk 3.1.1, the model version, ...) in memory and on disk.
+// (good, tampered, no calibration, min_sdk 3.1.2, the model version, ...) in memory and on disk.
 // Run: npm test
 import test from 'node:test';
 import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
@@ -144,11 +144,11 @@ test('the calibration is not needed to open (SDK 3.0); a listed file that is abs
   await rejects(openTajweedFolder(memoryReader(absent.files), opts), 'file_missing');
 });
 
-test('min_sdk_version 3.1.1: refused by this SDK (3.1.0)', async () => {
-  assert.equal(SDK_VERSION, '3.1.0');
-  const { files } = await build3({ minSdk: '3.1.1' });
+test('min_sdk_version 3.1.2: refused by this SDK (3.1.1)', async () => {
+  assert.equal(SDK_VERSION, '3.1.1');
+  const { files } = await build3({ minSdk: '3.1.2' });
   await rejects(openTajweedFolder(memoryReader(files), opts), 'sdk_too_old');
-  for (const ok of ['3.1.0', '3.0.100', '3.0.0', '2.0.1', '1.9.9']) await openTajweedFolder(memoryReader((await build3({ minSdk: ok })).files), opts);
+  for (const ok of ['3.1.1', '3.1.0', '3.0.100', '3.0.0', '2.0.1', '1.9.9']) await openTajweedFolder(memoryReader((await build3({ minSdk: ok })).files), opts);
 });
 
 test('the model version (SPEC 2a): a manifest without one is refused; the signed text has the version line; the config\'s version and build are checked', async () => {
@@ -222,8 +222,8 @@ test('on disk through dirReader: good folder opens, links and ".." never leave i
     assert.equal(r.version, '4.0.0');
     assert.equal(await dirReader(dir).read('../x'), null);
     assert.equal(await dirReader(dir).read('nope.bin'), null);
-    // the same folder at min_sdk 3.1.1 on disk
-    const old = await build3({ minSdk: '3.1.1' });
+    // the same folder at min_sdk 3.1.2 on disk
+    const old = await build3({ minSdk: '3.1.2' });
     writeFileSync(path.join(dir, 'manifest.json'), old.files['manifest.json']);
     await rejects(openTajweedFolder(dirReader(dir), opts), 'sdk_too_old');
   } finally {
