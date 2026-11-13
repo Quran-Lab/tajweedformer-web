@@ -25,7 +25,7 @@ const RUNTIME = ['TajweedClient', 'TajweedModel', 'TajweedSession', 'TajweedHead
 
 test('the package has one entry point with its type definitions; there is no ./node entry (3.1.0)', () => {
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(pkg.version, '3.1.2');
+  assert.equal(pkg.version, '3.1.3');
   assert.deepEqual(Object.keys(pkg.exports), ['.', './package.json']);
   // ".": the Node entry under the node condition, the browser entry for everything else (a bundler, a CDN)
   assert.deepEqual(pkg.exports['.'], { types: './web/index.d.ts', node: './web/index.node.js', default: './web/index.js' });

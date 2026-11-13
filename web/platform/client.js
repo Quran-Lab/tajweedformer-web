@@ -12,7 +12,7 @@ import { QURANLAB_PUBLIC_KEY_HEX, hexToBytes, bytesToHex } from '../tajweed/mani
 import { noticeSdkLatest } from './update-notice.js';
 import { MODEL_STOP_REASONS, stopReasonOf } from '../api/errors.js';
 
-export const SDK_VERSION = '3.1.2';
+export const SDK_VERSION = '3.1.3';
 export const API_URL = 'https://api.quranlab.ai';
 export const CDN_URL = 'https://cdn.quranlab.ai';
 /** Where model files are served: {base}/{owner}/{repo}/{revision}/{path}. The signed config's `base`
@@ -269,7 +269,9 @@ export class QuranLab {
     if (auth === 'key') h['x-qlab-key'] = this.key;
     else if (auth === 'token') h.authorization = `Bearer ${await this.token()}`;
     if (body !== null) h['content-type'] = 'application/json';
-    const init = { method, headers: h, body: body === null ? undefined : typeof body === 'string' ? body : JSON.stringify(body) };
+    // no request of the SDK follows a redirect (SPEC 15.4, contract 1.17.0): a redirect answered is a failed
+    // request, so neither a header (the developer key of the token request) nor a body goes to another host
+    const init = { method, headers: h, body: body === null ? undefined : typeof body === 'string' ? body : JSON.stringify(body), redirect: 'error' };
     if (keepalive) init.keepalive = true; // a page being hidden or left: the request outlives it
     let r;
     try { r = await this.fetch(this.apiUrl + path, init); } catch (e) {
@@ -332,7 +334,7 @@ export class QuranLab {
     this._originAsked = true;
     this._originError = null;
     try {
-      const r = await this.fetch(`${this.apiUrl}/v1/origin-check?key=${encodeURIComponent(this.key)}`);
+      const r = await this.fetch(`${this.apiUrl}/v1/origin-check?key=${encodeURIComponent(this.key)}`, { redirect: 'error' });
       if (r.status !== 200) return null;
       const a = await r.json();
       if (!a || a.allowed !== false) return null;

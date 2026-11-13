@@ -35,7 +35,7 @@ export function memoryStore() {
   return {
     kind: 'memory',
     async get(k) { return m.has(k) ? m.get(k) : null; },
-    async put(k, v) { m.set(k, v); },
+    async put(k, v, o = {}) { if (o.exclusive && m.has(k)) return false; m.set(k, v); return true; },
     async delete(k) { m.delete(k); },
     async keys(prefix = '') { return [...m.keys()].filter((k) => k.startsWith(prefix)); },
   };
@@ -90,6 +90,42 @@ export function defaultStore() {
   if (globalThis.caches && typeof globalThis.caches.open === 'function') return cacheApiStore();
   if (globalThis.indexedDB) return indexedDbStore();
   return memoryStore();
+}
+
+/** A storage API's answer that means "this browser refuses storage here", not "it failed". */
+export const isSecurityError = (e) => !!e && e.name === 'SecurityError';
+
+/**
+ * What Cache Storage answers in this context, asked once and without making a cache: 'works', 'blocked', 'none'
+ * (there is no Cache Storage) or 'failed' (any other failure).
+ * 'blocked' is a SecurityError and nothing else, thrown by the `caches` getter or given by `caches.has`. Seen
+ * 2026-11-13: Chrome 157 and Edge 157 with the site's cookies and site data blocked, and Firefox 150 with
+ * cookies blocked, reject every call of CacheStorage with SecurityError; in a frame without an origin the getter
+ * throws it. A failure of a store that works (a full disk, an internal error) has another name.
+ */
+export async function cacheStorageState(get = () => globalThis.caches) {
+  let c;
+  try { c = get(); } catch (e) { return isSecurityError(e) ? 'blocked' : 'failed'; }
+  if (!c || typeof c.open !== 'function') return 'none';
+  try { await c.has(CACHE_NAME); return 'works'; } catch (e) { return isSecurityError(e) ? 'blocked' : 'failed'; }
+}
+
+/**
+ * The Client's store in a browser (SPEC 15.2 as of contract 1.14.0): the Cache API, else IndexedDB, else memory, as
+ * defaultStore(); and where the browser BLOCKS storage, memory for this page load, marked `blocked: true`: the
+ * model is downloaded, verified and run from memory, and downloaded again at the next visit. A browser that
+ * keeps nothing has nothing to protect; before 3.1.2 it could not run the model at all.
+ * A Cache Storage that fails in another way is still the store: its calls fail as storage errors, and a cached
+ * model is never set aside for a failure that may pass.
+ * @param {{ cacheStorage?: () => any, indexedDB?: () => any }} [o]  how the two are read (tests)
+ */
+export async function openDefaultStore(o = {}) {
+  const state = await cacheStorageState(o.cacheStorage || (() => globalThis.caches));
+  if (state === 'blocked') return Object.assign(memoryStore(), { blocked: true });
+  if (state !== 'none') return cacheApiStore();
+  let idb = null;
+  try { idb = (o.indexedDB || (() => globalThis.indexedDB))(); } catch (_) { idb = null; }
+  return idb ? indexedDbStore() : memoryStore();
 }
 
 // ---- the download profile ----
@@ -224,6 +260,34 @@ export function cachedReader(o) {
     return b;
   }
 
+  // An answer that is not what was asked for: a failed attempt (a failed download for the app), never the file.
+  const wrongAnswer = (path, r, why) => new DeliveryError('http', `${path}: HTTP ${r.status}, ${why}`, { status: r.status, error: null, reason: null });
+  // The body of an answer, which must have exactly `want` bytes: it is read with that cap, so a body that runs
+  // past it is cut off (and the rest let go), and one that ends before it fails as a connection that dropped.
+  async function bodyOf(path, r, want) {
+    const stream = r.body && typeof r.body.getReader === 'function' ? r.body.getReader() : null;
+    if (!stream) {
+      const b = new Uint8Array(await r.arrayBuffer());
+      if (b.length > want) throw wrongAnswer(path, r, `a body of ${b.length} bytes where ${want} were asked for`);
+      if (b.length < want) throw new DeliveryError('offline', `${path}: the body ended after ${b.length} of ${want} bytes`);
+      return b;
+    }
+    const out = new Uint8Array(want);
+    let at = 0;
+    for (;;) {
+      const { done, value } = await stream.read();
+      if (done) break;
+      if (at + value.length > want) {
+        await stream.cancel().catch(() => {});
+        throw wrongAnswer(path, r, `a body longer than the ${want} bytes that were asked for`);
+      }
+      out.set(value, at);
+      at += value.length;
+    }
+    if (at < want) throw new DeliveryError('offline', `${path}: the body ended after ${at} of ${want} bytes`);
+    return out;
+  }
+
   async function fetchListed(path, size, sum, { keep = true, label = path } = {}) {
     const key = `sha256/${sum}`;
     if (store && keep) {
@@ -251,17 +315,29 @@ export function cachedReader(o) {
         if (i >= n) return;
         const lo = i * rangeSize, hi = Math.min(size, lo + rangeSize) - 1;
         const r = await req(path, n === 1 && size === 0 ? null : [lo, hi]);
-        if (r.status === 200) { // the server ignored Range: the whole file
-          const b = new Uint8Array(await r.arrayBuffer());
+        if (r.status === 200) {
+          // the server ignored Range: the whole file, and only at the manifest's size. A Content-Length that says
+          // otherwise is refused before the body is read (with a content coding the length given is the coded
+          // one and says nothing); the body is read with the size as its cap
+          const length = r.headers.get('content-length');
+          const coding = r.headers.get('content-encoding');
+          if (length !== null && (!coding || coding === 'identity') && Number(length) !== size) {
+            if (r.body && typeof r.body.cancel === 'function') await r.body.cancel().catch(() => {});
+            throw wrongAnswer(path, r, `${length} bytes where the manifest says ${size}`);
+          }
+          const b = await bodyOf(path, r, size);
           stats.bytesDownloaded += b.length;
           whole = b;
           return;
         }
+        // any other answer, a 2xx among them (204, 205, ...), is not the range
         if (r.status !== 206) throw httpError(path, r);
+        // the range that was asked for, of the file the manifest lists: start, end and total. A page reads this
+        // header only when the host names it in access-control-expose-headers (Quran Lab's CDN does); where it
+        // cannot be read, the exact length of the range and the file's SHA-256 decide
         const cr = r.headers.get('content-range');
-        if (cr && !cr.startsWith(`bytes ${lo}-${hi}/`)) throw new DeliveryError('checksum_mismatch', `${path}: wrong range ${cr}`);
-        const b = new Uint8Array(await r.arrayBuffer());
-        if (b.length !== hi - lo + 1) throw new DeliveryError('offline', `${path}: short range`);
+        if (cr !== null && cr.trim() !== `bytes ${lo}-${hi}/${size}`) throw wrongAnswer(path, r, `the range ${JSON.stringify(cr)} where bytes ${lo}-${hi}/${size} was asked for`);
+        const b = await bodyOf(path, r, hi - lo + 1);
         stats.bytesDownloaded += b.length;
         parts[i] = b;
         loaded += b.length;
@@ -275,13 +351,18 @@ export function cachedReader(o) {
       if (failed) throw failed;
     }
     let bytes = whole;
-    if (!bytes) {
+    const assembled = !bytes;
+    if (assembled) {
       bytes = new Uint8Array(size);
       let at = 0;
       for (const p of parts) { bytes.set(p, at); at += p.length; }
     }
     if (bytes.length !== size || (await sha256(bytes)) !== sum) {
-      if (store) for (let i = 0; i < n; i++) await store.delete(`part/${sum}/${i}`);
+      // A failed attempt never deletes the ranges already stored. They are deleted in this one case: every range
+      // is there and the file assembled from them fails its size or its SHA-256, so the ranges themselves are
+      // the fault and the next read must start clean (it could never recover otherwise). A whole body (a 200)
+      // that is not the file says nothing about the stored ranges: they stay.
+      if (store && assembled) for (let i = 0; i < n; i++) await store.delete(`part/${sum}/${i}`);
       throw new DeliveryError('checksum_mismatch', `${path} does not match its size and SHA-256 in the manifest`, { path });
     }
     stats.filesDownloaded++;

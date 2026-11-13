@@ -12,7 +12,7 @@
 // signature use WebCrypto (globalThis.crypto.subtle), present in every current browser and in Node 20 and later.
 
 /** The version of this SDK, compared with a manifest's min_sdk_version. */
-export const SDK_VERSION = '3.1.2';
+export const SDK_VERSION = '3.1.3';
 
 /** Manifest formats this SDK reads. */
 export const SUPPORTED_MANIFEST_FORMATS = Object.freeze([1, 2, 3]);

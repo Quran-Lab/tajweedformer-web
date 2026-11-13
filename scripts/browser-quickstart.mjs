@@ -7,6 +7,11 @@
 //   BUILT=1   open a Vite build of examples/vite instead of the source page (after `npm run example:build`): the
 //             build is made here through Vite's API with one alias, the package's name to a module that makes
 //             the Client with this script's test seams; the chunks, the Worker bundle and the wasm are Vite's
+//   STORAGE=blocked   the browser blocks cookies and site data for every site (Chrome's content setting
+//             profile.default_content_setting_values.cookies = 2, in a throwaway profile): IndexedDB, Cache
+//             Storage and localStorage are there and refuse. The SDK then keeps the model in memory for the page
+//             load. The script checks that the storage is blocked, runs the same takes, loads the page again and
+//             checks that every model file is downloaded again and that a take runs.
 // Without TAJWEED_MODEL_30 (the model is gated and not in this repository) it says so and exits 0.
 //
 // What is real: the page's script (only its import line is pointed at a module that makes the Client with the
@@ -19,7 +24,7 @@
 // microphone.
 // Needs dist/tajweedformer.mjs (npm run build) and puppeteer-core (a dev dependency). Exits 1 on failure.
 import { createServer } from 'node:http';
-import { createReadStream, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
@@ -131,8 +136,16 @@ const server = createServer((req, res) => {
 });
 await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
 
+// STORAGE=blocked: a profile of its own whose cookie setting is "block"
+const BLOCKED = process.env.STORAGE === 'blocked';
+const profile = path.join(work, 'profile');
+if (BLOCKED) {
+  mkdirSync(path.join(profile, 'Default'), { recursive: true });
+  writeFileSync(path.join(profile, 'Default', 'Preferences'), JSON.stringify({ profile: { default_content_setting_values: { cookies: 2 } } }));
+}
 const { default: puppeteer } = await import('puppeteer-core');
 const browser = await puppeteer.launch({
+  ...(BLOCKED ? { userDataDir: profile } : {}),
   executablePath: process.env.CHROME || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : '/usr/bin/google-chrome'),
   headless: 'new',
   args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${wav}%noloop`],
@@ -179,7 +192,7 @@ try {
     else if (got(/^GET \/assets\/tajweedformer-[^/.]*\.js$/)) failed = 'the engine ran on the page\'s thread: the built Worker did not start';
   }
   // the sample clip button: the same path with no microphone
-  if (!failed) {
+  const sampleClip = async (label) => {
     await tab.evaluate(() => { document.querySelector('#heard').textContent = ''; });
     const t1 = Date.now();
     await tab.click('#clip');
@@ -192,13 +205,50 @@ try {
       last = clip;
       if (errors.length) failed = errors.join('; ');
     }
-    console.log(`sample clip: heard ${count(clip)} tokens in ${((Date.now() - t1) / 1000).toFixed(1)} s`);
-    if (!failed && count(clip) < 10) failed = `from the sample clip the model heard ${count(clip)} tokens, at least 10 expected`;
+    console.log(`${label}: heard ${count(clip)} tokens in ${((Date.now() - t1) / 1000).toFixed(1)} s`);
+    if (!failed && count(clip) < 10) failed = `from the ${label} the model heard ${count(clip)} tokens, at least 10 expected`;
+  };
+  if (!failed) await sampleClip('sample clip');
+  // STORAGE=blocked: the storage really is blocked, the model ran all the same, and the next visit downloads it again
+  if (!failed && BLOCKED) {
+    const state = await tab.evaluate(async () => {
+      const out = {};
+      try { localStorage.getItem('x'); out.localStorage = 'works'; } catch (e) { out.localStorage = e.name; }
+      try { await caches.has('x'); out.cacheStorage = 'works'; } catch (e) { out.cacheStorage = e.name; }
+      out.indexedDB = await new Promise((res) => {
+        let q;
+        try { q = indexedDB.open('x', 1); } catch (e) { res(e.name); return; }
+        q.onerror = (ev) => { ev.preventDefault(); res(q.error.name); };
+        q.onsuccess = () => { q.result.close(); res('works'); };
+      });
+      return out;
+    });
+    console.log(`storage in this profile: localStorage ${state.localStorage}, CacheStorage ${state.cacheStorage}, indexedDB.open ${state.indexedDB}`);
+    if (state.cacheStorage !== 'SecurityError' || state.indexedDB === 'works') failed = `the profile does not block storage (${JSON.stringify(state)}): nothing was tested`;
+    const modelFiles = (from) => new Set(requests.slice(from).filter((r) => r.startsWith('GET /models/') && !r.endsWith('/manifest.json')));
+    const first = modelFiles(0);
+    if (!failed && first.size < 4) failed = `the first load asked for ${first.size} model files`;
+    const mark = requests.length;
+    if (!failed) {
+      await tab.reload({ waitUntil: 'load' });
+      const again = Date.now();
+      while (!failed && !(await tab.evaluate(() => typeof document.querySelector('#listen').onclick === 'function'))) {
+        if (errors.length) failed = errors.join('; ');
+        else if (Date.now() - again > 120000) failed = 'the second load was not ready after 120 s';
+        else await new Promise((r) => setTimeout(r, 250));
+      }
+      console.log(`second load: ready in ${((Date.now() - again) / 1000).toFixed(1)} s`);
+      if (!failed) await sampleClip('sample clip on the second load');
+      // every model file of the first load (the model's and the sample clip's) was asked for again
+      const second = modelFiles(mark);
+      console.log(`second load: ${second.size} model files were asked for again (the first load asked for ${first.size})`);
+      if (!failed && [...first].some((f) => !second.has(f))) failed = `the second load did not download every model file again (${second.size} of ${first.size})`;
+    }
   }
 } finally {
   await browser.close();
   server.close();
-  rmSync(work, { recursive: true, force: true });
+  rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); // the browser lets go of its profile a moment after it closed
 }
 if (failed) { console.error('FAILED:', failed); process.exit(1); }
-console.log(`OK${BUILT ? ' (the Vite build of examples/vite)' : ''}: key, model, microphone, AudioWorklet, the engine in a Worker, model output; and the sample clip`);
+console.log(`OK${BUILT ? ' (the Vite build of examples/vite)' : ''}: key, model, microphone, AudioWorklet, the engine in a Worker, model output; and the sample clip${BLOCKED ? '; with the browser\'s storage blocked, and the model downloaded again at the second load' : ''}`);

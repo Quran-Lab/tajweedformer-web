@@ -1,4 +1,4 @@
-# @quran-lab/tajweedformer 3.1.2: API
+# @quran-lab/tajweedformer 3.1.3: API
 
 The whole public surface. Every type is in [`web/index.d.ts`](../web/index.d.ts); a test keeps this page, the
 type definitions and the package's exports in step. The names and the call order are the same in the Android,
@@ -57,7 +57,11 @@ browser that gives no connection type).
 ## TajweedModel
 
 A Model comes from `client.model()`, and only from there (3.1.0): no call takes a model as a folder, a URL, a
-reader or bytes, and the Client opens only a build it downloaded itself on this device. When an answer of
+reader or bytes, and the Client opens only a build it downloaded itself on this device. A browser that blocks
+the site's storage (cookies and site data blocked) keeps nothing: there the model is downloaded at every visit
+(3.1.3; before, `client.model()` failed there with `storage_failed`). In Node the record of a download is bound
+with the machine's id and the user; where no machine id can be read (a container), with a key file in the
+SDK's folder, which a copy of that folder carries. When an answer of
 Quran Lab refuses the key or the app with one of the reasons `key_revoked`, `key_unknown`, `app_not_allowed`,
 `origin_not_allowed`, `key_type_mismatch`, `app_blocked` or `developer_not_approved`, `client.model()` and
 `client.prefetch()` fail with that refusal's error (`invalid_key` for a revoked or unknown key, else

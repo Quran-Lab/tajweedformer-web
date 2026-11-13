@@ -4,7 +4,7 @@
 // signed, valid 7 days); POST /v1/uploads/{id}/urls?from=n answers the next batch, or fresh URLs for
 // the same numbers. Segments go straight to R2 as plain PUTs. Nothing is sent at the end.
 
-export const SDK_VERSION = '3.1.2';
+export const SDK_VERSION = '3.1.3';
 export const INPUT_ROUTES = Object.freeze(['built_in', 'wired', 'usb', 'bluetooth', 'car', 'continuity', 'other', 'unknown']);
 const CONSENT_RE = /^[A-Za-z0-9._-]{1,32}$/;
 const DEVICE_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,23}$/;
@@ -121,7 +121,10 @@ export class ContributionClient {
 
   async _send(url, init) {
     let r;
-    try { r = await this.fetch(url, init); } catch (e) {
+    // no request follows a redirect (SPEC 15.4, contract 1.17.0), the segment PUT to its signed storage URL and
+    // the delete calls included: a redirect answered is a request without an answer (status 0), tried again by
+    // the outbox's own rules, and the recording's bytes never go to a host the URL did not name
+    try { r = await this.fetch(url, { ...init, redirect: 'error' }); } catch (e) {
       if (e && e.name === 'AbortError') throw e;
       return { status: 0, error: String(e && e.message || e), body: null, text: '' };
     }
