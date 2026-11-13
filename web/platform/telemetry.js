@@ -50,7 +50,7 @@ export const PRODUCT_OF = Object.freeze({ web: 'web', windows: 'native', linux: 
 export const productOf = (platform) => PRODUCT_OF[platform] || 'web';
 
 export class Telemetry {
-  constructor({ state, platform = 'web', product = productOf(platform), sdkVersion = '3.1.1', appVersion = '0', device, clock = Date.now, enabled = true }) {
+  constructor({ state, platform = 'web', product = productOf(platform), sdkVersion = '3.1.2', appVersion = '0', device, clock = Date.now, enabled = true }) {
     Object.assign(this, { state, product, platform, sdkVersion, appVersion, device, clock });
     this.enabled = enabled;
     this.coldStartDone = false;

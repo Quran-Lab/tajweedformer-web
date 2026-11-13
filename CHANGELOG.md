@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.1.2
+
+- **Changed: the sharing sheet and "What is shared" have the text of copy deck `2026-11-09.1` again.** Copy
+  deck `2026-11-13.1` (consent `share-2026-11-09`), in eight languages. A learner who already agreed is not
+  asked again, and their recordings keep the version they agreed to.
+- Tests: the bundled decks are the published ones, by the SHA-256 of each file; the sheet and its guardian
+  variant show `sheet.who` whole, and "What is shared" shows `what.detail` whole, in each of the eight
+  languages (in Node with a stand-in for the page, and in headless Chrome where a developer has it; the
+  public runner has no browser); a yes stored under `share-2026-11-12` (3.1.0 and 3.1.1) or under
+  `share-2026-11-09` is kept with its version and without an ask, at the start, after many sessions and
+  after a restart.
+
 ## 3.1.1
 
 The sharing sheet has a new design. No word, no consent rule and no call changed.

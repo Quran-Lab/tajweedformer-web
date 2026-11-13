@@ -1,4 +1,4 @@
-# @quran-lab/tajweedformer 3.1.1: API
+# @quran-lab/tajweedformer 3.1.2: API
 
 The whole public surface. Every type is in [`web/index.d.ts`](../web/index.d.ts); a test keeps this page, the
 type definitions and the package's exports in step. The names and the call order are the same in the Android,

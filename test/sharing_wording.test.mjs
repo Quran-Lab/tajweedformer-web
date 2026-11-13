@@ -28,7 +28,7 @@ const skipAudio = have ? false : 'dist/tajweedformer-opus.mjs is not built (npm 
 const DECK = copyFor('en').consentVersion;
 
 test('the shared vector: every case (canonical bytes, sha256, version) and every refused input', () => {
-  assert.equal(DECK, 'share-2026-11-12');
+  assert.equal(DECK, 'share-2026-11-09');
   for (const c of vector.cases) {
     assert.equal(c.base, DECK, 'the vector is made for the bundled deck');
     const ov = validateWording(c.overrides);

@@ -1,7 +1,7 @@
 // Bundle Quran Lab's sharing copy decks (<lang>.json, format quranlab.sharing-copy/1) into web/consent/decks.js,
 // so the package needs no JSON imports.
 //   node scripts/gen_decks.mjs <sharing_copy dir>     (or SHARING_COPY_DIR=<dir>)
-// 3.1.0 bundles deck 2026-11-12.1 (consent share-2026-11-12; contract 1.9.0, SPEC 11.8). Each deck's fields are
+// 3.1.2 bundles deck 2026-11-13.1 (consent share-2026-11-09; contract 1.15.0, SPEC 11.8). Each deck's fields are
 // bundled as the file has them (the reviewers' notes are left out), and DECK_SOURCES records the SHA-256 of each
 // file's exact bytes, the hashes of the contract's sharing_copy/READY, so a test pins the decks to the contract.
 // Refuses a deck in another format and any en or em dash.

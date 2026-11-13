@@ -68,7 +68,7 @@ Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai) and paste 
 - **Linked to [sdk.quranlab.ai](https://sdk.quranlab.ai):** a web key, the signed config (which model
   build your app gets, the response time), anonymous daily telemetry, issue reports, and opt-in
   recitation sharing with the SDK's own consent sheet.
-- **Version:** 3.1.1, on npm as `@quran-lab/tajweedformer`. What has run where: the test suite on every push
+- **Version:** 3.1.2, on npm as `@quran-lab/tajweedformer`. What has run where: the test suite on every push
   (Linux, with the engine and libopus built there), and, in Quran Lab's own check with model files that a
   public runner does not have, the 35 conformance clips bit for bit in Node and in Chrome (`npm run proof`).
 
@@ -79,10 +79,10 @@ One model, one engine, the same bits on every platform. Each SDK compiles the sa
 
 | Repository | What it is | Platforms | Install |
 | - | - | - | - |
-| [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+ on arm64-v8a and armeabi-v7a, desktop JVM | Maven Central `ai.quranlab:tajweedformer:3.0.1` |
-| [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "3.1.1"`, product `TajweedFormer` |
+| [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+ on arm64-v8a and armeabi-v7a, desktop JVM | Maven Central `ai.quranlab:tajweedformer:3.1.1` |
+| [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "3.1.2"`, product `TajweedFormer` |
 | [tajweedformer-web](https://github.com/Quran-Lab/tajweedformer-web) | WebAssembly SDK with SIMD128 | Browsers, Node 20+ | `npm install @quran-lab/tajweedformer` |
-| [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake `FetchContent`, tag 3.1.1 |
+| [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake `FetchContent`, tag 3.1.2 |
 | [tajweedformer-engine](https://github.com/Quran-Lab/tajweedformer-engine) | The engine: exact C runtime, inference library, conformance suite | everything above | Git submodule |
 
 The model is Quran-Lab/tajweedformer-v4 (`sdk/v4.0`), hosted by Quran Lab and served by
@@ -98,7 +98,7 @@ per-class thresholds) your users see, without shipping a new build.
 npm install @quran-lab/tajweedformer
 ```
 
-With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.1.1/web/index.js`. The package has one entry point, the same in a page and in Node.
+With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.1.2/web/index.js`. The package has one entry point, the same in a page and in Node.
 
 ## Before you start
 
