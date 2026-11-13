@@ -31,6 +31,7 @@ A 3.0 SDK only loads model builds made for 3.0, and a 2.x SDK only those made fo
 | `allHeads: true`, `heads: [...]` | `heads: 'all'`, `heads: [...]` |
 | `enableSharing(ql)` from `@quran-lab/tajweedformer/consent` | `client.sharing` (nothing to call) |
 | `sharing.setSharing(on)`, `sharing.deleteShared()`, `sharing.recoveryCode()` | `sharing.setOn(on)`, `sharing.delete()`, `sharing.recoveryCode` |
+| the `ask` option of `enableSharing`, `sharing.answer(yes)` (your own consent UI) | none in this version: the sheet is the SDK's. `client.sharing.ask()` chooses the moment, `setWording` the words, `theme` the look; `setOn` is the settings switch only |
 | `settings.controller = sharing` on `<quranlab-sharing-settings>` | `settings.client = client` |
 | `ql.background()`, `ql.foreground()` | `client.background()`, `client.foreground()` (automatic in browsers) |
 | `ModelFolderError`, `PlatformError`, `DeliveryError`, `EngineNotAvailableError` | `TajweedError` with a `code` |
