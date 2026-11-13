@@ -11,7 +11,7 @@ import { QuranLab, SDK_VERSION } from '../platform/client.js';
 import { localState, dirState } from '../platform/storage.js';
 import { node as nodeParts, isNode } from '../platform/node-hook.js';
 import { sdkLatestOf } from '../platform/update-notice.js';
-import { cachedReader, defaultStore, profilePaths } from '../tajweed/delivery.js';
+import { cachedReader, openDefaultStore, profilePaths } from '../tajweed/delivery.js';
 import { ModelFolder, MODEL_VERSION_RE, QURANLAB_PUBLIC_KEY_HEX, sha256Hex, compareModelVersions } from '../tajweed/manifest.js';
 import { Installs, defaultDeviceKey, removeAllModels } from '../tajweed/install.js';
 import { enableSharing } from '../consent/index.js';
@@ -489,7 +489,9 @@ export async function createClient(options, seams = {}) {
       } catch (e) { throw new TajweedError('storage_failed', { detail: String((e && e.message) || e) }, { cause: e }); }
     }
     state = state || localState(o.storage ? `quranlab.${o.storage}.` : 'quranlab.');
-    store = store || defaultStore();
+    // a browser: the Cache API; where the browser blocks storage, memory for this page load (SPEC 15.2, contract
+    // 1.14.0: a blocked store is no store, and the model is downloaded at every visit)
+    store = store || await openDefaultStore();
     const platform = seams.platform || (node ? ({ win32: 'windows', darwin: 'macos' }[process.platform] || 'linux') : 'web');
     const ql = new QuranLab({
       key: o.key, appVersion: o.appVersion, bundleId: o.appId || seams.origin || undefined, platform, origin: seams.origin,
@@ -499,7 +501,7 @@ export async function createClient(options, seams = {}) {
     if (sharingStorage) ql.sharingStorage = sharingStorage;
     if (seams.sharing) ql.sharingSeams = seams.sharing;
     const ctl = enableSharing(ql, seams.sharingOptions || {});
-    const installs = new Installs({ store, deviceKey: seams.installKey || defaultDeviceKey() });
+    const installs = new Installs({ store, deviceKey: seams.installKey || defaultDeviceKey(store) });
     const client = new TajweedClient({ ql, ctl, state, store, installs, sharingStorage, fetch: ql.fetch, seams, modelKeys: seams.modelKeys || [QURANLAB_PUBLIC_KEY_HEX],
       connection: seams.connection }, MADE);
     // a stop removes the models (SPEC 15.3, contract 1.10.0): when one arrives, and first of all at a start that

@@ -1,4 +1,4 @@
-// Type definitions for @quran-lab/tajweedformer 3.1.2: the whole public surface, and nothing else.
+// Type definitions for @quran-lab/tajweedformer 3.1.3: the whole public surface, and nothing else.
 // Five concepts: Client, Model, Session, Heads, Backend. Call order: Client, model, listen, read.
 
 /** Every failure the SDK raises. `code` is stable and the same in every TajweedFormer SDK. */

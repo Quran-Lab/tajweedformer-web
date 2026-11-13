@@ -1,5 +1,86 @@
 # Changelog
 
+## 3.1.3
+
+The key that binds a downloaded model to the device (3.1.0) no longer keeps a browser or a container from the
+model. No call changed.
+
+- **Fixed: a browser that blocks the site's storage could not run the model at all.** With cookies and site
+  data blocked, for the site or for every site, a browser still has IndexedDB and the Cache API, and both
+  refuse. `client.model()` and `client.prefetch()` failed there with `storage_failed`. Such a browser now
+  counts as one that has no storage: the model is downloaded, verified and run from memory for the page load,
+  and downloaded again at the next visit. "Blocked" is what browsers were seen to answer and nothing more: a
+  `SecurityError` from `indexedDB.open` (Firefox 150), or an `UnknownError` from it while the Cache API
+  refuses with `SecurityError` (Chrome 157 and Edge 157, which give `UnknownError` for a real failure too, so
+  the name alone decides nothing). Every other failure, and any failure of a store that had opened, is still
+  `storage_failed`, and nothing is deleted or downloaded on it. Private windows, and third-party frames in
+  Chrome and Edge, are not affected: their storage works and they keep the model as before.
+- **Fixed: Node in a container downloaded the model at every start.** Where no machine id can be read (no
+  `/etc/machine-id`) the key was made from the host name, which is new for every container. It is now a random
+  key file in the SDK's folder (`models/device/key`, mode 0600), made at the first download, and the host name
+  is no part of any key. A folder kept on a volume opens in every container that mounts it, and a copy of the
+  folder carries its key. An install on such a machine that updates from 3.1.0, 3.1.1 or 3.1.2 downloads the
+  model once more.
+- **Fixed: on Windows and macOS a slow start could cost a download.** The machine id is read there by a
+  command of the system (`reg`, `ioreg`) with a limit of 5 seconds; when the read failed, the key changed and
+  the model was downloaded again. The SDK now keeps the answer in its folder: a read that works is used and
+  kept, and the kept answer is used when a read fails. A folder carried to another machine has another
+  machine's answer in it: the model is downloaded once there, and nothing is reported. An install on a machine
+  whose id can be read keeps its model through this update.
+- Fixed: Node under a user that the system cannot name (a container whose uid has no entry in the user list)
+  could not make the key at all, and every model call failed with `storage_failed`. The process's uid is used
+  there.
+- **Fixed: no request of the SDK follows a redirect.** Model requests have refused a redirect since 3.1.0.
+  Every other request (the token request, register, config, telemetry, issue reports, the origin check, the
+  sharing calls, the upload of a recording's segments, delete what I shared) was left at the default of
+  `fetch`, which follows one. Had Quran Lab's API answered such a request with a redirect to another host, an
+  earlier version would have asked that host. On Node, where the key is a secret of the developer's server,
+  the key's header of the token request would have gone with it (the token would not: Node leaves
+  `authorization` out on the way to another host), and on a 307 or 308 the request's body too. In a browser a
+  web key is public by design (it is in the page's source and bound to the page's origins), so there it is
+  mostly the bodies that count: a telemetry report, the start of a shared recording, a recording's segment.
+  Quran Lab's servers never answered a redirect, so nothing was sent anywhere. From 3.1.3 every request is
+  made with `redirect: 'error'`: a redirect answered is a failed request of its kind, handled as a request
+  that got no answer and tried again by that call's own rules, and the host it names is never asked.
+- **Fixed: a wrong answer to a model download could throw away a download in progress.** A download asks for
+  a file in ranges and keeps each range it has, so that it can go on after an interruption. An answer with
+  status 200 was taken as the whole file whatever its length: one that was not the file (a shorter or a longer
+  body, an error page) deleted the ranges already kept before the download failed. And a 206 whose
+  `Content-Range` named another total size was accepted. So a released build could lose what it had stored
+  of a file; it never opened wrong bytes, because every file is checked against the manifest's size and
+  SHA-256 at the end; and it never asked again in a loop, because a download asks once for each range and then
+  fails. Now a 200 is the file only at the manifest's size (a body that runs
+  past it is cut off); a 206 must name the range that was asked for and the manifest's size, where the page can
+  read that header (Quran Lab's CDN shows it; where a host does not, the range's exact length and the file's
+  SHA-256 decide); any other answer is a failed download; and a failed download keeps its ranges. Ranges are
+  deleted in one case only: all of them are there and the file made of them fails its check.
+- Tests, and where each ran.
+  - In a real browser (headless Chrome 157, Edge 157 and Firefox 150, each with its own setting that blocks
+    cookies and site data; on a developer's machine, the public runner has no browser): with storage blocked
+    the Client gets the model and runs a take, the next page load downloads the model again, and nothing
+    throws; with storage working the model is kept across page loads, and a key store that opens and then
+    fails on a read is `storage_failed` with nothing deleted. The server, the model and the engine are
+    stand-ins in that test. `STORAGE=blocked npm run test:browser` runs the quick start with the real engine
+    and a real model in Chrome with storage blocked: two page loads, the model downloaded at each.
+  - In Node with a stand-in for the machine (the readers of the machine id, the host name and the user are
+    injected; the SDK's folder is a real folder): the key file; two containers with different host names on
+    one volume, one download in all; a read that fails at one start and works at the next, and the other way
+    round; a folder carried to another machine; a kept answer copied without its folder, which is not used; a
+    key file that cannot be read, which is `storage_failed` with nothing deleted.
+  - In Node with stand-ins for IndexedDB and the Cache API: each answer named above, and the failures that
+    are not "blocked".
+  - In Node with two real servers on the loopback and Node's own fetch: a redirect (301, 302, 303, 307 and
+    308) answered to the token request, to a call that carries the token, to the origin check, to a sharing
+    start, to a segment upload, to the delete calls and to a model request is not followed, and the second
+    server is never asked. In headless Chrome 157, for the token request (`node scripts/browser-redirect.mjs`):
+    the same.
+  - In Node with a stand-in for the CDN: each wrong answer to a range request (a 204; a 200 that is shorter,
+    longer or an error body; an empty 206 and one of the wrong length; a 206 that names another total, start
+    or end) fails the download after one request and keeps the range that was stored, and the next download
+    goes on from it.
+  - Not run: Safari; a real container; a real `reg` timeout on Windows; a real Mac; a redirect in a
+    browser other than Chrome.
+
 ## 3.1.2
 
 - **Changed: the sharing sheet and "What is shared" have the text of copy deck `2026-11-09.1` again.** Copy

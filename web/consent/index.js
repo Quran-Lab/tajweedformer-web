@@ -346,7 +346,7 @@ export async function deleteWithKey(ql, key) {
   const contributor = key.contributor;
   const post = async (path, body) => {
     const h = { 'content-type': 'application/json', ...(ql.origin ? { origin: ql.origin } : {}) };
-    const r = await ql.fetch(ql.apiUrl + path, { method: 'POST', headers: h, body: JSON.stringify(body) });
+    const r = await ql.fetch(ql.apiUrl + path, { method: 'POST', headers: h, body: JSON.stringify(body), redirect: 'error' });
     let j = {};
     try { j = await r.json(); } catch (_) { /* none */ }
     if (r.status >= 400) { const e = new Error(`${r.status} ${j.error || ''}`); e.status = r.status; e.code = j.error; throw e; }
