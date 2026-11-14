@@ -45,12 +45,12 @@
 </td>
 <td valign="top">
 
-**Nothing to host**<br>The SDK downloads the model (56.5 MB) from our CDN in six regions, verifies it and keeps it up to date.
+**Nothing to host**<br>The SDK downloads the model (55.5 MB) from our CDN in six regions, verifies it and keeps it up to date.
 
 </td>
 <td valign="top">
 
-**Data for your own judge**<br>The SDK scores nothing. The model's thresholds and the expected units of each ayah come with it as read-only data, so your app can judge a recitation its own way.
+**Data for your own judge**<br>The SDK scores nothing. The model's thresholds come with it as read-only data, so your app can judge a recitation its own way. The expected units of each ayah do not: with this release and the model build served now, `model.reference` is null.
 
 </td>
 </tr>
@@ -82,7 +82,7 @@ With a bundler (Vite, webpack and the like) the import in the quick start resolv
 | **Key** | A web key from [sdk.quranlab.ai](https://sdk.quranlab.ai), locked to your site's origins. For local work (`vite dev`) use the app's development key, with `http://localhost:*` among its origins; a production key does not work on a local address. |
 | **Page** | A secure context: `https`, or `http://localhost`. A browser gives the microphone and WebCrypto to nothing else, and starts audio only after a tap or a click. |
 | **Browser** | WebAssembly with SIMD, AudioWorklet, and Ed25519 in WebCrypto (Chrome 137, Firefox 129, Safari 17, or later). In Node: version 20 or later. |
-| **Download** | The first visit downloads the model: 56.5 MB, then the browser's cache serves it (73.5 MB stored). A browser that blocks the site's storage (cookies and site data blocked) keeps nothing: there the model is downloaded at every visit. |
+| **Download** | The first visit downloads the model: 55.5 MB, then the browser's cache serves it (68.1 MB stored). A browser that blocks the site's storage (cookies and site data blocked) keeps nothing: there the model is downloaded at every visit. |
 | **Model** | A model comes only from Quran Lab's server, through the Client: `await client.model()`, or `client.prefetch()` ahead of use; the Client opens only a model it downloaded itself on this device. When Quran Lab refuses the key or the app (a revoked key, a paused or blocked app), the SDK stops running the model and removes the downloaded model from the browser. Once the key is accepted again the model is downloaded again. In Node the download is bound to the machine and the user; a machine whose id cannot be read (a container) is bound only by a key file in the SDK's folder, which a copy of that folder carries. |
 | **Takes** | A Model has one open Session (one take) at a time; the next take is a new Session. A take holds at most 20 minutes of audio. |
 | **Threads** | In a browser the engine runs in a module Worker, off the page's main thread (2.x ran it on the main thread); a page whose content security policy forbids Workers runs it on the main thread. In Node it runs on the calling thread. |

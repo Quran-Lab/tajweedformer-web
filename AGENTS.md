@@ -30,12 +30,12 @@ Everything an assistant needs to integrate this SDK correctly: use only the name
 </td>
 <td valign="top">
 
-**Nothing to host**<br>The SDK downloads the model (56.5 MB) from our CDN in six regions, verifies it and keeps it up to date.
+**Nothing to host**<br>The SDK downloads the model (55.5 MB) from our CDN in six regions, verifies it and keeps it up to date.
 
 </td>
 <td valign="top">
 
-**Data for your own judge**<br>The SDK scores nothing. The model's thresholds and the expected units of each ayah come with it as read-only data, so your app can judge a recitation its own way.
+**Data for your own judge**<br>The SDK scores nothing. The model's thresholds come with it as read-only data, so your app can judge a recitation its own way. The expected units of each ayah do not: with this release and the model build served now, `model.reference` is null.
 
 </td>
 </tr>
@@ -79,8 +79,8 @@ One model, one engine, the same bits on every platform. Each SDK compiles the sa
 
 | Repository | What it is | Platforms | Install |
 | - | - | - | - |
-| [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+ on arm64-v8a and armeabi-v7a, desktop JVM | Maven Central `ai.quranlab:tajweedformer:3.1.2` |
-| [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "3.1.3"`, product `TajweedFormer` |
+| [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+ on arm64-v8a and armeabi-v7a, desktop JVM | Maven Central `ai.quranlab:tajweedformer:3.1.5` |
+| [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "3.1.4"`, product `TajweedFormer` |
 | [tajweedformer-web](https://github.com/Quran-Lab/tajweedformer-web) | WebAssembly SDK with SIMD128 | Browsers, Node 20+ | `npm install @quran-lab/tajweedformer` |
 | [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake `FetchContent`, tag 3.1.3 |
 | [tajweedformer-engine](https://github.com/Quran-Lab/tajweedformer-engine) | The engine: exact C runtime, inference library, conformance suite | everything above | Git submodule |
@@ -107,7 +107,7 @@ With a bundler (Vite, webpack and the like) the import in the quick start resolv
 | **Key** | A web key from [sdk.quranlab.ai](https://sdk.quranlab.ai), locked to your site's origins. For local work (`vite dev`) use the app's development key, with `http://localhost:*` among its origins; a production key does not work on a local address. |
 | **Page** | A secure context: `https`, or `http://localhost`. A browser gives the microphone and WebCrypto to nothing else, and starts audio only after a tap or a click. |
 | **Browser** | WebAssembly with SIMD, AudioWorklet, and Ed25519 in WebCrypto (Chrome 137, Firefox 129, Safari 17, or later). In Node: version 20 or later. |
-| **Download** | The first visit downloads the model: 56.5 MB, then the browser's cache serves it (73.5 MB stored). A browser that blocks the site's storage (cookies and site data blocked) keeps nothing: there the model is downloaded at every visit. |
+| **Download** | The first visit downloads the model: 55.5 MB, then the browser's cache serves it (68.1 MB stored). A browser that blocks the site's storage (cookies and site data blocked) keeps nothing: there the model is downloaded at every visit. |
 | **Model** | A model comes only from Quran Lab's server, through the Client: `await client.model()`, or `client.prefetch()` ahead of use; the Client opens only a model it downloaded itself on this device. When Quran Lab refuses the key or the app (a revoked key, a paused or blocked app), the SDK stops running the model and removes the downloaded model from the browser. Once the key is accepted again the model is downloaded again. In Node the download is bound to the machine and the user; a machine whose id cannot be read (a container) is bound only by a key file in the SDK's folder, which a copy of that folder carries. |
 | **Takes** | A Model has one open Session (one take) at a time; the next take is a new Session. A take holds at most 20 minutes of audio. |
 | **Threads** | In a browser the engine runs in a module Worker, off the page's main thread (2.x ran it on the main thread); a page whose content security policy forbids Workers runs it on the main thread. In Node it runs on the calling thread. |
@@ -539,7 +539,7 @@ npm run test:browser   # headless Chrome (CHROME=path)
 A page downloads only the CPU profile of the model folder (`sdk/v4.0`, manifest format 3), gzip on the wire
 (inflated with `DecompressionStream`), resumable, every file checked against the signed manifest, and caches it
 (Cache API or IndexedDB; a directory in Node). Model revision v4.0-2026-11-10, default context `c16_l64`:
-**56.5 MB** (73.5 MB decoded); another context later adds 0.65 to 0.86 MB. The opt-in
+**55.5 MB** (68.1 MB decoded); another context later adds 0.65 to 0.86 MB. The opt-in
 sharing encoder (libopus in WebAssembly, 316 KB) loads only for the first shared session.
 
 ## Problems and wishes
