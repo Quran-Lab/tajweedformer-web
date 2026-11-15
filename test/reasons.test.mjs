@@ -153,11 +153,13 @@ test('a page that works never calls the origin check', async () => {
   await client.close();
 });
 
-test('a runtime without Ed25519 in WebCrypto is runtime_unsupported, with the one minimum text', () => {
-  const e = toTajweedError(new ModelFolderError('signature_unsupported', 'this runtime has no Ed25519 in WebCrypto, so the manifest signature cannot be checked'));
-  assert.deepEqual([e.code, e.message, e.fix], ['runtime_unsupported', 'The SDK cannot run here: this runtime has no Ed25519 in WebCrypto.',
+test('a runtime that cannot check a signature (no WebCrypto) is runtime_unsupported, with the one minimum text', () => {
+  const e = toTajweedError(new ModelFolderError('signature_unsupported', 'this runtime has no WebCrypto (crypto.subtle): signatures cannot be checked'));
+  assert.deepEqual([e.code, e.message, e.fix], ['runtime_unsupported', 'The SDK cannot run here: this runtime has no WebCrypto.',
     `Run the app where the SDK is supported: ${RUNTIME_MINIMUM}.`]);
-  for (const feature of ['WebAssembly SIMD', 'AudioWorklet', 'Ed25519 in WebCrypto', 'Node 20']) assert.ok(RUNTIME_MINIMUM.includes(feature), feature);
+  for (const feature of ['WebAssembly SIMD', 'AudioWorklet', 'WebCrypto', 'Node 20']) assert.ok(RUNTIME_MINIMUM.includes(feature), feature);
+  // 3.1.6: Ed25519 in WebCrypto is not a requirement any more
+  assert.ok(!RUNTIME_MINIMUM.includes('Ed25519'));
 });
 
 test('refusals.json: the answer\'s reason is read first; every case gives exactly the expected code, message and fix', async () => {

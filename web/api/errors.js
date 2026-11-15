@@ -33,7 +33,8 @@ export class TajweedError extends Error {
 }
 
 /** What the SDK needs to run, in one place: the {minimum} of runtime_unsupported and the README's "Before you start". */
-export const RUNTIME_MINIMUM = 'a browser with WebAssembly SIMD, AudioWorklet and Ed25519 in WebCrypto (Chrome 137, Firefox 129, Safari 17, or later), or Node 20 or later';
+// 3.1.6: Ed25519 in WebCrypto is no longer needed (web/platform/ed25519.js verifies where the runtime has none)
+export const RUNTIME_MINIMUM = 'a browser with WebAssembly SIMD, AudioWorklet and WebCrypto (crypto.subtle, a secure context), or Node 20 or later';
 
 /** The reasons of a refusal that have their own message and fix (the catalogue's server_rejected.reasons). */
 const REASONS = BY_CODE.get('server_rejected').reasons || {};
@@ -91,8 +92,9 @@ export function toTajweedError(e, { fallback = 'engine_failed', sdk = '', origin
   if (e instanceof TajweedError) return e;
   const name = e && e.name, code = e && e.code, message = (e && e.message) || String(e);
   const make = (c, values = {}) => new TajweedError(c, { detail: message, ...values }, { cause: e });
-  // a runtime that cannot check a signature at all (no Ed25519 in WebCrypto) is not a fault of the model
-  if (name === 'ModelFolderError' && code === 'signature_unsupported') return make('runtime_unsupported', { detail: 'this runtime has no Ed25519 in WebCrypto', minimum: RUNTIME_MINIMUM });
+  // a runtime that cannot check a signature at all (no WebCrypto) is not a fault of the model, nor offline
+  if (name === 'ModelFolderError' && code === 'signature_unsupported') return make('runtime_unsupported', { detail: 'this runtime has no WebCrypto', minimum: RUNTIME_MINIMUM });
+  if (name === 'PlatformError' && code === 'runtime_unsupported') return make('runtime_unsupported', { detail: 'this runtime has no WebCrypto', minimum: RUNTIME_MINIMUM });
   if (name === 'ModelFolderError' && FOLDER[code]) return make(FOLDER[code], { file: e.file || message });
   if (name === 'DeliveryError') {
     if (code === 'checksum_mismatch') return make('checksum_mismatch', { file: e.path || message });

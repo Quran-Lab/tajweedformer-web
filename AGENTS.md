@@ -68,7 +68,7 @@ Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai) and paste 
 - **Linked to [sdk.quranlab.ai](https://sdk.quranlab.ai):** a web key, the signed config (which model
   build your app gets, the response time), anonymous daily telemetry, issue reports, and opt-in
   recitation sharing with the SDK's own consent sheet.
-- **Version:** 3.1.3, on npm as `@quran-lab/tajweedformer`. What has run where: the test suite on every push
+- **Version:** 3.1.6, on npm as `@quran-lab/tajweedformer`. What has run where: the test suite on every push
   (Linux, with the engine and libopus built there), and, in Quran Lab's own check with model files that a
   public runner does not have, the 35 conformance clips bit for bit in Node and in Chrome (`npm run proof`).
 
@@ -98,7 +98,7 @@ per-class thresholds) your users see, without shipping a new build.
 npm install @quran-lab/tajweedformer
 ```
 
-With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.1.3/web/index.js`. The package has one entry point, the same in a page and in Node.
+With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.1.6/web/index.js`. The package has one entry point, the same in a page and in Node.
 
 ## Before you start
 
@@ -384,7 +384,10 @@ const client = await TajweedClient.create({ key, appVersion: '1.0.0', analytics:
   service worker kept is yours to remove. Another tab of the same origin that has a Model open keeps it running
   from memory; once that tab closes it, its next `client.model()` finds the stored refusal and fails with it.
 - **Signed config:** Ed25519 over the exact bytes with Quran Lab's pinned key id, `expires_at` checked,
-  ETag revalidation; a config that fails is ignored and the last good one stays.
+  ETag revalidation; a config that fails is ignored and the last good one stays. Where the browser's WebCrypto
+  has no Ed25519, the SDK verifies with the vendored @noble/ed25519 2.3.0 (MIT, `web/third_party`). When the
+  device clock is off by more than five minutes from the server's time (the answer's `Date` header),
+  `expires_at` is judged by the server's time; a config the server's clock calls expired is never accepted.
 - **Telemetry:** on by default, anonymous by construction: sums and histograms only (takes, minutes of
   audio, speech and silence, latency and real-time factor, load times, tokens per head, margins and
   confidence, launches, how often the sharing sheet was shown, accepted and declined, and what your app
@@ -419,7 +422,7 @@ means Quran Lab has no model build for this SDK version yet: nothing to change i
   load and raises the refusal it names; `needs_connection` is raised only when that check cannot be reached
   either. A page that works never calls it.
 - **`runtime_unsupported`** is a browser or a Node without something the SDK needs; the message names it
-  (Ed25519 in WebCrypto, for one). `network_not_permitted` belongs to the other TajweedFormer SDKs; this one
+  (WebCrypto, for one; since 3.1.6 Ed25519 in WebCrypto is not needed). `network_not_permitted` belongs to the other TajweedFormer SDKs; this one
   does not raise it.
 
 ## Recitation sharing (the learner opts in)

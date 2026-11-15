@@ -1,5 +1,32 @@
 # Changelog
 
+## 3.1.6
+
+Two causes of a model that never loads, seen on live pages: a browser without Ed25519 in WebCrypto, and a
+device clock that is days off. No call changed.
+
+- **Fixed: a browser without Ed25519 in WebCrypto could never load the model.** Chrome before 137, Safari
+  before 17 and some embedded browsers answer `NotSupportedError` (DOMException code 9) to Ed25519, so the
+  signed config never verified (issue `config:9`) and the learner saw `needs_connection`. Every Ed25519
+  signature the SDK checks (the signed config and the model manifest) now uses WebCrypto's Ed25519 where the
+  browser has it and, where it does not, the vendored @noble/ed25519 2.3.0 (MIT, verify only, RFC 8032 strict:
+  ZIP 215 off; `web/third_party/noble-ed25519`, the file of the npm package unchanged). Which one is decided
+  once per page, by verifying a known signature (RFC 8032 section 7.1, test 1). Ed25519 in WebCrypto is no
+  longer part of the minimum runtime.
+- **Fixed: a runtime that cannot check a signature at all says so.** A page without WebCrypto (not a secure
+  context) raised `needs_connection`; it is now `runtime_unsupported` with the minimum runtime in the fix, and
+  no `signature_invalid` issue is reported for it.
+- **Fixed: a device clock that is days off refused every config (`config:config_expired`).** The config lives
+  24 hours and was judged by the device clock alone. The SDK now reads the server's time from the config
+  answer's `Date` header. When it differs from the device clock by more than five minutes, `expires_at` is
+  judged by the later of the two, and by the server's time alone when the device clock is ahead of it by more
+  than the config's validity. A config the server's clock calls expired is never accepted, whatever the device
+  clock says; the config's own `issued_at` is never taken as the time, so an old answer replayed later is still
+  refused. The difference is kept with the stored config, so the next start judges the stored config, and
+  whether it is near its expiry, by the same clock. Without a readable `Date` the device clock decides, as
+  before. In a browser the API must list `date` in `Access-Control-Expose-Headers` for the SDK to read it
+  (`Date` is not a CORS-safelisted response header); Node reads it always.
+
 ## 3.1.3
 
 The key that binds a downloaded model to the device (3.1.0) no longer keeps a browser or a container from the
