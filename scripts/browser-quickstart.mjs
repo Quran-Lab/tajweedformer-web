@@ -12,6 +12,13 @@
 //             Storage and localStorage are there and refuse. The SDK then keeps the model in memory for the page
 //             load. The script checks that the storage is blocked, runs the same takes, loads the page again and
 //             checks that every model file is downloaded again and that a take runs.
+//   ED25519=absent   the page's WebCrypto has no Ed25519, as Chrome before 137 and Safari before 17: importKey,
+//             generateKey and verify answer NotSupportedError (DOMException code 9) for it, patched in before any
+//             script of the page runs (the SDK checks the config and the manifest on the page's thread). The script
+//             checks that the page has no Ed25519 and that the SDK verified with its fallback (3.1.6).
+//   CLOCK=+2d | -2d   the page's clock (Date.now) is two days ahead of or behind the API's; the API's answers carry
+//             its Date (same origin here, so the page can read it). The config must still be accepted (3.1.6).
+// Every request of the page goes to this script's own server (apiUrl and modelsUrl), never to Quran Lab.
 // Without TAJWEED_MODEL_30 (the model is gated and not in this repository) it says so and exits 0.
 //
 // What is real: the page's script (only its import line is pointed at a module that makes the Client with the
@@ -136,6 +143,10 @@ const server = createServer((req, res) => {
 });
 await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
 
+const NO_ED25519 = process.env.ED25519 === 'absent';
+const CLOCK_MS = ({ '+2d': 2 * 86400000, '-2d': -2 * 86400000 })[process.env.CLOCK || ''] || 0;
+if (process.env.CLOCK && !CLOCK_MS) { console.error('CLOCK is +2d or -2d'); process.exit(2); }
+
 // STORAGE=blocked: a profile of its own whose cookie setting is "block"
 const BLOCKED = process.env.STORAGE === 'blocked';
 const profile = path.join(work, 'profile');
@@ -156,8 +167,26 @@ try {
   const errors = [];
   tab.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   tab.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
+  // a request to any other host than this script's server fails the check (nothing may reach Quran Lab)
+  tab.on('request', (q) => { const u = q.url(); if (/^https?:/.test(u) && !u.startsWith(base + '/')) errors.push(`a request left the local server: ${u}`); });
+  if (NO_ED25519) {
+    await tab.evaluateOnNewDocument(() => {
+      const s = crypto.subtle, named = (a) => a === 'Ed25519' || (a && a.name === 'Ed25519');
+      const refuse = () => Promise.reject(new DOMException('Algorithm: Unrecognized name', 'NotSupportedError'));
+      for (const [f, i] of [['importKey', 2], ['generateKey', 0], ['verify', 0], ['sign', 0]]) {
+        const real = s[f].bind(s);
+        s[f] = (...a) => (named(a[i]) ? refuse() : real(...a));
+      }
+    });
+  }
+  if (CLOCK_MS) await tab.evaluateOnNewDocument((off) => { const now = Date.now.bind(Date); Date.now = () => now() + off; }, CLOCK_MS);
   await tab.goto(`${base}${BUILT ? '/built.html' : '/examples/quickstart.html'}`, { waitUntil: 'load' });
   if (!(await tab.evaluate(() => isSecureContext))) failed = 'the page is not a secure context';
+  if (!failed && NO_ED25519) {
+    const has = await tab.evaluate(async () => { try { await crypto.subtle.importKey('raw', new Uint8Array(32).fill(1), { name: 'Ed25519' }, false, ['verify']); return 'yes'; } catch (e) { return `${e.name} ${e.code}`; } });
+    console.log(`Ed25519 in the page's WebCrypto: ${has}`);
+    if (has !== 'NotSupportedError 9') failed = `the page still has Ed25519 (${has}): nothing was tested`;
+  }
   // the page makes its Client and downloads the model before it wires the buttons: wait for that (the tap of a
   // person comes later still)
   const ready = Date.now();
@@ -167,6 +196,15 @@ try {
     else await new Promise((r) => setTimeout(r, 250));
   }
   console.log(`ready (Client, model downloaded, verified and warm) in ${((Date.now() - ready) / 1000).toFixed(1)} s`);
+  if (!failed && NO_ED25519 && !BUILT) {
+    const mode = await tab.evaluate(async () => (await import('/web/platform/ed25519.js')).ed25519Mode());
+    console.log(`the SDK's Ed25519: ${mode}`);
+    if (mode !== 'fallback') failed = `the SDK verified with ${mode}, not its fallback`;
+  }
+  if (!failed && CLOCK_MS) {
+    const seen = await tab.evaluate(() => Date.now());
+    console.log(`the page's clock is ${((seen - Date.now()) / 86400000).toFixed(2)} days off; the config was accepted`);
+  }
   const t0 = Date.now();
   if (!failed) await tab.click('#listen');
   let last = '', quiet = 0;
@@ -251,4 +289,5 @@ try {
   rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); // the browser lets go of its profile a moment after it closed
 }
 if (failed) { console.error('FAILED:', failed); process.exit(1); }
-console.log(`OK${BUILT ? ' (the Vite build of examples/vite)' : ''}: key, model, microphone, AudioWorklet, the engine in a Worker, model output; and the sample clip${BLOCKED ? '; with the browser\'s storage blocked, and the model downloaded again at the second load' : ''}`);
+console.log(`OK${BUILT ? ' (the Vite build of examples/vite)' : ''}: key, model, microphone, AudioWorklet, the engine in a Worker, model output; and the sample clip${BLOCKED ? '; with the browser\'s storage blocked, and the model downloaded again at the second load' : ''}`
+  + `${NO_ED25519 ? '; with no Ed25519 in the page\'s WebCrypto' : ''}${CLOCK_MS ? `; with the page's clock ${process.env.CLOCK}` : ''}`);

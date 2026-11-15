@@ -6,13 +6,14 @@
 //
 // SDK internals since 3.0.0: the public object is TajweedClient (web/api/client.js), which owns one of these.
 
+import { verifyEd25519, Ed25519Unavailable } from './ed25519.js';
 import { Telemetry, deviceInfo, utcDay, productOf } from './telemetry.js';
 import { localState } from './storage.js';
 import { QURANLAB_PUBLIC_KEY_HEX, hexToBytes, bytesToHex } from '../tajweed/manifest.js';
 import { noticeSdkLatest } from './update-notice.js';
 import { MODEL_STOP_REASONS, stopReasonOf } from '../api/errors.js';
 
-export const SDK_VERSION = '3.1.3';
+export const SDK_VERSION = '3.1.6';
 export const API_URL = 'https://api.quranlab.ai';
 export const CDN_URL = 'https://cdn.quranlab.ai';
 /** Where model files are served: {base}/{owner}/{repo}/{revision}/{path}. The signed config's `base`
@@ -73,21 +74,67 @@ export async function keyId(raw) {
  * @param {string|null} kid  x-qlab-key-id
  * @param {Array<string|Uint8Array>} trustedKeys  raw public keys (hex or bytes)
  */
-export async function verifySignedConfig(body, sigHeader, kid, trustedKeys, now = Date.now()) {
+export async function verifySignedConfig(body, sigHeader, kid, trustedKeys, now = Date.now(), serverMs = null) {
+  // no WebCrypto at all (not a secure context, an old runtime): nothing can be verified here (3.1.6)
+  if (!globalThis.crypto || !globalThis.crypto.subtle) throw new PlatformError(0, 'runtime_unsupported', 'this runtime has no WebCrypto (crypto.subtle)');
   if (!sigHeader || !sigHeader.startsWith('ed25519=') || !kid) throw new PlatformError(0, 'signature_invalid', 'no signature');
   let sig;
   try { sig = b64uToBytes(sigHeader.slice(8)); } catch (_) { throw new PlatformError(0, 'signature_invalid', 'bad signature encoding'); }
   let ok = false;
   for (const k of trustedKeys) {
     if ((await keyId(k)) !== kid) continue;
-    const key = await subtle().importKey('raw', typeof k === 'string' ? hexToBytes(k) : k, { name: 'Ed25519' }, false, ['verify']);
-    if (await subtle().verify({ name: 'Ed25519' }, key, sig, body)) { ok = true; break; }
+    // 3.1.6: WebCrypto's Ed25519, or the vendored verifier where the runtime has none (web/platform/ed25519.js)
+    try {
+      if (await verifyEd25519(typeof k === 'string' ? hexToBytes(k) : k, sig, body)) { ok = true; break; }
+    } catch (e) {
+      if (e instanceof Ed25519Unavailable) throw new PlatformError(0, 'runtime_unsupported', e.message);
+      throw e;
+    }
   }
   if (!ok) throw new PlatformError(0, 'signature_invalid', `the config does not verify with a pinned key (kid ${kid})`);
   const cfg = JSON.parse(new TextDecoder().decode(body));
   if (cfg.v !== 1) throw new PlatformError(0, 'signature_invalid', `config v ${cfg.v}`);
-  if (!(typeof cfg.expires_at === 'number' && cfg.expires_at * 1000 > now)) throw new PlatformError(0, 'config_expired', 'the config has expired');
+  // 3.1.6: expiry by the server's time when the device clock is off (configNow); never a body the server's own clock
+  // calls expired (when the server's time is known from the answer's Date header)
+  const at = configNow(now, serverTime(cfg, serverMs), validityOf(cfg));
+  if (!(typeof cfg.expires_at === 'number' && cfg.expires_at * 1000 > at && (serverMs === null || cfg.expires_at * 1000 > serverMs))) {
+    throw new PlatformError(0, 'config_expired', 'the config has expired');
+  }
   return cfg;
+}
+
+/** Differences between the device clock and the server's time below this are ignored. */
+export const CLOCK_SKEW_MS = 5 * 60_000;
+
+/**
+ * The time a config's expiry is judged by (3.1.6). The device clock, unless the server's time differs from it by more
+ * than CLOCK_SKEW_MS: then the later of the two (a device clock behind the server never shortens a config), and the
+ * server's time when the device clock is ahead of it by more than a config lives (a device clock days ahead never
+ * expires every fresh config). serverMs null: the device clock.
+ */
+export function configNow(deviceMs, serverMs, validityMs = 86_400_000) {
+  if (serverMs === null || serverMs === undefined || !Number.isFinite(serverMs) || Math.abs(deviceMs - serverMs) <= CLOCK_SKEW_MS) return deviceMs;
+  if (deviceMs - serverMs > validityMs) return serverMs;
+  return Math.max(deviceMs, serverMs);
+}
+
+/** How long a config lives: expires_at - issued_at (24 h), in ms. */
+export const validityOf = (cfg) => (cfg && Number.isFinite(cfg.issued_at) && Number.isFinite(cfg.expires_at) && cfg.expires_at > cfg.issued_at
+  ? (cfg.expires_at - cfg.issued_at) * 1000 : 86_400_000);
+
+/**
+ * The server's time for a config answer: the HTTP Date header, where the runtime can read it (Node; a browser only
+ * when the API lists `date` in Access-Control-Expose-Headers: Date is not a CORS-safelisted response header). Never
+ * the config's own issued_at: a stale body replayed later carries an old issued_at, and judging it by that would
+ * accept it whatever its age. Null when unknown: the device clock alone decides, as before 3.1.6.
+ */
+export function serverTime(cfg, serverMs) {
+  return serverMs !== null && serverMs !== undefined && Number.isFinite(serverMs) ? serverMs : null;
+}
+
+/** The Date header of an answer in ms, or null (unreadable, absent or malformed). */
+export function dateHeaderMs(r) {
+  try { const d = r && r.headers && r.headers.get('date'); const t = d ? Date.parse(d) : NaN; return Number.isFinite(t) ? t : null; } catch (_) { return null; }
 }
 
 /**
@@ -171,7 +218,7 @@ export class QuranLab {
       appVersion: this.appVersion, device: deviceInfo(), clock: this.clock, enabled: this.analyticsOn });
     // the stored signed config, if still valid, until the network answers
     const saved = this.state.get('config');
-    if (saved && saved.cfg && saved.cfg.expires_at * 1000 > this.clock()) this.config = saved.cfg;
+    if (saved && saved.cfg && saved.cfg.expires_at * 1000 > this.configClock(saved)) this.config = saved.cfg;
     if (this.state.get('bucket') === null) this.state.set('bucket', Math.floor(Math.random() * 100));
   }
 
@@ -184,6 +231,14 @@ export class QuranLab {
   }
 
   get flags() { return (this.config && this.config.flags) || { analytics: true, issues: true, contributions: false }; }
+
+  /** The time a stored config's expiry is judged by: configNow with the server's time estimated from the skew learned
+   * when that config was verified (3.1.6). */
+  configClock(saved = this.state.get('config')) {
+    const device = this.clock();
+    const skew = saved && Number.isFinite(saved.skew) ? saved.skew : 0;
+    return skew ? configNow(device, device + skew, validityOf(saved && saved.cfg)) : device;
+  }
 
   // ---- the model gate (SPEC 15.3) ----
   // An answer of the server stops the model on this device exactly when its body carries a `reason` of
@@ -462,7 +517,7 @@ export class QuranLab {
    */
   async refreshConfig() {
     const saved = this.state.get('config');
-    const nearExpiry = saved && saved.cfg && saved.cfg.expires_at * 1000 - this.clock() < 3600_000;
+    const nearExpiry = saved && saved.cfg && saved.cfg.expires_at * 1000 - this.configClock(saved) < 3600_000;
     const q = new URLSearchParams({ bucket: String(this.state.get('bucket')), sdk: SDK_VERSION });
     // a model pinned by version (SPEC 2a): the server answers that version's build for this SDK, or its
     // normal choice with pin.status "unavailable". A stored config made for another pin is not reused.
@@ -488,16 +543,22 @@ export class QuranLab {
     }
     const body = new Uint8Array(await r.arrayBuffer());
     let cfg;
+    const device = this.clock(), dated = dateHeaderMs(r);
     try {
-      cfg = await verifySignedConfig(body, r.headers.get('x-qlab-signature'), r.headers.get('x-qlab-key-id'), this.trustedKeys, this.clock());
+      cfg = await verifySignedConfig(body, r.headers.get('x-qlab-signature'), r.headers.get('x-qlab-key-id'), this.trustedKeys, device, dated);
     } catch (e) {
-      this.reportIssue('signature_invalid', 'config:' + e.code);
+      // a runtime that cannot verify at all is the runtime's limit, not a bad signature (and not offline)
+      if (e.code !== 'runtime_unsupported') this.reportIssue('signature_invalid', 'config:' + e.code);
       throw e;
     }
+    // the device clock's offset from the server's, kept with the config, so the stored config is judged by the same
+    // clock at the next start (configClock)
+    const server = serverTime(cfg, dated);
+    const skew = server !== null && Math.abs(server - device) > CLOCK_SKEW_MS ? server - device : 0;
     this.config = cfg;
     this.configFresh = true;
     this._accepted(); // a config that verified: the server accepts this key
-    this.state.set('config', { cfg, pin, etag: r.headers.get('etag'), sig: r.headers.get('x-qlab-signature'), kid: r.headers.get('x-qlab-key-id') });
+    this.state.set('config', { cfg, pin, etag: r.headers.get('etag'), sig: r.headers.get('x-qlab-signature'), kid: r.headers.get('x-qlab-key-id'), skew });
     if (cfg.flags && cfg.flags.analytics === false) this.telemetry.clear();
     this.telemetry.enabled = this.analyticsOn && !(cfg.flags && cfg.flags.analytics === false);
     this._noticeSdkLatest();
@@ -531,6 +592,7 @@ export class QuranLab {
     if (!cfg) {
       // the server refused this client for the launch: that answer, not a network failure
       if (this.stoppedError) throw this.stoppedError;
+      if (this.lastError && this.lastError.code === 'runtime_unsupported') throw this.lastError;
       throw this.lastError instanceof PlatformError && this.lastError.status ? this.lastError : new PlatformError(0, 'offline', 'no signed config could be fetched');
     }
     // a config with no model entry: Quran Lab has no build for this SDK generation yet (the next config may)

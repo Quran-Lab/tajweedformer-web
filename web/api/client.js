@@ -387,7 +387,7 @@ export class TajweedClient {
       : { accepted: ql.keyAccepted ? true : null, reason: null };
     const stored = i.state.get('config');
     const now = ql.clock();
-    const fresh = ql.config && ql.config.expires_at * 1000 > now;
+    const fresh = ql.config && ql.config.expires_at * 1000 > ql.configClock();
     const m = this._model && !this._model._closed ? this._model : null;
     const last = i.state.get('model.last');
     const onDevice = m ? null : await this._storedContext(last);

@@ -12,7 +12,9 @@
 // signature use WebCrypto (globalThis.crypto.subtle), present in every current browser and in Node 20 and later.
 
 /** The version of this SDK, compared with a manifest's min_sdk_version. */
-export const SDK_VERSION = '3.1.3';
+import { verifyEd25519, Ed25519Unavailable } from '../platform/ed25519.js';
+
+export const SDK_VERSION = '3.1.6';
 
 /** Manifest formats this SDK reads. */
 export const SUPPORTED_MANIFEST_FORMATS = Object.freeze([1, 2, 3]);
@@ -315,7 +317,8 @@ export function checkManifestShape(m) {
 
 /**
  * Whether the signature verifies with one of `trustedKeys` (raw Ed25519 public keys, hex or bytes).
- * Throws ModelFolderError signature_unsupported when this runtime has no Ed25519 in WebCrypto.
+ * Throws ModelFolderError signature_unsupported only when this runtime has no WebCrypto at all (3.1.6: a runtime
+ * without Ed25519 in WebCrypto verifies with the vendored verifier).
  * @returns {Promise<boolean>}
  */
 export async function verifyManifestSignature(m, trustedKeys = [QURANLAB_PUBLIC_KEY_HEX]) {
@@ -342,21 +345,20 @@ export async function verifySignedTexts(m, trustedKeys = [QURANLAB_PUBLIC_KEY_HE
   const no = { valid: false, toleranceSigned: false, rawToleranceSigned: false, text: null };
   const sig = base64ToBytes(m.signature);
   if (!sig || sig.length !== 64) return no;
-  const s = subtle();
+  subtle(); // no WebCrypto at all: signature_unsupported (runtime_unsupported for the app)
   const keys = [];
   for (const k of trustedKeys) {
-    try {
-      keys.push(await s.importKey('raw', typeof k === 'string' ? hexToBytes(k) : asBytes(k), { name: 'Ed25519' }, false, ['verify']));
-    } catch (e) {
-      if (e && (e.name === 'NotSupportedError' || /not supported|unrecognized/i.test(String(e.message)))) {
-        throw new ModelFolderError('signature_unsupported', 'this runtime has no Ed25519 in WebCrypto, so the manifest signature cannot be checked');
-      }
-      // a malformed key never verifies
-    }
+    try { keys.push(typeof k === 'string' ? hexToBytes(k) : asBytes(k)); } catch (_) { /* a malformed key never verifies */ }
   }
+  // 3.1.6: WebCrypto's Ed25519, or the vendored verifier where the runtime has none (web/platform/ed25519.js)
   const ok = async (text) => {
     const msg = utf8(text);
-    for (const key of keys) if (await s.verify({ name: 'Ed25519' }, key, sig, msg)) return true;
+    for (const key of keys) {
+      try { if (await verifyEd25519(key, sig, msg)) return true; } catch (e) {
+        if (e instanceof Ed25519Unavailable) throw new ModelFolderError('signature_unsupported', e.message);
+        throw e;
+      }
+    }
     return false;
   };
   if (m.format !== 3) { const text = signedText(m); return (await ok(text)) ? { valid: true, toleranceSigned: false, rawToleranceSigned: false, text } : no; }
