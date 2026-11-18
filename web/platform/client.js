@@ -11,9 +11,10 @@ import { Telemetry, deviceInfo, utcDay, productOf } from './telemetry.js';
 import { localState } from './storage.js';
 import { QURANLAB_PUBLIC_KEY_HEX, hexToBytes, bytesToHex } from '../tajweed/manifest.js';
 import { noticeSdkLatest } from './update-notice.js';
+import { ErrorReports, classify, webSnapshot, refreshStorageEstimate, tag, telemetryReason, SEND_AFTER_MS } from './error-reports.js';
 import { MODEL_STOP_REASONS, stopReasonOf } from '../api/errors.js';
 
-export const SDK_VERSION = '3.1.6';
+export const SDK_VERSION = '3.1.7';
 export const API_URL = 'https://api.quranlab.ai';
 export const CDN_URL = 'https://cdn.quranlab.ai';
 /** Where model files are served: {base}/{owner}/{repo}/{revision}/{path}. The signed config's `base`
@@ -21,8 +22,6 @@ export const CDN_URL = 'https://cdn.quranlab.ai';
 export const MODELS_URL = 'https://cdn.quranlab.ai/models';
 const SAFE_BASE = /^(https:\/\/[A-Za-z0-9.-]+(:\d+)?|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)(\/[A-Za-z0-9._~\/-]*)?$/;
 const REGIONAL_CDN = /^https:\/\/((weur|eeur|enam|wnam|apac|oc)\.)?cdn\.quranlab\.ai$/;
-const ISSUE_KINDS = ['engine_failed', 'model_load', 'checksum_mismatch', 'signature_invalid', 'update_failed', 'fallback',
-  'self_test_failed', 'audio_input', 'other'];
 /** Codes after which the client stops all network calls until the next launch (error table). */
 const STOP_CODES = new Set(['invalid_key', 'unauthorized', 'developer_not_approved', 'not_a_member', 'key_type_mismatch',
   'origin_not_allowed', 'app_not_allowed', 'app_blocked', 'environment_mismatch', 'sdk_too_old']);
@@ -42,6 +41,9 @@ const ORIGIN_CHECK = Object.freeze({
   key_not_approved: { status: 403, code: 'developer_not_approved', reason: 'developer_not_approved' },
   not_a_web_key: { status: 403, code: 'key_type_mismatch', reason: 'key_type_mismatch' },
 });
+/** The error reports' stage of a failed API call (ERRORS_40.md 24.3). */
+const STAGE_OF = (path) => (path.startsWith('/v1/config') ? 'config' : path.startsWith('/v1/register') ? 'register'
+  : path.startsWith('/v1/attest') ? 'attest' : path.startsWith('/v1/events') ? 'events' : path.startsWith('/v1/issues') ? null : 'sharing');
 /** A telemetry delta every this long while the app is in use (2.0.1: Quran Lab's choice, 15 minutes). */
 export const DELTA_INTERVAL_MS = 15 * 60_000;
 /** How often the schedule looks at the clock. */
@@ -216,6 +218,19 @@ export class QuranLab {
     this._timer = null;
     this.telemetry = new Telemetry({ state: this.state, product: productOf(this.platform), platform: this.platform, sdkVersion: SDK_VERSION,
       appVersion: this.appVersion, device: deviceInfo(), clock: this.clock, enabled: this.analyticsOn });
+    // error reports (3.1.7, ERRORS_40.md section 24): this page is the install's first launch when no earlier start
+    // left its mark (PLATFORM_CLIENT.md 2); the engine's host is known once an engine started
+    let installed = null;
+    try { installed = this.state.get('installed'); } catch (_) { installed = null; }
+    this.firstLaunch = installed === null;
+    this.engineInWorker = undefined;
+    this._errTimer = null;
+    this.errors = new ErrorReports({ state: this.state, clock: this.clock, enabled: () => this.issuesOn && this.flags.issues !== false,
+      top: () => ({ platform: this.platform, sdk_version: SDK_VERSION, app_version: this.appVersion, os_version: String(this.telemetry.device.os_major),
+        device_class: this.telemetry.device.class }),
+      onNew: () => this._errorsSoon() });
+    this.telemetry.onExpired = () => this._silent('events', 'expired');
+    refreshStorageEstimate(this.clock());
     // the stored signed config, if still valid, until the network answers
     const saved = this.state.get('config');
     if (saved && saved.cfg && saved.cfg.expires_at * 1000 > this.configClock(saved)) this.config = saved.cfg;
@@ -333,8 +348,8 @@ export class QuranLab {
       // no HTTP answer. On a page that can be the browser refusing the answer of an origin that is not on the
       // key: the origin check tells (once per page load); else the failure stays what it was
       const refused = await this.originCheck();
-      if (refused) throw refused;
-      throw e;
+      if (refused) { if (!refused.stage) refused.stage = STAGE_OF(path) || 'config'; throw refused; }
+      throw tag(e, { stage: STAGE_OF(path) || 'config', reason: 'network' });
     }
     if (r.status < 400 && auth !== 'none') { this.keyAccepted = true; this.refusedError = null; } // the server answered a call made with this key or its token
     // a register or token answer that succeeds accepts the key (the config does when it has verified)
@@ -344,6 +359,7 @@ export class QuranLab {
       let e = {};
       try { e = await r.json(); } catch (_) { /* no body */ }
       const err = new PlatformError(r.status, e.error || 'http_' + r.status, e.message || '');
+      err.stage = STAGE_OF(path) || 'config';
       if (typeof e.min_sdk === 'string') err.minSdk = e.min_sdk; // 403 sdk_too_old: the version this key needs
       // the check that refused (a 401 invalid_key names it: app_not_allowed, origin_not_allowed, key_type_mismatch);
       // the error raised to the app reads it first, what the client does with the network follows `error`
@@ -412,7 +428,7 @@ export class QuranLab {
     this.telemetry.launched();
     const steps = [() => this.register(), () => this.refreshConfig(), () => this.sendTelemetry('launch')];
     for (const s of steps) {
-      try { await s(); } catch (e) { this.lastError = e; if (this.stopped) break; }
+      try { await s(); } catch (e) { this.lastError = e; this.reportFailure(e, { silent: true }); if (this.stopped) break; }
     }
     if (this.autoSend) this._startSchedule();
   }
@@ -533,6 +549,7 @@ export class QuranLab {
       let e = {};
       try { e = await r.json(); } catch (_) { /* none */ }
       const err = new PlatformError(r.status, e.error || 'http_' + r.status, e.message);
+      err.stage = 'config';
       if (typeof e.min_sdk === 'string') err.minSdk = e.min_sdk;
       if (typeof e.reason === 'string') err.reason = e.reason;
       const stop = stopReasonOf(err.reason);
@@ -547,8 +564,9 @@ export class QuranLab {
     try {
       cfg = await verifySignedConfig(body, r.headers.get('x-qlab-signature'), r.headers.get('x-qlab-key-id'), this.trustedKeys, device, dated);
     } catch (e) {
-      // a runtime that cannot verify at all is the runtime's limit, not a bad signature (and not offline)
-      if (e.code !== 'runtime_unsupported') this.reportIssue('signature_invalid', 'config:' + e.code);
+      // a runtime that cannot verify at all is the runtime's limit, not a bad signature (and not offline); either
+      // way the launch reports it (3.1.7: an error report, ERRORS_40.md 24.1)
+      if (e && e.name === 'PlatformError') e.stage = 'config';
       throw e;
     }
     // the device clock's offset from the server's, kept with the config, so the stored config is judged by the same
@@ -593,10 +611,16 @@ export class QuranLab {
       // the server refused this client for the launch: that answer, not a network failure
       if (this.stoppedError) throw this.stoppedError;
       if (this.lastError && this.lastError.code === 'runtime_unsupported') throw this.lastError;
-      throw this.lastError instanceof PlatformError && this.lastError.status ? this.lastError : new PlatformError(0, 'offline', 'no signed config could be fetched');
+      // 3.1.7 (ERRORS_40.md 24.4): a config the server answered but that did not verify or has expired is that
+      // failure (download_failed), never needs_connection; only no answer at all is offline
+      const last = this.lastError;
+      if (last instanceof PlatformError && (last.status || last.code === 'signature_invalid' || last.code === 'config_expired')) throw last;
+      // the token gates the config: a token request that got no answer is the cause (ERRORS_40.md 24.4 rule 3a)
+      const cause = last && last.qlReport && last.qlReport.stage === 'attest' ? last.qlReport : { stage: 'config', reason: 'network' };
+      throw tag(new PlatformError(0, 'offline', 'no signed config could be fetched'), cause);
     }
     // a config with no model entry: Quran Lab has no build for this SDK generation yet (the next config may)
-    if (!rec || !rec.revision) throw new PlatformError(0, 'model_unavailable', 'the config offers no model build to this SDK');
+    if (!rec || !rec.revision) throw tag(new PlatformError(0, 'model_unavailable', 'the config offers no model build to this SDK'), { stage: 'config', reason: 'unavailable' });
     const enc = (p) => p.split('/').map(encodeURIComponent).join('/');
     this.modelRevision = typeof rec.version === 'string' ? rec.version : null;
     this.modelBuild = String(rec.revision);
@@ -658,7 +682,7 @@ export class QuranLab {
         } catch (e) {
           if (e.status === 400 || e.status === 413) {
             this.telemetry.dropReport(r.report_id);
-            if (e.status === 400) this.reportIssue('other', `telemetry:${e.code || 'bad_request'}`);
+            this._silent('events', 'http', { http_status: e.status, error_code: e.code });
           } else {
             this.telemetry.deferReport(r.report_id);
             break;
@@ -673,30 +697,67 @@ export class QuranLab {
       try { await this._call('POST', '/v1/issues', { body: i }); } catch (e) { if (!(e.status === 400)) keep.push(i); }
     }
     this.state.set('issues.queue', this.flags.issues === false ? [] : keep);
+    await this.flushErrors({ keepalive }).catch(() => 0);
     return sent;
   }
 
-  /** Queue an issue report (no free text, no paths); one per kind+code per day. */
-  reportIssue(kind, code, frames = []) {
-    if (!this.issuesOn) return false;
-    const k = ISSUE_KINDS.includes(kind) ? kind : 'other';
-    const c = String(code).replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 64) || 'unknown';
-    const day = utcDay(this.clock());
-    const seen = this.state.get('issues.seen') || {};
-    const sig = `${day}|${k}|${c}`;
-    if (seen[sig]) return false;
-    for (const s of Object.keys(seen)) if (!s.startsWith(day)) delete seen[s];
-    seen[sig] = 1;
-    this.state.set('issues.seen', seen);
-    const ua = (globalThis.navigator && globalThis.navigator.userAgent) || '';
-    const q = this.state.get('issues.queue') || [];
-    q.push({ day, platform: this.platform, sdk_version: SDK_VERSION, app_version: this.appVersion,
-      os_version: String(this.telemetry.device.os_major), device_class: this.telemetry.device.class, backend: 'exact',
-      ...(this.modelRevision ? { revision: this.modelRevision } : {}), kind: k, code: c,
-      ...(frames.length ? { frames: frames.slice(0, 16).map((f) => String(f).slice(0, 80)) } : {}) });
-    this.state.set('issues.queue', q.slice(-20));
-    void ua;
-    return true;
+  /** The sharing controller's issues (a take list refused, a recording that could not start): from 3.1.7 error
+   * reports of the stage `sharing` (ERRORS_40.md 24.1), never the older kinds. */
+  reportIssue(kind, code) {
+    const c = String(code || '');
+    if (c === 'bad_request:takes') return this._silent('sharing', 'http', { http_status: 400, error_code: 'bad_request' });
+    const rest = c.includes(':') ? c.slice(c.indexOf(':') + 1) : c;
+    return this._silent('sharing', 'other', /^[A-Za-z0-9_.:-]{1,32}$/.test(rest) ? { error_code: rest } : {});
+  }
+
+  // ---- error reports (3.1.7, ERRORS_40.md section 24) ----
+  /**
+   * A failure for the error reports. `err`: what the app was given (a TajweedError: its code is the report's), or
+   * with `silent` the internal failure of something the SDK went on without (code "none"). Never throws, never
+   * waits; returns whether it made a new report.
+   */
+  reportFailure(err, { silent = false, extra = {} } = {}) {
+    try {
+      const c = classify(err);
+      return this._occur({ ...c, ...extra, code: silent ? 'none' : (err && err.code) || 'none' });
+    } catch (_) { return false; }
+  }
+
+  /** A silent failure the SDK names itself: stage, reason and the report's other fields. */
+  _silent(stage, reason, extra = {}) {
+    try { return this._occur({ ...extra, stage, reason, code: 'none' }); } catch (_) { return false; }
+  }
+
+  _occur(o) {
+    refreshStorageEstimate(this.clock());
+    return this.errors.occur({ ...o, first_launch: this.firstLaunch, revision: this.modelRevision || undefined,
+      build: this.modelBuild || undefined, web: webSnapshot({ worker: this.engineInWorker }) });
+  }
+
+  // 30 s after a new report while the page is visible; a hidden page sends at its next send point (24.6)
+  _errorsSoon() {
+    if (this._errTimer || this.stopped) return;
+    this._errTimer = setTimeout(() => {
+      this._errTimer = null;
+      const doc = this.lifecycle && this.lifecycle.document;
+      if (doc && doc.visibilityState === 'hidden') return;
+      this.flushErrors().catch(() => {});
+    }, SEND_AFTER_MS);
+    if (this._errTimer && typeof this._errTimer.unref === 'function') this._errTimer.unref();
+  }
+
+  /** Send the queued error reports, oldest first (202 sent; 400 and 413 dropped; anything else kept for later). */
+  flushErrors({ keepalive = false } = {}) {
+    if (this.stopped) return Promise.resolve(0);
+    return this.errors.flush((body) => this._call('POST', '/v1/issues', { body, keepalive }));
+  }
+
+  /** A model download that failed (24.8): counted in the day's telemetry with its reason. */
+  downloadFailed({ revision, build = null, bytes = 0, reason }) {
+    try {
+      if (!revision) return;
+      this.telemetry.download({ revision, build, profile: 'web-cpu', bytes, success: false, reason: telemetryReason(reason) });
+    } catch (_) { /* telemetry never stops a call */ }
   }
 
   // ---- the learner's sharing routes (section 9) ----

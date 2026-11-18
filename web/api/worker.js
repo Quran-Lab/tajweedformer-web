@@ -15,7 +15,8 @@ self.onmessage = (ev) => {
       const result = await host[method](...(args || []));
       self.postMessage({ id, result }, transferables(result));
     } catch (e) {
-      self.postMessage({ id, error: { message: String((e && e.message) || e) } });
+      // the class goes too (a CompileError, a RangeError of memory): the error reports read it (3.1.7)
+      self.postMessage({ id, error: { message: String((e && e.message) || e), name: e && typeof e.name === 'string' ? e.name : 'Error' } });
     }
   });
 };

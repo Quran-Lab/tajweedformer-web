@@ -13,7 +13,7 @@
 <p align="center">
   <img alt="platform: browsers, Node" src="https://img.shields.io/badge/platform-browsers%20%7C%20Node-1c1b19?style=flat-square">
   <img alt="bit-exact: 35 of 35 conformance clips" src="https://img.shields.io/badge/bit--exact-35%2F35%20clips-2a3b8f?style=flat-square">
-  <img alt="version: 3.1.6" src="https://img.shields.io/badge/version-3.1.6-2a3b8f?style=flat-square">
+  <img alt="version: 3.1.7" src="https://img.shields.io/badge/version-3.1.7-2a3b8f?style=flat-square">
   <img alt="model licence: NPL-1.2" src="https://img.shields.io/badge/model%20licence-NPL--1.2-1c1b19?style=flat-square">
 </p>
 
@@ -61,11 +61,11 @@
 - **Made for the Quran.** Trained on Quranic recitation, with its own sound units and heads for what tajweed is about.
 - **Feedback in the moment.** Output streams while the learner recites, so your app can respond on the word itself, not after the take.
 - **One engine on every platform.** The same engine runs the [web](https://github.com/Quran-Lab/tajweedformer-web), [Android](https://github.com/Quran-Lab/tajweedformer-android), [iOS and macOS](https://github.com/Quran-Lab/tajweedformer-apple) and [Windows and Linux](https://github.com/Quran-Lab/tajweedformer-c) SDKs, all set from one portal.
-- **Free, and it stays free.** Quran Lab is a non-profit waqf: the SDKs and models are never sold. The licence, NPL-1.2, asks three things: no paywall on model features, no results presented as rulings, and show the notice.
+- **Free, and it stays free.** Quran Lab is a non-profit waqf: the SDKs and models are never sold. The licence, NPL-1.2, and Quran Lab's access terms ask two things: no paywall on model features, and no output presented as an authoritative religious ruling. A line telling learners that automatic feedback can be wrong is encouraged, not required.
 
 ## Built for AI developers
 
-Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai) and paste it into your coding assistant. That one prompt sets everything up: the package, your key, and the first calls. [AGENTS.md](AGENTS.md), beside this README, gives the assistant the complete API, so the code it writes uses names that exist. Prefer to do it by hand? Get a key in the portal and start below.
+Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai/go/gh-tajweedformer-web) and paste it into your coding assistant. That one prompt sets everything up: the package, your key, and the first calls. [AGENTS.md](AGENTS.md), beside this README, gives the assistant the complete API, so the code it writes uses names that exist. Prefer to do it by hand? Get a key in the portal and start below.
 
 ## Install
 
@@ -73,13 +73,13 @@ Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai) and paste 
 npm install @quran-lab/tajweedformer
 ```
 
-With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.1.6/web/index.js`. The package has one entry point, the same in a page and in Node.
+With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.1.7/web/index.js`. The package has one entry point, the same in a page and in Node.
 
 ## Before you start
 
 | | |
 | - | - |
-| **Key** | A web key from [sdk.quranlab.ai](https://sdk.quranlab.ai), locked to your site's origins. For local work (`vite dev`) use the app's development key, with `http://localhost:*` among its origins; a production key does not work on a local address. |
+| **Key** | A web key from [sdk.quranlab.ai](https://sdk.quranlab.ai/go/gh-tajweedformer-web), locked to your site's origins. For local work (`vite dev`) use the app's development key, with `http://localhost:*` among its origins; a production key does not work on a local address. |
 | **Page** | A secure context: `https`, or `http://localhost`. A browser gives the microphone and WebCrypto to nothing else, and starts audio only after a tap or a click. |
 | **Browser** | WebAssembly with SIMD, AudioWorklet, and Ed25519 in WebCrypto (Chrome 137, Firefox 129, Safari 17, or later). In Node: version 20 or later. |
 | **Download** | The first visit downloads the model: 55.5 MB, then the browser's cache serves it (68.1 MB stored). A browser that blocks the site's storage (cookies and site data blocked) keeps nothing: there the model is downloaded at every visit. |
@@ -120,7 +120,7 @@ its app's desktop key and `appId`, and the Client downloads the model ([examples
 
 ## More
 
-The full reference (every layer of the API, backends, what a device downloads, platform settings, recording sharing, building and testing) is in [AGENTS.md](AGENTS.md), written for coding assistants and just as readable for you. Guides: [sdk.quranlab.ai/docs](https://sdk.quranlab.ai/docs).
+The full reference (every layer of the API, backends, what a device downloads, platform settings, recording sharing, building and testing) is in [AGENTS.md](AGENTS.md), written for coding assistants and just as readable for you. Guides: [sdk.quranlab.ai/docs](https://sdk.quranlab.ai/go/gh-tajweedformer-web?to=/docs).
 
 ## Problems and wishes
 
@@ -140,6 +140,6 @@ Quran-Lab No-Profit License 1.2 ([NPL-1.2](LICENSE)): use, copy, modify and buil
 but never charge for them, for access to them, or for any feature they power. The weights are not
 stored in this repository; Quran Lab hosts them itself and serves them to apps by
 `cdn.quranlab.ai/models` under the same licence. Get access at
-[sdk.quranlab.ai](https://sdk.quranlab.ai).
+[sdk.quranlab.ai](https://sdk.quranlab.ai/go/gh-tajweedformer-web).
 
 Third-party components keep their own licences, listed in their folders under `third_party/`.

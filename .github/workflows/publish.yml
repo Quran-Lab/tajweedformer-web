@@ -52,6 +52,8 @@ jobs:
           CLANG="$RUNNER_TEMP/emsdk/upstream/bin/clang" REQUIRE_OPUS=1 REQUIRE_MOCK=1 npm test
       - name: The plain Vite example builds with no config file, and names no Node module
         run: npm run example:build
+      - name: The README's portal links say they came from npm (sdk.quranlab.ai/go/npm-tajweedformer), not from this repository
+        run: sed -i -E 's,sdk\.quranlab\.ai/go/gh-tajweedformer-web([?)"#]),sdk.quranlab.ai/go/npm-tajweedformer\1,g' README.md
       - name: What the package will contain (README, AGENTS.md, CHANGELOG, the type declarations, the exports map, the built engine)
         run: |
           npm run check:package

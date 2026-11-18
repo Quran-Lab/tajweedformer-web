@@ -14,7 +14,7 @@
 /** The version of this SDK, compared with a manifest's min_sdk_version. */
 import { verifyEd25519, Ed25519Unavailable } from '../platform/ed25519.js';
 
-export const SDK_VERSION = '3.1.6';
+export const SDK_VERSION = '3.1.7';
 
 /** Manifest formats this SDK reads. */
 export const SUPPORTED_MANIFEST_FORMATS = Object.freeze([1, 2, 3]);

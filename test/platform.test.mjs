@@ -64,9 +64,9 @@ test('launch: unattested token, register (new install once), signed config verif
   assert.equal(attest.headers.origin, 'https://app.example');
   const reg = api.log.find((x) => x.path === '/v1/register');
   assert.equal(reg.body.new_install, true);
-  assert.equal(reg.body.sdk_version, '3.1.6');
+  assert.equal(reg.body.sdk_version, '3.1.7');
   const cfgReq = api.log.find((x) => x.path === '/v1/config');
-  assert.match(cfgReq.query, /sdk=3\.1\.6/);
+  assert.match(cfgReq.query, /sdk=3\.1\.7/);
   assert.match(cfgReq.query, /bucket=\d+/);
   // second launch on the same storage and UTC day: no register (once per day); config answered 304 from the stored ETag
   api.log.length = 0;
@@ -105,7 +105,9 @@ test('config: a tampered body, an unknown kid, an expired config are refused; th
     const ql = await QuranLab.configure(opts(api, trusted ? { trustedKeys: trusted } : {}));
     assert.equal(ql.config, null, what);
     assert.ok(ql.lastError && ['signature_invalid', 'config_expired'].includes(ql.lastError.code), `${what}: ${ql.lastError}`);
-    assert.ok(what === 'expired' || api.log.some((x) => x.path === '/v1/issues' && x.body.kind === 'signature_invalid'), `${what}: issue sent`);
+    // 3.1.7: an error report of the config stage, silent (the launch went on), sent at the launch's send point
+    assert.ok(api.log.some((x) => x.path === '/v1/issues' && x.body.kind === 'error' && x.body.code === 'none' && x.body.error.stage === 'config'
+      && x.body.error.reason === (what === 'expired' ? 'expired' : 'signature')), `${what}: error report sent`);
   }
   // keyId: first 8 bytes of SHA-256 of the raw key
   const k = new Uint8Array(32);
@@ -135,7 +137,7 @@ test('telemetry v2 deltas: closed body with the 2.0.1 fields, sealed at a send p
   const [p] = ql.telemetry.pending();
   assert.deepEqual(Object.keys(p), ['v', 'day', 'product', 'platform', 'sdk_version', 'app_version', 'device', 'cohorts', 'coverage',
     'ayahs', 'words', 'surah_ayahs', 'rule_checks', 'rule_flags', 'reported', 'report_id']);
-  assert.equal(p.v, 2); assert.equal(p.product, 'web'); assert.equal(p.day, '2026-11-06'); assert.equal(p.sdk_version, '3.1.6');
+  assert.equal(p.v, 2); assert.equal(p.product, 'web'); assert.equal(p.day, '2026-11-06'); assert.equal(p.sdk_version, '3.1.7');
   const c = p.cohorts[0];
   assert.equal(c.sessions, 1); assert.equal(c.minutes, 0.5); assert.equal(c.chunks, 3);
   assert.deepEqual(c.latency_ms, { le_20: 1, le_40: 1, gt_320: 1 });
@@ -157,12 +159,13 @@ test('telemetry v2 deltas: closed body with the 2.0.1 fields, sealed at a send p
   // sent and deleted on 202
   assert.equal(await ql.flush(), 1);
   assert.deepEqual(ql.telemetry.pending(), []);
-  // a refused body (400) is dropped, never retried, and reported as an issue
+  // a refused body (400) is dropped, never retried, and reported as an error report (3.1.7: stage events)
   ql.telemetry.take(cohort, { samples: 16000 });
   api.state.eventsStatus = 400;
   await ql.sendTelemetry();
   assert.deepEqual(ql.telemetry.pending(), []);
-  assert.ok((ql.state.get('issues.queue') || []).some((i) => i.code.startsWith('telemetry:')) || api.log.some((x) => x.path === '/v1/issues'));
+  assert.ok(ql.errors.queue.some((r) => r.stage === 'events' && r.reason === 'http' && r.http_status === 400)
+    || api.log.some((x) => x.path === '/v1/issues' && x.body.kind === 'error' && x.body.error.stage === 'events'));
   api.state.eventsStatus = 202;
   // kill switch: flags.analytics false in the signed config clears and stops it
   ql.telemetry.take(cohort, { samples: 16000 });
@@ -181,16 +184,24 @@ test('telemetry v2 deltas: closed body with the 2.0.1 fields, sealed at a send p
   assert.equal(bucket('rtf', 0.3), 'le_0_5');
 });
 
-test('issues: no free text, deduped per day; error table: invalid_key stops the network for the launch', async () => {
+test('error reports: no free text, one per day and signature with its count; error table: invalid_key stops the network for the launch', async () => {
   const api = await mockApi();
   const ql = await QuranLab.configure(opts(api));
-  assert.equal(ql.reportIssue('model_load', 'stage:ENOSPC /home/user/x'), true);
-  assert.equal(ql.reportIssue('model_load', 'stage:ENOSPC /home/user/x'), false);
-  const q = ql.state.get('issues.queue');
-  assert.equal(q[0].code, 'stage:ENOSPC__home_user_x');
-  assert.ok(!('message' in q[0]));
+  const fail = () => { const e = new Error('ENOSPC: no space left on device, open /home/user/x'); e.name = 'QuotaExceededError'; return e; };
+  assert.equal(ql.reportFailure(fail(), { silent: true }), true);
+  assert.equal(ql.reportFailure(fail(), { silent: true }), false);
+  const q = ql.errors.queue;
+  assert.equal(q.length, 1);
+  assert.equal(q[0].count, 2);
   await ql.flush();
-  assert.equal(api.log.filter((x) => x.path === '/v1/issues').length, 1);
+  const sent = api.log.filter((x) => x.path === '/v1/issues');
+  assert.equal(sent.length, 1);
+  const b = sent[0].body;
+  assert.deepEqual([b.kind, b.code, b.error.stage, b.error.reason, b.error.error_name, b.error.count], ['error', 'none', 'storage', 'quota', 'QuotaExceededError', 2]);
+  assert.ok(!/home|ENOSPC|space/.test(JSON.stringify(b)), 'no message, no path');
+  assert.ok(!('message' in b) && !('frames' in b));
+  // accepted: the same failure later today makes no report
+  assert.equal(ql.reportFailure(fail(), { silent: true }), false);
   const bad = await QuranLab.configure(opts(api, { key: 'qlk_v1_bad_bbbbbbbbbbbbbbbbbbbbbb' }));
   assert.equal(bad.stopped, 'invalid_key');
   const before = api.log.length;
@@ -314,9 +325,8 @@ test('platform client fixtures (local stack e2e recordings): the recorded signed
   const v201 = /^(report_id|launches|ayahs|words|surah_ayahs|rule_checks|rule_flags|share_asked|share_yes|share_no|reported(\[\])?|cohorts\[\]\.(build|takes|audio_s|speech_s|silence_s|compute_s|tokens))(\.|$)/;
   const extra = [...ours].filter((k) => !theirs.has(k) && !v201.test(k) && !/^cohorts\[\]\.(latency_ms|rtf|cold_start_ms|model_load_ms|margin|confidence|fallbacks|self_test)\./.test(k));
   assert.deepEqual(extra, [], 'telemetry fields the recording does not have');
-  ql.reportIssue('model_load', 'x');
-  const issue = keysOf(ql.state.get('issues.queue')[0]);
-  assert.deepEqual([...issue].filter((k) => !rec('issue (web)').has(k)), []);
+  // 3.1.7: the error reports' body is section 24's (its own tests: test/error_reports.test.mjs); the older issue body
+  // of the recording is no longer sent
   const reg = api.log.find((x) => x.path === '/v1/register').body;
   assert.deepEqual([...keysOf(reg)].filter((k) => !rec('register (web)').has(k)), []);
 });

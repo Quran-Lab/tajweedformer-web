@@ -6,6 +6,7 @@
 // session's own append-only copy of log_probs and conf, so a take of many minutes does not build one decoded
 // layer per chunk unless the app reads them.
 import { TajweedError, toTajweedError, invalid } from './errors.js';
+import { tag, tagEngine } from '../platform/error-reports.js';
 import { TajweedHeads, decodedOf, joinArrays } from './heads.js';
 import { SpeechTracker, DEFAULT_SILENCE_MS, greedyIds } from './speech.js';
 import { ayahsIn } from './surahs.js';
@@ -149,7 +150,7 @@ export class TajweedSession {
     let over = null;
     if (this._pending > 0 && this._pending + pcm.length > this._maxPending) {
       over = this._live
-        ? new TajweedError('engine_failed', { detail: 'this device decodes slower than the microphone delivers audio' })
+        ? tag(new TajweedError('engine_failed', { detail: 'this device decodes slower than the microphone delivers audio' }), { stage: 'session', reason: 'deadline' })
         : invalid('too much audio is waiting to be decoded; push as the chunks arrive');
     }
     if (over) {
@@ -222,7 +223,7 @@ export class TajweedSession {
   }
 
   _fail(e) {
-    const error = toTajweedError(e);
+    const error = toTajweedError(tagEngine(e, 'session'));
     if (this._state === 'open') this._close('self', { reason: 'error', error, flush: false });
     // audio queued before finish() failed after it: the take ends as a failed one
     else if (this._state === 'closing' && !this._failed) { this._failed = error; this._drop = true; }
@@ -266,6 +267,9 @@ export class TajweedSession {
     if (cancelled) this._error = new TajweedError('cancelled');
     else if (reason === 'error') this._error = error || new TajweedError('engine_failed', { detail: 'the take failed' });
     if (kind === 'self') this._emit({ type: 'ended', reason, ...(reason === 'error' ? { error: this._error } : {}) });
+    // 3.1.7: a take that failed, or ended on a lost microphone, is an error report (ERRORS_40.md section 24)
+    const failed = reason === 'error' ? this._error : reason === 'interrupted' && error && error.name === 'TajweedError' ? error : null;
+    if (failed && this._m.platform) { try { this._m.platform.reportFailure(failed); } catch (_) { /* never in the way */ } }
     if (this._tap) { try { if (cancelled) this._tap.free(); else this._tap.finish(); } catch (_) { /* sharing never stops a take */ } }
     try { this._report(); } catch (_) { /* telemetry never stops a take */ }
     this._chunks.close();

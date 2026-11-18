@@ -50,7 +50,7 @@ export const PRODUCT_OF = Object.freeze({ web: 'web', windows: 'native', linux: 
 export const productOf = (platform) => PRODUCT_OF[platform] || 'web';
 
 export class Telemetry {
-  constructor({ state, platform = 'web', product = productOf(platform), sdkVersion = '3.1.6', appVersion = '0', device, clock = Date.now, enabled = true }) {
+  constructor({ state, platform = 'web', product = productOf(platform), sdkVersion = '3.1.7', appVersion = '0', device, clock = Date.now, enabled = true }) {
     Object.assign(this, { state, product, platform, sdkVersion, appVersion, device, clock });
     this.enabled = enabled;
     this.coldStartDone = false;
@@ -169,11 +169,14 @@ export class Telemetry {
   }
 
   /** A model download: `revision` is the model version, `build` the build id (40 hex) when known. */
-  download({ revision, build = null, profile, bytes, success, resumed }) {
+  // 3.1.7 (ERRORS_40.md 24.8): a failed download counts, with its reason (network, http, hash_mismatch, signature,
+  // storage, other) in failure_reasons
+  download({ revision, build = null, profile, bytes, success, resumed, reason = null }) {
     this._edit((d) => {
       let x = d.downloads.find((y) => y.revision === revision && (y.build || null) === build && y.profile === profile);
       if (!x) { x = { revision, ...(build ? { build } : {}), profile, bytes: 0, success: 0, failed: 0, resumed: 0 }; d.downloads.push(x); }
       x.bytes += bytes; if (success) x.success++; else x.failed++; if (resumed) x.resumed++;
+      if (!success && reason) { x.failure_reasons = x.failure_reasons || {}; x.failure_reasons[reason] = Math.min(CAP, (x.failure_reasons[reason] || 0) + 1); }
     });
   }
 
@@ -200,7 +203,10 @@ export class Telemetry {
       sealed.push({ report_id: reportId, day, body: JSON.stringify({ ...body, report_id: reportId }), attempts: 0, next: 0 });
       n++;
     }
-    this._putSealed(this._fresh(sealed));
+    const fresh = this._fresh(sealed);
+    // 3.1.7: a report kept 7 days and never accepted goes; the error reports hear of it (ERRORS_40.md 24.1, events)
+    if (fresh.length < sealed.length && typeof this.onExpired === 'function') { try { this.onExpired(sealed.length - fresh.length); } catch (_) { /* never in the way */ } }
+    this._putSealed(fresh);
     this._save(days);
     return n;
   }

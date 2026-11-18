@@ -12,6 +12,7 @@ import { wasmArgs } from '../platform/node-hook.js';
 import { MIN_SILENCE_MS, MAX_SILENCE_MS } from './speech.js';
 import { Microphone } from './microphone.js';
 import { TajweedError, toTajweedError, invalid } from './errors.js';
+import { tagEngine } from '../platform/error-reports.js';
 
 // roles the engine never opens: data the SDK hands over (calibration), data fetched on request (reference,
 // the self-test clips) and the 2.x expected table, which 3.0 neither downloads nor reads
@@ -42,9 +43,14 @@ const deepFreeze = (o) => {
 };
 
 /** The engine host for this runtime: a module Worker on a page, the calling thread elsewhere (Node, a Worker). */
-async function startHost(seams) {
+async function startHost(seams, platform = null) {
   if (seams.host) return seams.host;
-  const local = () => localHost(seams.engine || (async () => (await import('../../dist/tajweedformer.mjs')).default(await wasmArgs('tajweedformer.wasm'))));
+  // the engine is started here, not at its first call, so a runtime that cannot start it says so as such (3.1.7)
+  const local = async () => {
+    const h = localHost(seams.engine || (async () => (await import('../../dist/tajweedformer.mjs')).default(await wasmArgs('tajweedformer.wasm'))));
+    await h.init();
+    return h;
+  };
   const onPage = typeof globalThis.Worker === 'function' && typeof globalThis.document !== 'undefined' && !seams.engine && seams.worker !== false;
   if (!onPage) return local();
   let host = null;
@@ -53,10 +59,17 @@ async function startHost(seams) {
     // import.meta.url), { type: 'module' })` and emit it with the engine's wasm beside it
     host = workerHost(new Worker(new URL('./worker.js', import.meta.url), { type: 'module', name: 'tajweedformer-engine' }));
     await host.init();
+    if (platform) platform.engineInWorker = true;
     return host;
-  } catch (_) {
-    // no module Workers here (an old browser, a strict content security policy): the calling thread
+  } catch (e) {
+    // no module Workers here (an old browser, a strict content security policy): the calling thread. 3.1.7: a
+    // silent failure of its own (ERRORS_40.md 24.1, runtime/worker)
     if (host) host.terminate();
+    if (platform) {
+      platform.engineInWorker = false;
+      const name = e && (e.workerName || e.name);
+      platform._silent('runtime', 'worker', /^[A-Za-z][A-Za-z0-9_.:$-]{0,47}$/.test(name || '') && name !== 'Error' ? { error_name: name } : {});
+    }
     return local();
   }
 }
@@ -199,7 +212,7 @@ export class TajweedModel {
       if (options.pace !== undefined) throw invalid('pace is for listen({ from })');
       if (rest.sampleRate !== undefined) throw invalid('listen() takes its sampleRate from the microphone');
       this._options(rest); // refuse bad options before the permission prompt
-      return this._listenMicrophone(rest);
+      try { return await this._listenMicrophone(rest); } catch (e) { this._reportFailure(e); throw e; }
     }
     if (!PACES.includes(pace)) throw invalid(`pace must be 'realTime' or 'fast'`);
     let samples, sampleRate;
@@ -210,7 +223,7 @@ export class TajweedModel {
       const clip = this._x.clipFiles.get(from && from.name);
       if (!clip || this.sampleClips.indexOf(from) < 0) throw invalid('from must be one of model.sampleClips or a Float32Array of samples');
       if (rest.sampleRate !== undefined) throw invalid('a sample clip has its own sampleRate');
-      samples = await this._clipSamples(clip);
+      try { samples = await this._clipSamples(clip); } catch (e) { this._reportFailure(e); throw e; }
       sampleRate = clip.sampleRate;
     }
     const o = this._options({ ...rest, sampleRate });
@@ -220,6 +233,9 @@ export class TajweedModel {
     playInto(session, source, samples, sampleRate, pace, this._x.clock);
     return session;
   }
+
+  // a failure the app gets from a Model call: an error report (3.1.7, ERRORS_40.md section 24)
+  _reportFailure(e) { try { if (this._x.platform && e && e.name === 'TajweedError') this._x.platform.reportFailure(e); } catch (_) { /* never in the way */ } }
 
   async _clipSamples(clip) {
     let bytes;
@@ -343,15 +359,17 @@ export async function openModel({ reader, folder: folderOpts = {}, platform = nu
       }
     }
 
-    host = await startHost(seams);
+    try { host = await startHost(seams, platform); } catch (e) { throw tagEngine(e, 'runtime'); }
     const x = { reader, folder, names, contexts, version, build, calibration, clips: Object.freeze(clips), clipFiles, host, platform, clock,
       timers: seams.timers || { setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t) },
       microphone: seams.microphone || null, lifecycle: seams.lifecycle || null, limits: seams.limits || null, onDrop: onDrop || null, onClose, reference: null };
     x.reference = await makeReference(x);
     const model = new TajweedModel(x, MADE);
     const context = model.defaultContext;
-    await model._ensureContext(context);
-    await host.warm({ context, sampleRate: 16000 });
+    try {
+      await model._ensureContext(context);
+      await host.warm({ context, sampleRate: 16000 });
+    } catch (e) { throw tagEngine(e, 'model_open'); }
     model.loadMs = clock() - t0;
     return model;
   } catch (e) {

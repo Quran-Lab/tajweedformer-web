@@ -11,6 +11,7 @@
 // a device change (the input is opened again on the same AudioContext, so the rate does not change).
 // Nothing is captured before open() and nothing after close().
 import { TajweedError, toTajweedError } from './errors.js';
+import { tag } from '../platform/error-reports.js';
 
 // The worklet: posts each render quantum's first channel (128 samples) to the page, batched to about 20 ms.
 const WORKLET = `
@@ -69,10 +70,14 @@ export class Microphone {
   static async open(seams = {}) {
     const e = env(seams);
     if (!e.mediaDevices || typeof e.mediaDevices.getUserMedia !== 'function' || !e.AudioContext) {
-      throw new TajweedError('microphone_unavailable', { detail: 'this runtime has no microphone (no getUserMedia or AudioContext)' });
+      throw tag(new TajweedError('microphone_unavailable', { detail: 'this runtime has no microphone (no getUserMedia or AudioContext)' }),
+        { stage: 'audio', reason: globalThis.isSecureContext === false ? 'insecure_context' : 'unavailable' });
     }
     let stream;
-    try { stream = await Microphone._capture(e); } catch (err) { throw toTajweedError(err, { fallback: 'microphone_unavailable' }); }
+    try { stream = await Microphone._capture(e); } catch (err) {
+      if (err && err.name === 'SecurityError') tag(err, { stage: 'audio', reason: 'insecure_context' });
+      throw toTajweedError(err, { fallback: 'microphone_unavailable' });
+    }
     let ctx = null;
     try {
       ctx = new e.AudioContext({ latencyHint: 'interactive' });
@@ -85,7 +90,7 @@ export class Microphone {
     } catch (err) {
       for (const t of stream.getTracks()) t.stop();
       if (ctx && typeof ctx.close === 'function') ctx.close().catch(() => {});
-      throw toTajweedError(err, { fallback: 'microphone_unavailable' });
+      throw toTajweedError(tag(err, { stage: 'audio', reason: 'context' }), { fallback: 'microphone_unavailable' });
     }
   }
 
@@ -96,7 +101,7 @@ export class Microphone {
 
   async _worklet() {
     const ctx = this._ctx;
-    if (!ctx.audioWorklet || !this._e.AudioWorkletNode) throw new TajweedError('microphone_unavailable', { detail: 'this browser has no AudioWorklet' });
+    if (!ctx.audioWorklet || !this._e.AudioWorkletNode) throw tag(new TajweedError('microphone_unavailable', { detail: 'this browser has no AudioWorklet' }), { stage: 'audio', reason: 'worklet' });
     let url = null;
     try {
       url = URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }));
@@ -172,7 +177,7 @@ export class Microphone {
       this._attach(stream);
       this._notify({ type: 'interrupted', cause: 'routeChange' });
     } catch (err) {
-      this._notify({ type: 'lost', error: new TajweedError('interrupted', { detail: 'the input device went away and no other could be opened' }, { cause: err }) });
+      this._notify({ type: 'lost', error: tag(new TajweedError('interrupted', { detail: 'the input device went away and no other could be opened' }, { cause: err }), { stage: 'audio', reason: 'interrupted' }) });
       this.close();
     } finally {
       this._reopening = false;

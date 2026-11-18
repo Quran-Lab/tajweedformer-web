@@ -38,7 +38,7 @@ body:
     id: sdk-version
     attributes:
       label: SDK version
-      placeholder: "3.1.6"
+      placeholder: "3.1.7"
   - type: dropdown
     id: sent-by
     attributes:

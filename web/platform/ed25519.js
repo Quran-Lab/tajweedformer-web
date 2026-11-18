@@ -31,6 +31,9 @@ async function decide() {
   return 'fallback';
 }
 
+/** The mode when it has been decided, else null (error reports read it without starting the probe, 3.1.7). */
+export const ed25519Known = () => mode;
+
 /** 'webcrypto', 'fallback' or 'none' (no WebCrypto at all), decided at the first call and kept. */
 export async function ed25519Mode() {
   if (mode) return mode;

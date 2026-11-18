@@ -177,6 +177,19 @@ location, app user data.
 `POST /v1/register` is called once per UTC day per install (the first launch or return to the foreground of
 the day; a day stamp on the device), not at every launch, so the server counts daily active installs.
 
+### Error reports (web 3.1.7, Android 3.1.6, Apple 3.1.5, every SDK from 4.0)
+
+Every failure the app is given, and each failure of a short list the SDK goes on without, is reported once per
+install, UTC day and kind (`POST /v1/issues`, kind `error`) with how many times it happened that day: the stage
+where it failed (config, register, token, manifest, download, verify, storage, runtime, model open, accelerator,
+audio, session, sharing, events), a short reason, the HTTP status, the error's class (never its message), the
+code the app was given, whether it was the install's first launch, and what the device or browser can do (on the
+web: browser family and major version, OS family, cross-origin isolation, WebAssembly SIMD and threads, Ed25519,
+AudioWorklet, device memory and free storage buckets; on phones: the model code, memory tier, free storage
+bucket, ABI). Never audio, text, a message, a URL or path, the user agent string or an identifier. At most 16
+kinds a day and 32 waiting, sent at the launch, at each telemetry send point and 30 seconds after a new one. The
+signed config's `flags.issues` is Quran Lab's switch. Developers see them on the app's Problems page.
+
 ## CPU first, then the accelerator (iOS, macOS, Android)
 
 1. **First run.** The first install downloads only the CPU files of the default context, and the first session

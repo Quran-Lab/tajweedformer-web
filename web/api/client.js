@@ -19,6 +19,7 @@ import { openModel, resolveContext } from './model.js';
 import { WASM_BACKEND } from './session.js';
 import { microphonePermission } from './microphone.js';
 import { TajweedError, toTajweedError, invalid, stopReasonOf } from './errors.js';
+import { classify, tag } from '../platform/error-reports.js';
 
 const RULE_RE = /^[a-z][a-z0-9_]{0,23}$/;
 const MAX_CHECKS = 100_000;
@@ -79,7 +80,18 @@ export class TajweedClient {
     const origin = this._ql.origin || (globalThis.location && globalThis.location.origin) || this._ql.bundleId || '';
     const err = toTajweedError(e, { sdk: SDK_VERSION, origin, ...o });
     this._lastError = err.code;
+    // 3.1.7: the error reports (ERRORS_40.md section 24): the code the app gets, and where it came from
+    this._ql.reportFailure(err);
     return err;
+  }
+
+  // A download that failed counts in the day's telemetry with its reason (ERRORS_40.md 24.8)
+  _downloadFailed(src, reader, e) {
+    try {
+      const c = classify(e);
+      if (!src || !src.version || (c.stage !== 'download' && c.stage !== 'manifest')) return;
+      this._ql.downloadFailed({ revision: src.version, build: src.build, bytes: reader ? reader.stats.bytesDownloaded : 0, reason: c.reason });
+    } catch (_) { /* telemetry never stops a call */ }
   }
 
   // where the model for this app is: from the signed config, else what the last start used (offline)
@@ -175,6 +187,7 @@ export class TajweedClient {
       await inst.write(src.build, 'downloading');
       return null;
     } catch (e) {
+      tag(e, { stage: 'storage', reason: e && e.name === 'QuotaExceededError' ? 'quota' : 'write' });
       throw new TajweedError('storage_failed', { detail: String((e && e.message) || e) }, { cause: e });
     }
   }
@@ -215,6 +228,8 @@ export class TajweedClient {
         // not end when it was asked again: the model is not handed out
         if (this._ql.modelRefusal) { await model.close().catch(() => {}); await this._purge(); throw this._ql.modelRefusal; }
         await this._installed(src, had);
+        // a build this Client had installed whose files were gone (the browser evicted them) came again (24.1)
+        if (had === 'installed' && reader.stats.filesDownloaded > 0) this._ql._silent('storage', 'evicted');
         this._model = model;
         this._modelPinned = pinned;
         this._ql.modelOpened({ revision: model.version, build: model.build, context: model.defaultContext, backend: 'cpu' },
@@ -223,6 +238,7 @@ export class TajweedClient {
       } catch (e) {
         // while a stop is in force the call fails with it, whatever else went wrong (the CDN not reached again),
         // and the models are removed first
+        this._downloadFailed(src, reader, e);
         await this._failRefused(e, { fallback: 'engine_failed' });
       }
     })();
@@ -241,14 +257,15 @@ export class TajweedClient {
   async prefetch({ unmeteredOnly = false, onProgress = null, version = null } = {}) {
     this._guard();
     if (onProgress !== null && typeof onProgress !== 'function') throw invalid('onProgress must be a function');
+    let src = null, reader = null;
     try {
       await this._beforeModelCall();
-      const src = await this._allowedSource(version);
+      src = await this._allowedSource(version);
       const had = await this._gate(src);
       const loaded = new Map();
       let total = 0;
       const report = () => { if (onProgress) onProgress({ bytesDone: [...loaded.values()].reduce((a, b) => a + b, 0), bytesTotal: total }); };
-      const reader = this._reader(src, (p) => { if (loaded.has(p.path)) { loaded.set(p.path, Math.min(sizes.get(p.path), Math.round((p.loaded / (p.total || 1)) * sizes.get(p.path)))); report(); } });
+      reader = this._reader(src, (p) => { if (loaded.has(p.path)) { loaded.set(p.path, Math.min(sizes.get(p.path), Math.round((p.loaded / (p.total || 1)) * sizes.get(p.path)))); report(); } });
       const sizes = new Map();
       const folder = await ModelFolder.open(reader, { verify: 'on-read', requireSignature: true, requireVersion: true, engineFormats: [3], trustedKeys: this._i.modelKeys,
         expect: { version: src.version, build: src.build } });
@@ -275,6 +292,7 @@ export class TajweedClient {
       await this._installed(src, had);
       return done();
     } catch (e) {
+      this._downloadFailed(src, reader, e);
       await this._failRefused(e, { fallback: 'download_failed' });
     }
   }
@@ -499,6 +517,8 @@ export async function createClient(options, seams = {}) {
       trustedKeys: seams.trustedKeys, lifecycle: seams.lifecycle, autoSend: seams.autoSend, debug: seams.debug,
     });
     if (sharingStorage) ql.sharingStorage = sharingStorage;
+    // a browser that blocks storage: the model runs from memory and is downloaded at every visit (24.1, silent)
+    if (store && store.blocked) ql._silent('storage', 'unavailable', { error_name: 'SecurityError' });
     if (seams.sharing) ql.sharingSeams = seams.sharing;
     const ctl = enableSharing(ql, seams.sharingOptions || {});
     const installs = new Installs({ store, deviceKey: seams.installKey || defaultDeviceKey(store) });

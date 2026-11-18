@@ -46,7 +46,7 @@ Everything an assistant needs to integrate this SDK correctly: use only the name
 - **Made for the Quran.** Trained on Quranic recitation, with its own sound units and heads for what tajweed is about.
 - **Feedback in the moment.** Output streams while the learner recites, so your app can respond on the word itself, not after the take.
 - **One engine on every platform.** The same engine runs the [web](https://github.com/Quran-Lab/tajweedformer-web), [Android](https://github.com/Quran-Lab/tajweedformer-android), [iOS and macOS](https://github.com/Quran-Lab/tajweedformer-apple) and [Windows and Linux](https://github.com/Quran-Lab/tajweedformer-c) SDKs, all set from one portal.
-- **Free, and it stays free.** Quran Lab is a non-profit waqf: the SDKs and models are never sold. The licence, NPL-1.2, asks three things: no paywall on model features, no results presented as rulings, and show the notice.
+- **Free, and it stays free.** Quran Lab is a non-profit waqf: the SDKs and models are never sold. The licence, NPL-1.2, and Quran Lab's access terms ask two things: no paywall on model features, and no output presented as an authoritative religious ruling. A line telling learners that automatic feedback can be wrong is encouraged, not required.
 
 ## Built for AI developers
 
@@ -68,7 +68,7 @@ Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai) and paste 
 - **Linked to [sdk.quranlab.ai](https://sdk.quranlab.ai):** a web key, the signed config (which model
   build your app gets, the response time), anonymous daily telemetry, issue reports, and opt-in
   recitation sharing with the SDK's own consent sheet.
-- **Version:** 3.1.6, on npm as `@quran-lab/tajweedformer`. What has run where: the test suite on every push
+- **Version:** 3.1.7, on npm as `@quran-lab/tajweedformer`. What has run where: the test suite on every push
   (Linux, with the engine and libopus built there), and, in Quran Lab's own check with model files that a
   public runner does not have, the 35 conformance clips bit for bit in Node and in Chrome (`npm run proof`).
 
@@ -82,7 +82,7 @@ One model, one engine, the same bits on every platform. Each SDK compiles the sa
 | [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+ on arm64-v8a and armeabi-v7a, desktop JVM | Maven Central `ai.quranlab:tajweedformer:3.1.5` |
 | [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "3.1.4"`, product `TajweedFormer` |
 | [tajweedformer-web](https://github.com/Quran-Lab/tajweedformer-web) | WebAssembly SDK with SIMD128 | Browsers, Node 20+ | `npm install @quran-lab/tajweedformer` |
-| [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake `FetchContent`, tag 3.1.3 |
+| [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake `FetchContent`, tag 3.1.4 |
 | [tajweedformer-engine](https://github.com/Quran-Lab/tajweedformer-engine) | The engine: exact C runtime, inference library, conformance suite | everything above | Git submodule |
 
 The model is Quran-Lab/tajweedformer-v4 (`sdk/v4.0`), hosted by Quran Lab and served by
@@ -98,7 +98,7 @@ per-class thresholds) your users see, without shipping a new build.
 npm install @quran-lab/tajweedformer
 ```
 
-With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.1.6/web/index.js`. The package has one entry point, the same in a page and in Node.
+With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.1.7/web/index.js`. The package has one entry point, the same in a page and in Node.
 
 ## Before you start
 
@@ -394,6 +394,14 @@ const client = await TajweedClient.create({ key, appVersion: '1.0.0', analytics:
   reports). No audio, no text, no identifiers, no time finer than the UTC day. It is sent as deltas during
   the day: every 15 minutes while the page is visible, when it is hidden or left, and at launch. Quran Lab
   can switch it off for your app; you can with `analytics: 'off'`.
+- **Error reports (3.1.7):** every failure your app is given, and the few the SDK goes on without (a browser
+  that blocks storage, the engine off its Worker, a launch call that failed), is reported to Quran Lab once per
+  day per kind, with how often it happened: where it failed (config, manifest, download, storage, the engine's
+  runtime, opening the model, the microphone, a take), why (a short reason and the HTTP status), the code your
+  app was given, and what the browser can do (its family and major version, the OS family, whether the page is
+  cross-origin isolated, WebAssembly SIMD and threads, Ed25519, AudioWorklet, the device memory bucket and a
+  bucket of free storage). Never a message, a URL, the user agent string or an identifier. You see them on your
+  app's Problems page at sdk.quranlab.ai, with what each one means and what you can do.
 - **Foreground and background:** automatic in browsers. In Node call `client.background()` and
   `client.foreground()`.
 - **Newer SDK:** in development the SDK logs once per load when Quran Lab's signed config names a newer SDK.
@@ -424,6 +432,11 @@ means Quran Lab has no model build for this SDK version yet: nothing to change i
 - **`runtime_unsupported`** is a browser or a Node without something the SDK needs; the message names it
   (WebCrypto, for one; since 3.1.6 Ed25519 in WebCrypto is not needed). `network_not_permitted` belongs to the other TajweedFormer SDKs; this one
   does not raise it.
+- **`needs_connection` means no answer at all.** It is raised only when no request reached a server and the
+  model is not on the device. Since 3.1.7 an answer that came but could not be used (a server error, a config
+  that did not verify or has expired) is `download_failed`, whose message names it.
+- **Show the code.** A message of your own is fine, but log `error.code` (or show it small): with it, a
+  learner's screenshot and your app's Problems page at sdk.quranlab.ai point at the same failure.
 
 ## Recitation sharing (the learner opts in)
 
