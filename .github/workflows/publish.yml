@@ -51,8 +51,15 @@ jobs:
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           npm run build:opus
+      # as ci.yml: `npm test`'s files and flags, but for three files and one test that read the contract's vectors at
+      # once (QL_CONTRACT, Quran Lab's own input, absent here); they run in the development repository's CI
       - name: Tests (the loader, the frame, the Worker, the Node path, sharing; libopus required)
-        run: REQUIRE_OPUS=1 npm test
+        run: |
+          grep -q '"test": "node --max-old-space-size=2048 --test --test-concurrency=2 --test-timeout=600000 \\"test/v4/\*.test.mjs\\" \\"test/sharing_\*.test.mjs\\""' package.json \
+            || { echo "::error::package.json's test script changed: update this step"; exit 1; }
+          files=$(ls test/v4/*.test.mjs test/sharing_*.test.mjs | grep -vE '^test/v4/(grace|piece|vectors)\.test\.mjs$')
+          REQUIRE_OPUS=1 node --max-old-space-size=2048 --test --test-concurrency=2 --test-timeout=600000 \
+            --test-skip-pattern='^web_lease\.json: ' $files
       - name: The Node entry's built-in engine (verified against web.quranlab.ai and the pinned key, then stamped)
         env:
           ENGINE: ${{ inputs.engine }}
