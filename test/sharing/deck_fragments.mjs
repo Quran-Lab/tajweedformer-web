@@ -1,6 +1,6 @@
 // Makes test/sharing/deck_fragments.json: for each of the eight languages, the length in UTF-8 bytes and the
 // SHA-256 of the sentence that copy deck 2026-11-12.1 added to `sheet.who` and `what.detail`, which the bundled
-// deck (2026-11-13.1) does not have. Only the length and the hash are written: the text itself stays in the
+// deck (2026-11-13.1 and later) does not have. Only the length and the hash are written: the text itself stays in the
 // contract's archive and does not come into this repository.
 //
 //   node test/sharing/deck_fragments.mjs <the contract's sharing_copy folder>     (or SHARING_COPY_DIR=<folder>)
@@ -8,7 +8,9 @@
 // Reads <folder>/archive/2026-11-12.1/<lang>.json and <folder>/<lang>.json, each checked against the SHA-256
 // its folder's READY file lists. The fragment of a key is what the archived string has between the longest
 // start and the longest end it shares with the new string, with the white space at its two ends left out; the
-// new string must be the archived one without that fragment, or the script stops. test/sharing_copy.test.mjs
+// new string must be the archived one without that fragment, or the script stops. Keys a later deck removed whole
+// (sharing_copy/SCHEMA.md, Removed keys: the four `sheet.guardian.*` of 2026-11-19.1) are not compared: a removed
+// key holds no fragment of its own, and the sheet no longer shows it. test/sharing_copy.test.mjs
 // slides a window of that length over the UTF-8 bytes of what the sheet shows and fails when a window has the
 // hash.
 import { createHash } from 'node:crypto';
@@ -20,6 +22,8 @@ if (!dir) { console.error('usage: node test/sharing/deck_fragments.mjs <the cont
 const ARCHIVED = '2026-11-12.1';
 const LANGS = ['ar', 'bn', 'en', 'fr', 'id', 'ms', 'tr', 'ur'];
 const KEYS = ['sheet.who', 'what.detail'];
+// the keys the bundled deck removed (SCHEMA.md, Removed keys); any other key missing from it stops the script
+const REMOVED = ['sheet.guardian.body', 'sheet.guardian.confirm', 'sheet.guardian.share', 'sheet.guardian.title'];
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
 
 function deck(folder, lang) {
@@ -47,7 +51,9 @@ for (const lang of LANGS) {
   if (old.version !== ARCHIVED) throw new Error(`${lang}: the archived deck is ${old.version}`);
   bundled = bundled || now.version;
   if (now.version !== bundled) throw new Error(`${lang}: the decks disagree on their version`);
-  const changed = Object.keys(old.strings).filter((k) => JSON.stringify(old.strings[k]) !== JSON.stringify(now.strings[k])).sort();
+  const gone = Object.keys(old.strings).filter((k) => !(k in now.strings)).sort();
+  if (gone.some((k) => !REMOVED.includes(k))) throw new Error(`${lang}: keys missing from the bundled deck: ${gone.join(', ')}`);
+  const changed = Object.keys(old.strings).filter((k) => k in now.strings && JSON.stringify(old.strings[k]) !== JSON.stringify(now.strings[k])).sort();
   if (JSON.stringify(changed) !== JSON.stringify(KEYS)) throw new Error(`${lang}: the strings that differ are ${changed.join(', ')}`);
   const cuts = KEYS.map((k) => fragment(old.strings[k], now.strings[k], `${lang} ${k}`));
   // one entry per different fragment, with the keys it was cut from

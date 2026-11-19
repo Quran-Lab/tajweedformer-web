@@ -8,3 +8,4 @@ model/
 dist/
 package-lock.json
 test/browser/results/
+__pycache__/

@@ -1,7 +1,8 @@
 // The shared vectors of SDK 3.0.0 (test/vectors30/, copies of the files every TajweedFormer SDK tests against):
-// names, ayah counts, the manifest's signed text and acceptance checks, speech and silence, settled tokens, the
-// telemetry counters and the app-reported APIs, the context a Session runs on, and the diagnose() schema.
-// The sharing vector (sharing_30.json) is in test/sharing_feed.test.mjs.
+// ayah counts, speech and silence, settled tokens, the telemetry counters and the app-reported APIs, the context a
+// Session runs on, and the diagnose() schema. The sharing vector (sharing_30.json) is in test/sharing_feed.test.mjs;
+// names.json is in test/v4/names30.test.mjs. manifest_30.json (a 3.x SDK's acceptance of a plaintext build) is not
+// tested on 4.0, whose builds are encrypted and checked by the Core.
 import test from 'node:test';
 import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
@@ -9,13 +10,11 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { TajweedError } from '../web/index.js';
-import { ERROR_CODES, toTajweedError } from '../web/api/errors.js';
-import { HEAD_NAMES, DEFAULT_HEADS, decodedOf, TajweedHeads } from '../web/api/heads.js';
+import { decodedOf, TajweedHeads } from '../web/api/heads.js';
 import { resolveContext } from '../web/api/model.js';
 import { ayahsIn } from '../web/api/surahs.js';
-import { SpeechTracker, activeFrames, greedyIds, ACTIVE_HEADS, DEFAULT_SILENCE_MS, MIN_SILENCE_MS, MAX_SILENCE_MS, FRAME_MS } from '../web/api/speech.js';
+import { SpeechTracker, activeFrames, greedyIds, DEFAULT_SILENCE_MS, MIN_SILENCE_MS, MAX_SILENCE_MS, FRAME_MS } from '../web/api/speech.js';
 import { createClient, resetClientForTests } from '../web/api/client.js';
-import { acceptManifest, parseGoldenRawTolerance, MODEL_VERSION_RE, compareModelVersions } from '../web/tajweed/manifest.js';
 import { SDK_VERSION } from '../web/platform/client.js';
 import { Telemetry } from '../web/platform/telemetry.js';
 import { memoryState } from '../web/platform/storage.js';
@@ -34,25 +33,6 @@ test('the vector files here are the shared ones, byte for byte', { skip: existsS
   for (const f of files) assert.ok(readFileSync(path.join(DIR, f)).equals(readFileSync(path.join(SHARED, f))), `${f} differs from the shared vector`);
 });
 
-test('names.json: heads, default selection, events, error codes, option values', () => {
-  const n = load('names.json');
-  const h = new TajweedHeads(Object.fromEntries(n.heads.map((x) => [x.name, new Float32Array((x.frameMs === 40 ? 2 : 4) * x.classes)])), 2, null);
-  assert.deepEqual([...HEAD_NAMES], n.heads.map((x) => x.name));
-  for (const x of n.heads) {
-    const g = h.get(x.name);
-    assert.deepEqual([g.name, g.kind, g.frameMs, g.classes], [x.name, x.kind, x.frameMs, x.classes]);
-    assert.deepEqual(Object.keys(g), n.head_fields);
-  }
-  assert.deepEqual([...DEFAULT_HEADS], n.default_heads);
-  // the catalogue (errors.json) is the source of the codes; this file lists them in catalogue order
-  assert.deepEqual([...ERROR_CODES], n.error_codes);
-  assert.equal(n.error_codes.length, 26);
-  assert.equal(new TajweedError('cancelled').docs, n.error_docs_base + 'cancelled');
-  assert.deepEqual([[...ACTIVE_HEADS], DEFAULT_SILENCE_MS, FRAME_MS, 20], [n.speech.active, n.speech.default_window_ms, n.speech.frame_ms, n.speech.timing_frame_ms]);
-  const d = decodedOf({ logProbs: new Float32Array(38).fill(-5), n40: 1 });
-  assert.deepEqual(Object.keys(d), n.decoded_fields);
-});
-
 test('ayah_counts.json: the 114 counts', () => {
   const a = load('ayah_counts.json');
   const counts = a.counts || a.ayah_counts || a.ayahs;
@@ -61,44 +41,6 @@ test('ayah_counts.json: the 114 counts', () => {
   assert.equal(counts.reduce((x, y) => x + y, 0), 6236);
   assert.equal(ayahsIn(0), 0);
   assert.equal(ayahsIn(115), 0);
-});
-
-test('manifest_30.json: every case is accepted or refused with its code; the signed text, the tolerance and the versions', async () => {
-  const v = load('manifest_30.json');
-  const enc = new TextEncoder();
-  // `sdk_version` is the version the file was built with; its cases hold for an SDK of 3.0.0 to 3.1.99 (the two
-  // cases of a model that needs a newer SDK name 3.1.100 and 3.2.0). Every case runs against the SDK's OWN
-  // version (no sdkVersion option), which must be in that range and not below the file's.
-  const [own, built] = [SDK_VERSION, v.sdk_version].map((s) => s.split('.').map(Number));
-  assert.equal(own[0] === 3 && own[1] <= 1 && (own[1] > built[1] || (own[1] === built[1] && own[2] >= built[2])), true, `SDK ${SDK_VERSION} is ${v.sdk_version} or a later 3.0.x or 3.1.x`);
-  for (const c of v.cases) {
-    const opts = { trustedKeys: [v.public_key_hex], requireSignature: true, requireVersion: true,
-      expect: c.config ? { version: c.config.version, build: c.config.revision } : {} };
-    let got;
-    try { got = await acceptManifest(enc.encode(c.manifest), opts); } catch (e) {
-      assert.equal(c.expect.outcome, 'refused', `${c.name}: refused with ${e.code} (${e.message})`);
-      assert.equal(toTajweedError(e).code, c.expect.code, c.name);
-      continue;
-    }
-    assert.equal(c.expect.outcome, 'ok', `${c.name}: accepted, expected ${c.expect.code}`);
-    assert.equal(got.manifest.version, c.expect.version, c.name);
-    assert.equal(got.build, c.expect.build, c.name);
-    assert.equal(got.toleranceSigned, c.expect.golden_tolerance_signed, `${c.name}: golden_tolerance signed`);
-    assert.equal(got.rawToleranceSigned, c.expect.golden_raw_signed, `${c.name}: golden_raw signed`);
-    const raw = got.rawToleranceSigned ? parseGoldenRawTolerance(got.manifest.golden_raw_tolerance) : null;
-    assert.deepEqual(raw ? raw.tolerance : null, c.expect.golden_raw_tolerance, `${c.name}: the tolerance in force`);
-    assert.deepEqual(raw ? raw.tokensOnly.slice().sort() : [], (c.expect.tokens_only_builds || []).slice().sort(), `${c.name}: builds judged on tokens only`);
-    assert.equal(got.signedText, c.signed_text, `${c.name}: the signed text`);
-  }
-  for (const s of v.versions.valid) assert.ok(MODEL_VERSION_RE.test(s), s);
-  for (const s of v.versions.invalid) { assert.ok(!MODEL_VERSION_RE.test(s), JSON.stringify(s)); assert.equal(compareModelVersions(s, '4.0.0'), null); }
-  for (const [a, b, want] of v.versions.order) assert.equal(compareModelVersions(a, b), want, `${a} ? ${b}`);
-  // the two production manifests of 2.x verify with the production key and are refused as builds for an older SDK
-  for (const r of v.real_manifests) {
-    const bytes = readFileSync(fileURLToPath(new URL(`./tajweed/${r.file}`, import.meta.url)));
-    await assert.rejects(acceptManifest(bytes, { trustedKeys: [r.trusted_key], requireSignature: true, requireVersion: true }),
-      (e) => e.code === 'version_missing' && toTajweedError(e).code === r.expect.code);
-  }
 });
 
 // log_probs rows for greedy ids: the id at -0.1, everything else at -10

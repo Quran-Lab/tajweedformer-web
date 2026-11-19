@@ -1,36 +1,47 @@
 name: Publish to npm
 
-# Started by hand on a tag (Actions, Publish to npm, Run workflow, Use workflow from: Tags).
-# Builds what the package ships (dist/ is git-ignored), runs the tests the CI workflow runs on those builds,
-# checks what the package will contain, then publishes. A published version cannot be published again, so
-# everything that can fail comes before the last step.
+# Started by hand on a tag (Actions, Publish to npm, Run workflow, Use workflow from: Tags), with the engine build the
+# package is published with.
+#
+# SDK 4.0: the package is the hosted loader's thin wrapper for browsers and the Node path for desktop apps, never the
+# engine or the model. The Node entry names one built-in engine build (sdk4/node/engine.js BUILTIN_ENGINE, null in the
+# source), its last choice after the signed config's web.engine and its previous. scripts/stamp-engine.mjs sets it here,
+# and only to a build web.quranlab.ai serves whose index.json verifies with the pinned key, names the same id and has
+# the one-thread variant: give the build web.quranlab.ai serves to every site now.
+#
+# A published version cannot be published again, so everything that can fail comes before the last step.
 
 on:
   workflow_dispatch:
+    inputs:
+      engine:
+        description: "The engine build the Node entry starts with (yyyymmdd.<12 hex>): the build web.quranlab.ai serves now"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   publish:
-    name: Test, build and publish @quran-lab/tajweedformer
+    name: Test, stamp the engine, check and publish @quran-lab/tajweedformer
     if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - name: The tag is the package version
         run: |
           v=$(node -p "require('./package.json').version")
           [ "$GITHUB_REF_NAME" = "$v" ] || { echo "tag $GITHUB_REF_NAME is not the package version $v" >&2; exit 1; }
-      - name: Engine submodule
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/ci-engine.sh vendor/zipformer-sdk
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           registry-url: https://registry.npmjs.org
+      - name: Dev dependencies (no lockfile in this repository)
+        run: npm install --no-audit --no-fund --no-save
       - name: Emscripten
         run: |
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
@@ -40,25 +51,23 @@ jobs:
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           npm run build:opus
-      - name: Tests without the engine (libopus required)
+      - name: Tests (the loader, the frame, the Worker, the Node path, sharing; libopus required)
         run: REQUIRE_OPUS=1 npm test
-      - name: Build the engine and run every test with it (libopus and the mock engine required)
+      - name: The Node entry's built-in engine (verified against web.quranlab.ai and the pinned key, then stamped)
         env:
-          ZF_WASM_TAJWEED: '1'
+          ENGINE: ${{ inputs.engine }}
         run: |
-          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
-          npm run build
-          npm run test:wasm
-          CLANG="$RUNNER_TEMP/emsdk/upstream/bin/clang" REQUIRE_OPUS=1 REQUIRE_MOCK=1 npm test
-      - name: The plain Vite example builds with no config file, and names no Node module
-        run: npm run example:build
-      - name: What the package will contain (README, AGENTS.md, CHANGELOG, the type declarations, the exports map, the built engine)
+          node scripts/stamp-engine.mjs "$ENGINE"
+          changed=$(git diff --name-only)
+          [ "$changed" = "sdk4/node/engine.js" ] || { echo "::error::the stamp changed: ${changed:-nothing}"; exit 1; }
+          git diff
+          echo "Built-in engine of the Node entry: \`$ENGINE\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: The README's portal links say they came from npm (sdk.quranlab.ai/go/npm-tajweedformer), not from this repository
+        run: sed -i -E 's,sdk\.quranlab\.ai/go/gh-tajweedformer-web([?)"#]),sdk.quranlab.ai/go/npm-tajweedformer\1,g' README.md
+      - name: What the package will contain (scripts/check-package.mjs --publish, then the list)
         run: |
-          npm run check:package
+          npm run check:package -- --publish
           npm pack --dry-run 2>&1 | tee "$RUNNER_TEMP/pack.txt"
-          for f in dist/tajweedformer.mjs dist/tajweedformer.wasm dist/tajweedformer-opus.mjs dist/tajweedformer-opus.wasm AGENTS.md; do
-            grep -q " $f\$" "$RUNNER_TEMP/pack.txt" || { echo "::error::the package would not contain $f"; exit 1; }
-          done
       - name: The version is not on npm yet
         run: |
           v=$(node -p "require('./package.json').version")

@@ -1,28 +1,37 @@
 // The sharing state machine: when to ask,
-// how often to re-ask, the guardian variant, settings, the thank-you. Plain JS, no DOM.
+// how often to re-ask, settings, the thank-you. Plain JS, no DOM. Every app has the same sheet and the same rules
+// (ONE_SHEET_40 26.1): there is no other variant of the ask.
 //
-// Asking, since 2.0.1:
-// - the sheet is shown at most MAX_ASKS times per install, ever (the first ask and, after "Not now", re-asks
-//   REASK_GAP sessions apart); the count is of asks handed out (the SDK's sheet or an app's own UI), stored, and
-//   carried over from 2.0.0's `asks`;
+// Asking, in SDK 4.0: the first ask is the full sheet, not within 24 hours of the install, not before the
+// 3rd completed session, and only at the end of a good session; after "Not now" a re-ask is a small card, when both
+// 14 days and 7 completed sessions have passed since the last ask (then 30 days and 10 sessions). An ask counts
+// once it is on screen (`shown`), three at most, ever (the sheet and two cards); the count carries over from 3.x and
+// 2.0.0. Quran Lab's signed config (`share_ask`) can only make asking rarer.
 // - a yes ends asking for good: the grant keeps the consent version (and, for an app's own wording, the text hash)
 //   recorded when the learner agreed, across copy decks, wordings and SDK upgrades. There is no version re-ask
 //   and nothing pauses sharing when the wording in force changes;
 // - turning sharing off ends asking for good; only the settings switch (setSharing) turns it on or off then.
 //
 // Stored under SHARING_STATE_KEY, the same object 2.0.0 stored: { v: 1, consent: 'unknown' | 'granted' |
-// 'declined' | 'final', asks, lastAskSession, sessions, thanked, decidedAt, consentVersion, guardian } plus
-// consentTextSha256 (2.0.1). 2.0.0's `versionAsked` is left as it is and no longer read.
+// 'declined' | 'final', asks, lastAskSession, sessions, thanked, decidedAt, consentVersion } plus consentTextSha256
+// (2.0.1) and, from 4.0, installedAt, lastAskAt, lastAskDay (20.4). 2.0.0's `versionAsked` and the `guardian` that SDKs
+// before 4.0 stored with a grant are left as they are, never read and written back unchanged (26.1.4): a yes given on
+// a 3.x guardian sheet is a yes like any other and is never asked about again. This app session's part (takes,
+// recited_ms, the ask in hand) is in memory only.
+
+import { decide, freshApp, HARD_MAX_ASKS } from './ask40.js';
 
 export const SHARING_STATE_KEY = 'sharing.v1';
 // the count of a stored answer (see `changes`)
 const countOf = (s) => (s && Number.isInteger(s.changes) ? s.changes : (s && s.consent === 'final' ? 1 : 0));
 const FRESH = { v: 1, consent: 'unknown', asks: 0, lastAskSession: 0, sessions: 0, thanked: false, decidedAt: null,
-  consentVersion: null, consentTextSha256: null, guardian: false };
-/** Sheets shown in all, ever: the first ask and at most two re-asks after "Not now". */
-export const MAX_ASKS = 3;
-/** Sessions between asks. */
-export const REASK_GAP = 7;
+  consentVersion: null, consentTextSha256: null, installedAt: null, lastAskAt: null, lastAskDay: null };
+/** Asks shown in all, ever: the sheet and at most two cards after "Not now". */
+export const MAX_ASKS = HARD_MAX_ASKS;
+// the stored names of 20.4 against the reference's
+const NAMES = [['consent', 'consent'], ['asks', 'asks'], ['sessions', 'sessions'], ['lastAskSession', 'last_ask_session'],
+  ['installedAt', 'installed_at'], ['lastAskAt', 'last_ask_at'], ['lastAskDay', 'last_ask_day']];
+const toRef = (s) => { const r = {}; for (const [a, b] of NAMES) if (s[a] !== undefined) r[b] = s[a]; return r; };
 /** The consent version of the copy deck the web SDK 2.0.0 bundled: a 2.0.0 grant stored without a version was
  * given to it. */
 export const LEGACY_CONSENT_VERSION = 'share-2026-11-07';
@@ -30,18 +39,23 @@ export const LEGACY_CONSENT_VERSION = 'share-2026-11-07';
 export class SharingState {
   /**
    * @param {{ get(k): any, set(k, v): void }} state  persistence (per origin in browsers)
-   * @param {{ enabled: () => boolean, consentVersion?: string, consentTextSha256?: string|null, audience?: string,
-   *           clock?: () => number }} o  consentVersion: the version a new grant records (the deck's, or custom-...
-   *           for an app's own wording, with its text hash)
+   * @param {{ enabled: () => boolean, consentVersion?: string, consentTextSha256?: string|null,
+   *           clock?: () => number, tzMin?: (ms: number) => number, shareAsk?: () => object|null }} o
+   *           consentVersion: the version a new grant records (the deck's, or custom-... for an app's own wording,
+   *           with its text hash); tzMin: the device's offset from UTC in minutes east at a time; shareAsk: the
+   *           signed config's `share_ask` as it came (null when absent)
    */
   constructor(state, o = {}) {
     this.state = state;
     this.enabledFn = o.enabled || (() => false);
     this.consentVersion = o.consentVersion || null;
     this.consentTextSha256 = o.consentTextSha256 || null;
-    this.audience = o.audience || 'general';
     this.clock = o.clock || Date.now;
+    this.tzMin = o.tzMin || ((ms) => -new Date(ms).getTimezoneOffset());
+    this.shareAsk = o.shareAsk || (() => null);
     this.listeners = new Set();
+    /** This app session's part (20.4): never stored. */
+    this.app = freshApp();
   }
   get s() {
     // (while "delete what I shared" asks the server: what this page has seen, not the stored off form)
@@ -113,9 +127,8 @@ export class SharingState {
   get sharing() {
     return this.enabledFn() && this.s.consent === 'granted';
   }
-  get guardianVariant() { return this.audience === 'children'; }
 
-  /** Asking has not ended: no yes, not turned off, and fewer than MAX_ASKS sheets shown. */
+  /** Asking has not ended: no yes, not turned off, and fewer than MAX_ASKS asks shown (the sheet and the cards). */
   get asking() {
     const s = this.s;
     return (s.consent === 'unknown' || s.consent === 'declined') && s.asks < MAX_ASKS;
@@ -141,56 +154,45 @@ export class SharingState {
     return s.consentVersion && s.consentVersion.startsWith('custom-') ? s.consentTextSha256 || null : null;
   }
 
-  _ask(s) {
-    if (!(s.consent === 'unknown' || s.consent === 'declined') || s.asks >= MAX_ASKS) return null;
-    if (s.asks > 0 && s.sessions - s.lastAskSession < REASK_GAP) return null;
-    return s.consent === 'declined' ? 'reask' : 'first';
-  }
-
   /**
-   * A session ended. Returns null, or the ask to show: { variant: 'first' | 'reask', guardian: boolean }
-   * (counted as shown). The caller shows the sheet and calls answer().
-   * @param {{ feedback: boolean }} o  feedback: the learner was shown the model's verdicts
+   * One event of 20.5 through the decision: launch, take_start, take_end {end, speech_ms, offered},
+   * ask_now {offered}, shown, answer {answer: yes | not_now | open}, withdrawn, setting {on}. Stores what changed
+   * (the fields of 20.4, and with a consent that changed what 3.x stored with it: the version and text hash a
+   * grant records, the day, the count of changes of mind); keeps this app session's part. Every other stored field
+   * (a 3.x `guardian`, 2.0.0's `versionAsked`) is written back as it was.
+   * Returns { action: 'none' | 'sheet' | 'card', why, ask } (ask: the ask in hand after the event, or null).
    */
-  sessionCompleted({ feedback = false } = {}) {
+  decide(event) {
+    const ms = this.clock();
     const s = this.s;
-    s.sessions += 1;
-    const ask = this.enabledFn() && feedback ? this._ask(s) : null;
-    if (ask) { s.asks += 1; s.lastAskSession = s.sessions; }
-    this._put(s);
-    return ask ? { variant: ask, guardian: this.guardianVariant } : null;
-  }
-
-  /** The app asks now (its own timing; the disclosure lines stay the SDK's). Counted as shown; null once asking
-   * has ended (a yes, sharing turned off, or MAX_ASKS sheets shown). The REASK_GAP spacing is the app's to keep. */
-  askNow() {
-    const s = this.s;
-    if (!(s.consent === 'unknown' || s.consent === 'declined') || s.asks >= MAX_ASKS) return null;
-    const variant = s.consent === 'declined' ? 'reask' : 'first';
-    s.asks += 1; s.lastAskSession = s.sessions;
-    this._put(s);
-    return { variant, guardian: this.guardianVariant };
-  }
-
-  /**
-   * The learner answered the sheet. yes: share, recording the version in force now; no (or dismissed): not now
-   * (final after the last ask). guardianConfirmed must be true for a yes in the guardian variant. After a yes or
-   * a switch turned off this changes nothing (the recorded grant stays as it is): use setSharing.
-   */
-  answer(yes, { guardianConfirmed = false } = {}) {
-    const s = this.s;
-    if (s.consent === 'granted' || s.consent === 'final') return s.consent;
-    if (yes) {
-      if (this.guardianVariant && !guardianConfirmed) throw new Error('the guardian variant needs the parent or guardian confirmation');
-      Object.assign(s, { consent: 'granted', decidedAt: this._today(), consentVersion: this.consentVersion,
-        consentTextSha256: this.consentTextSha256, guardian: !!guardianConfirmed });
-      s.changes = this.changes + 1; // sharing comes on: a change of mind, in the same write
-    } else {
-      s.consent = s.asks >= MAX_ASKS ? 'final' : 'declined';
-      s.decidedAt = this._today();
+    const r = decide({ ...toRef(s), app: this.app }, event, this.shareAsk(), { ms, tz_min: this.tzMin(ms) });
+    const n = r.new_state;
+    this.app = n.app;
+    const next = { ...s };
+    for (const [a, b] of NAMES) next[a] = n[b];
+    if (n.consent !== s.consent || (event && event.type === 'setting')) {
+      if (n.consent === 'granted' && s.consent !== 'granted') {
+        Object.assign(next, { decidedAt: this._today(), consentVersion: this.consentVersion, consentTextSha256: this.consentTextSha256,
+          changes: this.changes + 1 }); // sharing comes on: a change of mind, in the same write
+      } else if (event && event.type === 'setting' && n.consent === 'final') {
+        next.changes = this.changes + 1; // turned off: a change of mind, in the write that saves the switch (R5)
+      } else if (n.consent !== s.consent) next.decidedAt = this._today();
     }
-    this._put(s);
-    return s.consent;
+    const raw = this._raw();
+    if (!raw || NAMES.some(([a]) => JSON.stringify(raw[a] ?? null) !== JSON.stringify(next[a] ?? null)) || next.changes !== s.changes
+      || next.decidedAt !== s.decidedAt) this._put(next);
+    return { action: r.action, why: r.why, ask: this.app.ask ? { ...this.app.ask } : null };
+  }
+
+  /**
+   * The learner's answer to the ask in hand: 'yes' (the sheet only: share, recording the version in force now),
+   * 'not_now' (or dismissed; final after the third ask), 'open' (a card opened into the full sheet). true and false
+   * are 'yes' and 'not_now'. After a yes or a switch turned off this changes nothing (the recorded grant stays as it
+   * is): use setSharing.
+   */
+  answer(answer) {
+    const ans = answer === true ? 'yes' : answer === false ? 'not_now' : answer;
+    return this.decide({ type: 'answer', answer: ans });
   }
 
   /**
@@ -237,20 +239,11 @@ export class SharingState {
 
   /** The settings switch. On records the version in force now (an existing grant keeps its own). Off is final
    * until the learner turns it on again here, and is never asked about again. */
-  setSharing(on, { guardianConfirmed = false } = {}) {
-    const s = this.s;
-    if (on) {
-      if (s.consent === 'granted') return;
-      if (this.guardianVariant && !guardianConfirmed) throw new Error('the guardian variant needs the parent or guardian confirmation');
-      Object.assign(s, { consent: 'granted', consentVersion: this.consentVersion, consentTextSha256: this.consentTextSha256,
-        guardian: !!guardianConfirmed, decidedAt: this._today() });
-    } else {
-      s.consent = 'final';
-    }
-    // the count of the learner's changes of mind, in the write that saves the switch (R5): a recording begun
-    // under an earlier count is never uploaded
-    s.changes = this.changes + 1;
-    this._put(s);
+  setSharing(on) {
+    if (on && this.s.consent === 'granted') { this.app.ask = null; return; }
+    // 20.5 `setting`: any ask in hand goes; the count of the learner's changes of mind is in the write that saves
+    // the switch (R5): a recording begun under an earlier count is never uploaded
+    this.decide({ type: 'setting', on: !!on });
   }
 
   /** The thank-you is due (first shared session uploaded): returns true once. */

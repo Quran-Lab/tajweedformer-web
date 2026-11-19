@@ -2,7 +2,8 @@
 // takes_join.json is replayed by test/sharing_takes.test.mjs). A take is one model session; the RECORDING (the
 // capture: its Ogg stream, outbox item and session id) is what is shared, and it is decoupled from the take:
 // - When a take ends while sharing is on, its recording stays open for the JOIN WINDOW: the signed config's
-//   `flags.share_join_ms` (a whole number 0 to 10000; absent or anything else: 3000; 0: never join).
+//   `flags.share_join_ms` (a whole number 0 to 60000 from SDK 4.0, 0 to 10000 before it; absent or anything else:
+//   3000; 0: never join; contract sdk_4.0.0/SHARE_JOIN_40.md, section 23).
 // - A take that starts within the window (wall ms since the previous take with audio ended <= the window) at the
 //   same input rate continues the same stream: no new headers, the encoder and the resampler keep their state (a
 //   partial Opus frame left by the previous take is completed by the next take's first samples), granules and
@@ -34,8 +35,8 @@
 
 /** The join window when the config sets none (ms). */
 export const DEFAULT_JOIN_MS = 3000;
-/** The longest join window a config may set (ms). */
-export const MAX_JOIN_MS = 10000;
+/** The longest join window a config may set (ms): 60000 from SDK 4.0 (section 23; 2.0.3 to 3.x: 10000). */
+export const MAX_JOIN_MS = 60000;
 /** A recording that has reached this much audio (ms) takes no further take. */
 export const RECORDING_CAP_MS = 20 * 60 * 1000;
 /** The most takes one recording holds (the server's take list takes at most this many). */
@@ -43,7 +44,7 @@ export const MAX_TAKES = 256;
 /** With this much room or less under the cap (ms), a joining take's audio is held until the take ends. */
 export const HOLD_MS = 30000;
 
-/** The join window of a signed config's flags: `share_join_ms`, a whole number 0 to 10000; anything else
+/** The join window of a signed config's flags: `share_join_ms`, a whole number 0 to 60000; anything else
  * (absent, a boolean, a string, a fraction, a negative or larger number) is 3000. */
 export function joinWindowMs(flags) {
   const v = flags && typeof flags === 'object' ? flags.share_join_ms : undefined;
@@ -54,7 +55,7 @@ export function joinWindowMs(flags) {
  * before it). */
 export const takeStartMs = (samples, rate) => Math.floor(samples * 1000 / rate);
 
-/** A wall gap (ms) rounded to the nearest 100, half up, within 0 to 10000 (a clock set backwards gives 0). */
+/** A wall gap (ms) rounded to the nearest 100, half up, within 0 to 60000 (a clock set backwards gives 0). */
 export const roundGap = (ms) => Math.floor((Math.min(Math.max(ms, 0), MAX_JOIN_MS) + 50) / 100) * 100;
 
 /** The longest lead-in before the first take that the server takes (ms; the SDK's own pre-roll is at most 1000). */
@@ -63,7 +64,7 @@ export const MAX_LEAD_MS = 5000;
 /**
  * A take list as the server takes it, or null: 2 to MAX_TAKES entries, the first with gap_ms 0 and start_ms 0 or
  * its pre-roll (SDK 3.0.0: the feed's audio before the first take; 0 to 5000), start_ms whole and
- * strictly increasing, gap_ms 0 to 10000 in steps of 100. With `durationMs` (a recording recovered at its last
+ * strictly increasing, gap_ms 0 to 60000 in steps of 100. With `durationMs` (a recording recovered at its last
  * whole page), the takes that start at or after it are left out: none of their audio was kept.
  */
 export function takeList(takes, durationMs = Infinity) {

@@ -45,7 +45,10 @@ export function copyFor(lang = 'en', overrides = null) {
     try { num = new Intl.NumberFormat(d.lang).format(n); } catch (_) { /* plain */ }
     return s.replace(/\{minutes\}/g, num);
   };
+  // whether this deck (or the app's own wording) has a key itself, not through the English fallback of t(): a deck
+  // before 2026-11-15.1 has no re-ask card strings, and the SDK then shows the re-ask sheet in the card's place
+  const has = (k) => typeof own[k] === 'string' || (d.strings && typeof d.strings[k] === 'string' && d.strings[k].trim() !== '');
   return { lang: d.lang, dir: d.dir || 'ltr', version: d.version, consentVersion: d.consent_version, deleteDays: d.delete_days ?? 0,
     deleteTiming: d.delete_timing || (d.delete_days ? 'delayed' : 'immediate'), hadithSource: d.hadith_source || null,
-    overridden: Object.keys(own), t, minutes };
+    overridden: Object.keys(own), t, minutes, has };
 }

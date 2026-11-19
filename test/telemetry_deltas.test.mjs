@@ -146,19 +146,31 @@ test('triggers: every 15 minutes while visible (not while hidden), the page hidd
 });
 
 test('share counters: the SDK\'s sheet and an app\'s own UI count asks, yes and no; the settings switch does not', async () => {
-  const { ql } = await setup();
-  // own UI: answered through the return value, then later through answer()
-  const answers = [{ yes: false }, null];
-  const ctl = enableSharing(ql, { lang: 'en', ask: async () => answers.shift() });
-  await ctl.sessionCompleted();
-  for (let i = 0; i < 7; i++) await ctl.sessionCompleted(); // the re-ask after 7 sessions
-  ctl.answer(true);
-  ctl.setSharing(false);
-  ctl.setSharing(true);
+  // SDK 4.0: the first ask is the sheet; a re-ask is the card, which an own UI opens into
+  // the full sheet before a yes. Each install below is one day, so its counts are one day's.
+  const DAY = 86_400_000;
+  const NOW = { setTimeout: (f) => { Promise.resolve().then(f); return 0; }, clearTimeout() {} };
+  const good = { end: 'normal', speechMs: 90_000 };
+  const { ql, t } = await setup();
+  ql.state.set('sharing.v1', { v: 1, consent: 'unknown', asks: 0, sessions: 2, lastAskSession: 0, installedAt: t.now - 2 * DAY });
+  // own UI: the sheet answered "Not now" through the return value
+  const ctl = enableSharing(ql, { lang: 'en', timers: NOW, ask: async () => ({ yes: false }) });
+  await ctl.takeEnded(good);
   ql.telemetry.seal();
   let p = ql.telemetry.pending().at(-1);
-  assert.equal(p.share_asked, 2);
-  assert.equal(p.share_no, 1);
+  assert.deepEqual([p.share_asked, p.share_no, p.share_yes], [1, 1, undefined]);
+  // the card 15 days and 8 sessions after that "Not now": opened by the own UI, then answered later through answer()
+  const { ql: q1, t: t1 } = await setup();
+  q1.state.set('sharing.v1', { v: 1, consent: 'declined', asks: 1, sessions: 10, lastAskSession: 2, installedAt: t1.now - 20 * DAY, lastAskAt: t1.now - 15 * DAY });
+  const c1 = enableSharing(q1, { lang: 'en', timers: NOW, ask: async (a) => { assert.equal(a.kind, 'card'); a.open(); return null; } });
+  await c1.takeEnded(good);
+  c1.answer(true);
+  c1.setSharing(false);
+  c1.setSharing(true);
+  q1.telemetry.seal();
+  p = q1.telemetry.pending().at(-1);
+  assert.equal(p.share_asked, 1);
+  assert.equal(p.share_no, undefined);
   assert.equal(p.share_yes, 1, 'the switch is not a sheet answer');
   // the SDK's own sheet (the element without a DOM: its answer is the test's tap)
   const { ql: ql2 } = await setup();
@@ -167,9 +179,10 @@ test('share counters: the SDK\'s sheet and an app\'s own UI count asks, yes and 
   try {
     globalThis.document = { createElement: () => new QuranLabConsent(), body: { appendChild() {} } };
     QuranLabConsent.prototype.remove = () => {};
-    QuranLabConsent.prototype.show = async () => ({ yes: true, guardianConfirmed: false });
-    const ctl2 = enableSharing(ql2, { lang: 'en' });
-    await ctl2.sessionCompleted();
+    QuranLabConsent.prototype.show = async () => ({ yes: true });
+    ql2.state.set('sharing.v1', { v: 1, consent: 'unknown', asks: 0, sessions: 2, lastAskSession: 0, installedAt: ql2.clock() - 2 * DAY });
+    const ctl2 = enableSharing(ql2, { lang: 'en', timers: NOW });
+    await ctl2.takeEnded(good);
     ql2.telemetry.seal();
     p = ql2.telemetry.pending().at(-1);
     assert.equal(p.share_asked, 1);

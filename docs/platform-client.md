@@ -6,21 +6,30 @@ platform's own README gives them.
 
 ## Recitation sharing
 
-### Who decides that the sheet is offered
+### Every learner is asked; the choice is theirs
 
-Quran Lab decides, per app, in the signed config the SDK downloads (`flags.contributions`, and per platform who
-may upload). The app's own sharing option is ignored since 2.0.1. Without a signed config in force nothing is
-offered. Offered is never consent: nothing is recorded for sharing and nothing is sent before the learner
-answers "Share", and a learner who never answers never shares.
+Every learner of every app is asked, under the rules below, and the choice is the learner's: they can say
+"Not now", and they can turn sharing off or delete what they shared at any time. No app is exempt, and the app's
+own sharing option is ignored since 2.0.1. The signed config the SDK downloads carries Quran Lab's global incident
+switch (`flags.contributions`, with the upload tier per platform): while it is off, sharing is paused for every app
+at once. Without a signed config in force nothing is offered. Being asked is never consent: nothing is recorded for
+sharing and nothing is sent before the learner answers "Share", and a learner who never answers never shares.
 
 ### Consent
 
-- The SDK shows its sheet at most three times per install, ever. A learner who said "Share" is never asked
-  again; "Not now" may lead to a later ask, a few sessions apart, until the sheet has been shown three times;
-  a learner who turned sharing off after a yes is not asked again. After that, only the app's own settings
-  entry point (the SDK's settings switch) turns sharing on or off. The count carries over from 2.0.0.
+- The SDK asks at most three times per install, ever (SDK 4.0, contract section 20): the first ask is the full
+  sheet, never in the first 24 hours after the install, never before the 3rd completed session, and only at the
+  end of a good session (a take that ended normally, at least 60 seconds recited in this app session), once the
+  moment has settled (3 seconds with no new take). After "Not now" a re-ask is a small card (the deck's
+  `card.line`, with `card.open` opening the full sheet and `card.not_now`), when both 14 days and 7 completed
+  sessions have passed since the last ask; the next after 30 days and 10 sessions. A card on screen counts as
+  one of the three; one dismissed, or gone because a take started or the page was hidden, is "Not now". A
+  learner who said "Share" is never asked again; a learner who turned sharing off after a yes is not asked
+  again. After that, only the app's own settings entry point (the SDK's settings switch) turns sharing on or
+  off. The count carries over from 2.0.0 and 3.x, and every clock starts at the upgrade to 4.0. Quran Lab's
+  signed config (`share_ask`) can only make asking rarer.
 - The learner agrees to one wording, identified by a consent version, recorded when they agree. The SDK's
-  own copy deck has version `share-2026-11-09` (deck `2026-11-13.1`, eight languages; SDK 3.1.0 and 3.1.1
+  own copy deck has version `share-2026-11-09` (deck `2026-11-19.1`, eight languages; SDK 3.1.0 and 3.1.1
   bundled deck `2026-11-12.1`, version `share-2026-11-12`). Every shared session
   carries the version the learner actually agreed to (`consent_version`), for example `share-2026-11-07b`
   for a learner who agreed in a 2.0.0 app.
@@ -32,13 +41,14 @@ answers "Share", and a learner who never answers never shares.
 
 ### The default sheet, a themed sheet, or your own
 
-1. **Default.** The SDK shows its own sheet at a good moment (after a finished session with feedback, never
-   at first launch), in the learner's language, right to left for Arabic and Urdu, with a guardian variant
-   for children's apps.
+1. **Default.** The SDK shows its own sheet, or its card for a re-ask, at a good moment (above), in the
+   learner's language, right to left for Arabic and Urdu. Every app shows the same sheet under the same rules.
 2. **Themed.** Colours, corner radius and fonts of the SDK's sheets can be set; the words stay the SDK's.
    This does not change the consent version.
 3. **Your own moment.** An app that knows a better moment than the SDK's calls `client.sharing.ask()`: the
-   SDK shows its own sheet then, if an ask is still allowed, and that counts as one of the three. Drawing
+   SDK shows its own sheet (or card) then, only when an ask is due by the same rules (without the 60 seconds),
+   never before a completed take of this app session and never during a take; otherwise it resolves with null
+   and shows nothing. What it shows counts as one of the three. Drawing
    the ask itself is not available in this version: the sheet is always the SDK's, and no call hands the
    app the request to ask or takes the learner's answer from a screen of the app's. What an app changes is
    the look (item 2) and the words (item 4).
@@ -176,6 +186,19 @@ location, app user data.
 
 `POST /v1/register` is called once per UTC day per install (the first launch or return to the foreground of
 the day; a day stamp on the device), not at every launch, so the server counts daily active installs.
+
+### Error reports (web 3.1.7, Android 3.1.6, Apple 3.1.5, every SDK from 4.0)
+
+Every failure the app is given, and each failure of a short list the SDK goes on without, is reported once per
+install, UTC day and kind (`POST /v1/issues`, kind `error`) with how many times it happened that day: the stage
+where it failed (config, register, token, manifest, download, verify, storage, runtime, model open, accelerator,
+audio, session, sharing, events), a short reason, the HTTP status, the error's class (never its message), the
+code the app was given, whether it was the install's first launch, and what the device or browser can do (on the
+web: browser family and major version, OS family, cross-origin isolation, WebAssembly SIMD and threads, Ed25519,
+AudioWorklet, device memory and free storage buckets; on phones: the model code, memory tier, free storage
+bucket, ABI). Never audio, text, a message, a URL or path, the user agent string or an identifier. At most 16
+kinds a day and 32 waiting, sent at the launch, at each telemetry send point and 30 seconds after a new one. The
+signed config's `flags.issues` is Quran Lab's switch. Developers see them on the app's Problems page.
 
 ## CPU first, then the accelerator (iOS, macOS, Android)
 

@@ -18,7 +18,7 @@ Everything an assistant needs to integrate this SDK correctly: use only the name
 </td>
 <td width="33%" valign="top">
 
-**Runs where the web runs**<br>WebAssembly with SIMD128, for browsers and Node. One npm package; the model is cached after the first visit.
+**Runs where the web runs**<br>One script tag, or the npm package that wraps it, which also runs in Node for desktop apps. In the browser the engine runs with WebAssembly SIMD in Quran Lab's frame on your page and keeps itself current.
 
 </td>
 </tr>
@@ -35,7 +35,7 @@ Everything an assistant needs to integrate this SDK correctly: use only the name
 </td>
 <td valign="top">
 
-**Data for your own judge**<br>The SDK scores nothing. The model's thresholds come with it as read-only data, so your app can judge a recitation its own way. The expected units of each ayah do not: with this release and the model build served now, `model.reference` is null.
+**Data for your own judge**<br>The SDK scores nothing. The model's thresholds come with it as read-only data, and the expected units of each ayah where the served build carries them, so your app can judge a recitation its own way.
 
 </td>
 </tr>
@@ -46,7 +46,7 @@ Everything an assistant needs to integrate this SDK correctly: use only the name
 - **Made for the Quran.** Trained on Quranic recitation, with its own sound units and heads for what tajweed is about.
 - **Feedback in the moment.** Output streams while the learner recites, so your app can respond on the word itself, not after the take.
 - **One engine on every platform.** The same engine runs the [web](https://github.com/Quran-Lab/tajweedformer-web), [Android](https://github.com/Quran-Lab/tajweedformer-android), [iOS and macOS](https://github.com/Quran-Lab/tajweedformer-apple) and [Windows and Linux](https://github.com/Quran-Lab/tajweedformer-c) SDKs, all set from one portal.
-- **Free, and it stays free.** Quran Lab is a non-profit waqf: the SDKs and models are never sold. The licence, NPL-1.2, asks three things: no paywall on model features, no results presented as rulings, and show the notice.
+- **Free, and it stays free.** Quran Lab is a non-profit waqf: the SDKs and models are never sold. The licence, NPL-1.2, and Quran Lab's access terms ask two things: no paywall on model features, and no output presented as an authoritative religious ruling. A line telling learners that automatic feedback can be wrong is encouraged, not required.
 
 ## Built for AI developers
 
@@ -54,496 +54,260 @@ Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai) and paste 
 
 ## At a glance
 
-- **What it is:** the npm package `@quran-lab/tajweedformer`. It runs TajweedFormer V4
-  (Quran-Lab/tajweedformer-v4, served by cdn.quranlab.ai/models) on the
-  [tajweedformer-engine](https://github.com/Quran-Lab/tajweedformer-engine) engine compiled to WebAssembly
-  (SIMD128, no ONNX Runtime), bit for bit the same as the engine on every other platform.
-- **A pure inference SDK.** Audio in, the model's output out: every head of the network per chunk, what
-  the model heard (tokens with times and confidence, words, top-1 and runner-up per frame), and when the
-  learner spoke. It does not judge a recitation: there is no scorer, no settings and no verdicts in 3.0
-  (see [docs/migrating-to-3.md](docs/migrating-to-3.md)). The calibration and the expected units of each
-  ayah ship as read-only data for your own judge.
-- **Five concepts, the same in every TajweedFormer SDK:** a Client (your link to Quran Lab), a Model, a
-  Session (one take), Heads (raw output) and a Backend. Call order: Client, model, listen, read.
-- **Linked to [sdk.quranlab.ai](https://sdk.quranlab.ai):** a web key, the signed config (which model
-  build your app gets, the response time), anonymous daily telemetry, issue reports, and opt-in
-  recitation sharing with the SDK's own consent sheet.
-- **Version:** 3.1.6, on npm as `@quran-lab/tajweedformer`. What has run where: the test suite on every push
-  (Linux, with the engine and libopus built there), and, in Quran Lab's own check with model files that a
-  public runner does not have, the 35 conformance clips bit for bit in Node and in Chrome (`npm run proof`).
-
-## The TajweedFormer SDKs
-
-One model, one engine, the same bits on every platform. Each SDK compiles the same engine source
-(Quran-Lab/tajweedformer-engine, pinned as a submodule), so no platform can drift from the others.
-
-| Repository | What it is | Platforms | Install |
-| - | - | - | - |
-| [tajweedformer-android](https://github.com/Quran-Lab/tajweedformer-android) | Kotlin SDK (AAR) | Android 8.0+ on arm64-v8a and armeabi-v7a, desktop JVM | Maven Central `ai.quranlab:tajweedformer:3.1.5` |
-| [tajweedformer-apple](https://github.com/Quran-Lab/tajweedformer-apple) | Swift SDK: Neural Engine (CoreML) with the exact CPU engine as fallback | iOS 15+, macOS 12+, Apple silicon | SwiftPM, `from: "3.1.4"`, product `TajweedFormer` |
-| [tajweedformer-web](https://github.com/Quran-Lab/tajweedformer-web) | WebAssembly SDK with SIMD128 | Browsers, Node 20+ | `npm install @quran-lab/tajweedformer` |
-| [tajweedformer-c](https://github.com/Quran-Lab/tajweedformer-c) | C API and server runner with x86 int8 kernels (AVX2, AVX-VNNI, AVX-512 VNNI) | Windows, Linux (x86-64) | CMake `FetchContent`, tag 3.1.3 |
-| [tajweedformer-engine](https://github.com/Quran-Lab/tajweedformer-engine) | The engine: exact C runtime, inference library, conformance suite | everything above | Git submodule |
-
-The model is Quran-Lab/tajweedformer-v4 (`sdk/v4.0`), hosted by Quran Lab and served by
-`cdn.quranlab.ai/models` to app keys from [sdk.quranlab.ai](https://sdk.quranlab.ai).
-SDK 2.x runs V4 only.
-[sdk.quranlab.ai](https://sdk.quranlab.ai) is where you create an app, get its developer key,
-choose which model revision your users get, and, for SDK 2.x scoring, set the tajweed checks (presets,
-per-class thresholds) your users see, without shipping a new build.
+- **One script.** A site includes the loader; it opens a small hidden frame of Quran Lab's on the page. The model,
+  its key and its files live in that frame's Worker, on Quran Lab's origin: the site's own scripts, other
+  third-party scripts and extensions limited to the site cannot read them.
+- **Evergreen.** The loader picks the engine build Quran Lab's signed config names for your site (automatic, or
+  pinned in the portal for up to 30 days), and runs it only after checking Quran Lab's Ed25519 signature and every
+  file's SHA-256 (with WebCrypto's Ed25519 where the browser has it, else the vendored @noble/ed25519 2.3.0, MIT, so
+  Chrome before 137 and Safari before 17 work too). The public API has a number, 4; engine updates never change it.
+- **A wrong device clock changes nothing.** The signed config is judged by the server's time when the device clock
+  is off by more than five minutes, the lease by the Core's clock (anchored at the server's time in each lease).
+- **Your origins only.** The frame is shown only on the origins your key lists (the browser enforces it), it checks
+  its parent's origin itself, and the server checks that origin again for every request.
+- **The same API as 3.x** (Client, Model, Session, Heads, Backend), the same names as the Android, Apple and C SDKs.
+  `NAMES.md` lists every public name.
+- **Microphone in your page.** Capture stays in your page (one permission prompt, yours); the samples are passed in.
 
 ## Install
+
+One script tag. The loader is hosted by Quran Lab and keeps itself current; it opens Quran Lab's frame on your page,
+and the engine and the model run there.
+
+```html
+<script src="https://web.quranlab.ai/4/loader.js" crossorigin="anonymous"></script>
+```
+
+Or from npm, a thin wrapper that loads the same hosted loader and hands out the same classes (the model never comes
+through the package):
 
 ```sh
 npm install @quran-lab/tajweedformer
 ```
 
-With a bundler (Vite, webpack and the like) the import in the quick start resolves as it is written. Without one, import the same module by URL: `https://cdn.jsdelivr.net/npm/@quran-lab/tajweedformer@3.1.6/web/index.js`. The package has one entry point, the same in a page and in Node.
+```js
+import { TajweedClient } from '@quran-lab/tajweedformer';
+```
 
 ## Before you start
 
 | | |
 | - | - |
-| **Key** | A web key from [sdk.quranlab.ai](https://sdk.quranlab.ai), locked to your site's origins. For local work (`vite dev`) use the app's development key, with `http://localhost:*` among its origins; a production key does not work on a local address. |
-| **Page** | A secure context: `https`, or `http://localhost`. A browser gives the microphone and WebCrypto to nothing else, and starts audio only after a tap or a click. |
-| **Browser** | WebAssembly with SIMD, AudioWorklet, and Ed25519 in WebCrypto (Chrome 137, Firefox 129, Safari 17, or later). In Node: version 20 or later. |
-| **Download** | The first visit downloads the model: 55.5 MB, then the browser's cache serves it (68.1 MB stored). A browser that blocks the site's storage (cookies and site data blocked) keeps nothing: there the model is downloaded at every visit. |
-| **Model** | A model comes only from Quran Lab's server, through the Client: `await client.model()`, or `client.prefetch()` ahead of use; the Client opens only a model it downloaded itself on this device. When Quran Lab refuses the key or the app (a revoked key, a paused or blocked app), the SDK stops running the model and removes the downloaded model from the browser. Once the key is accepted again the model is downloaded again. In Node the download is bound to the machine and the user; a machine whose id cannot be read (a container) is bound only by a key file in the SDK's folder, which a copy of that folder carries. |
+| **Key** | A web key from [sdk.quranlab.ai](https://sdk.quranlab.ai), locked to your site's origins: Quran Lab's frame is shown only on the origins your key lists. For local work use the app's development key, with `http://localhost:*` among its origins. |
+| **Page** | A secure context: `https`, or `http://localhost`. If your site sends a Content-Security-Policy, add the lines of "The Content-Security-Policy lines your site needs" (after the quick start). Audio starts only after a tap or a click. |
+| **Browser** | WebAssembly with SIMD and AudioWorklet, in a current Chrome, Edge, Firefox or Safari. Node 20 or later runs the same API for a desktop app, with a desktop key and its app id (see "Node"). |
+| **Hosts** | Quran Lab's frame comes from `web.quranlab.ai`; when that host gives no answer within 4 seconds the loader opens the same frame from `web2.quranlab.ai`. Your Content-Security-Policy names both. |
+| **Check** | The first lease passes Cloudflare Turnstile inside Quran Lab's frame, invisibly: a learner never sees a check or a box. When the check gives no answer or Turnstile is down, the learner still gets a lease, and the next lease checks again. |
+| **Download** | The first visit downloads the model, encrypted, into Quran Lab's frame: 55.5 MB, once (68.4 MB stored); later visits read it from the frame's storage. A browser that blocks the site's storage keeps nothing: there the model is downloaded at every visit. |
+| **Offline** | The model opens under a lease of 24 hours that Quran Lab signs for this browser and your site, kept across page loads: a page loaded within it opens the model with no connection. When the lease has ended and Quran Lab cannot be reached, the model keeps opening for up to 24 hours more; a refusal ends that at once. A Model that is open keeps running. |
+| **Model** | The engine, the model and its lease live in the Worker of Quran Lab's frame: your page's scripts never see the model's files. When Quran Lab refuses the key or the app, the model is removed from the browser. |
+| **Analytics** | Anonymous counts and durations (never audio, text, names or device identifiers) and reports of the failures your learners hit are always sent; you find them at sdk.quranlab.ai under your app, Problems included. |
 | **Takes** | A Model has one open Session (one take) at a time; the next take is a new Session. A take holds at most 20 minutes of audio. |
-| **Threads** | In a browser the engine runs in a module Worker, off the page's main thread (2.x ran it on the main thread); a page whose content security policy forbids Workers runs it on the main thread. In Node it runs on the calling thread. |
 
 ## Quick start
 
 ```js
-import { TajweedClient } from '@quran-lab/tajweedformer';
-
-const client = await TajweedClient.create({ key: 'qlk_v1_...' });   // your web key from sdk.quranlab.ai
-const model = await client.model();                                  // downloads the model once, then cached
-async function take(from) {                                          // one take: the microphone, or a clip
+const client = await QuranLab.TajweedClient.create({ key: 'qlk_v1_...' });   // your web key from sdk.quranlab.ai
+const model = await client.model();                 // the first visit downloads the model once for your site
+async function take(from) {                         // one take: the microphone, or a sample clip
   const session = await model.listen({ from, endOnSilenceMs: 1500 });   // ends when the learner stops
   for await (const chunk of session.chunks) document.querySelector('#heard').textContent = chunk.decoded.text;
 }
-document.querySelector('#listen').onclick = () => take();            // the microphone needs a tap
+document.querySelector('#listen').onclick = () => take();                // the microphone needs a tap
 ```
 
-That is the whole path from the microphone to the output: `listen()` asks for the permission, captures at
-the device's own rate (usually 48 kHz) and tells the Session that rate, so no sample rate appears in your
-code. `endOnSilenceMs: 1500` ends the take by itself after 1.5 s of silence. In a noisy room a take may not
-end on silence, so keep a Stop button (`session.finish()`); the 20-minute limit ends it in any case. Values
-under 1000 can end a take in a breath pause between two words (at the minimum, 500, the margin on the longest
-pause of the 35 conformance clips is one frame); 1500 is the default of the quick starts.
+The same as a page you can run: [examples/quickstart.html](examples/quickstart.html). Audio you already have:
+`model.session()` and `session.push(float32Samples)`, or `model.listen({ from: samples })`. When your app judges a
+take, `session.reportRecited(surah, from, to, { outcome })` (see "Recited ayat").
 
-The page it comes from is [examples/quickstart.html](examples/quickstart.html): it also plays a sample clip
-of the model with no microphone, and starts a new take when the learner comes back to the page. The same in a
-Vite project, which builds with no line of config: [examples/vite](examples/vite/README.md). For `vite dev`,
-use the app's development key with `http://localhost:*` among its origins; a production key does not work on
-a local address, and the SDK says so (`server_rejected`, with what to do).
+## The Content-Security-Policy lines your site needs
 
-From Node, or with audio you already have, replace `listen()` with `model.session()` and
-`session.push(samples)`; everything else is the same, the Client included: a Node program makes a Client with
-its app's desktop key and `appId`, and the Client downloads the model ([examples/node.mjs](examples/node.mjs)).
+If your site sends a Content-Security-Policy, add:
 
-## The five concepts
+```
+script-src  https://web.quranlab.ai https://web2.quranlab.ai blob:
+frame-src   https://web.quranlab.ai https://web2.quranlab.ai
+connect-src https://web.quranlab.ai https://web2.quranlab.ai https://api.quranlab.ai https://*.r2.cloudflarestorage.com
+```
 
-| Concept | What it is | Made by |
-| - | - | - |
-| `TajweedClient` | The app's link to Quran Lab: the key, the signed config, telemetry, sharing, the model files on this device. One per page (a second one while the first is open is the error `client_exists`). | `await TajweedClient.create({ key })` |
-| `TajweedModel` | One verified model build: `id`, `version`, `build`, `contexts`, `defaultContext`, `chunkMs(context)`, `tokens`, `calibration`, `reference`, `sampleClips`, `backend`. Holds the engine. | `await client.model()` |
-| `TajweedSession` | One take: audio in, `chunks` and `events` out, the take's Heads from `finish()`. One open Session per Model (`session_open`). | `await model.listen(options)` (the SDK captures) or `model.session(options)` (the app pushes) |
-| `TajweedHeads` | Raw model output for a chunk or a whole take: `names`, `get(name)`, `greedy(name)`, `decoded()`. | a chunk (`chunk.heads`), `session.finish()` |
-| `TajweedBackend` | What runs the model. On the web always `{ kind: 'cpu', name: 'wasm', stage: 'cpu', reason: null }`. | `model.backend`, `session.backend`, `chunk.backend` |
+- `script-src`: the loader (from either host), and `blob:` for what it runs from bytes it checked: the sharing chunk
+  and the microphone's AudioWorklet.
+- `frame-src`: Quran Lab's frame on either host. Without it the browser blocks the frame and `create()` fails with
+  `needs_connection` after 20 seconds.
+- `connect-src`: the frame's host for the sharing chunk and its encoder, `api.quranlab.ai` for the sharing sheet's
+  requests and the origin check, the R2 host for the shared recordings' uploads (as in 3.x).
+- If your page sets `Permissions-Policy`, keep `microphone=(self)` for `listen()`.
 
-Session options: `context`, `sampleRate` (for pushed audio only; 16000 by default), `heads` (a list of
-names or `'all'`), `backend` (`'auto'` or `'cpu'`), `topK`, `endOnSilenceMs` (off, or 100 to 60000),
-`pace` (`listen({ from })` only), and `onChunk` / `onEvent`, which get what `session.chunks` and
-`session.events` yield.
+Nothing else of yours needs to change: the engine, the model download and the requests to Quran Lab run inside the
+frame, under Quran Lab's own headers.
 
-### What a chunk carries
+## How it works
 
-Every 320 ms of audio (160 or 480 ms in the other contexts) a chunk arrives:
+1. `create()` adds a hidden iframe `https://web.quranlab.ai/4/frame/<your key>` (and, when it has not answered within
+   4 seconds, the same frame from `https://web2.quranlab.ai` beside it; the first to answer stays). Quran Lab's server
+   answers it with `Content-Security-Policy: frame-ancestors <your key's origins>`, so it loads nowhere else.
+2. The frame runs only inside a page (never top-level, never in a window opened with `window.open`), and learns your
+   origin from the browser alone: the origin the browser stamps on your page's answer to its hello, checked against
+   the browser's own ancestor list where it has one. Then it starts its Worker and hands it a direct channel to the
+   loader. From then on your page and the Worker exchange audio and results only.
+3. The Worker makes the install keys (WebCrypto, not extractable), registers, reads the signed config, loads and
+   verifies the engine build named for your site, and asks for a lease, 24 hours at most: the first one passes
+   Cloudflare Turnstile on Quran Lab's hostname, invisibly. A learner never sees a check or a box. When the check gives
+   no answer or Turnstile is down, the learner still gets a lease, of the 24-hour class, and the next lease checks
+   again; only a token made for another site is refused.
+4. **The lease is kept across page loads** in the frame's storage for your site: the keys as non-extractable WebCrypto
+   keys, the Core's state sealed under another non-extractable key. A reload within the lease's 24 hours opens the
+   model with no request to Quran Lab's lease service, also offline; the lease is renewed in the background after about
+   12 hours. A device clock set back by more than an hour, another site, or a refusal from Quran Lab makes it ask again.
+5. **When Quran Lab cannot be reached** (no answer, a server error, "too many requests") after a lease has ended, the
+   model keeps opening for up to 24 hours more; a refusal from Quran Lab ends this at once. An open past the end of the
+   lease first asks for a new one and waits at most 10 seconds. Each such open is reported; your page gets no error.
+6. The model's files arrive encrypted, are checked against the signed manifest, and the Core converts each once
+   into its device form; only ciphertext is stored (the origin private file system of the frame, partitioned by
+   your site: each site downloads the model once). A download that stalls for 30 seconds or breaks goes on from the
+   bytes it has, up to 5 times in a call, and a later call goes on from the 4 MB blocks kept.
+7. Each open decrypts into the engine's memory; each chunk runs the same engine as 3.x, at the same speed.
 
-| Field | Meaning |
-| - | - |
-| `index`, `startMs`, `endMs`, `firstFrame` | Where the chunk is in the take. |
-| `backend` | The Backend that ran it. |
-| `speech` | True when the chunk holds speech frames. |
-| `heads` | The Heads of this chunk only. |
-| `decoded` | The decoded layer of the take so far, ready to show. |
+## Measured (dev PC, Intel i9-14900KF, one thread)
 
-The decoded layer: `text`; `tokens` (each `id`, `name`, `firstMs`, `peakMs`, `lastMs`, `confidence`);
-`words` (tokens split at the word bar); `frames` (top-1 and runner-up with their log-probs and the margin,
-and the `topK` best when the option is set); `settled`, the count of leading tokens that will not change
-in this take (the last token can still grow while its sound goes on); and `isFinal` on the last one. A
-time is the start of a 40 ms frame, so a token covers `firstMs` to `lastMs + 40`.
+| | SDK 4.0 | current web SDK (3.1.3 engine) |
+|-|-|-|
+| Loader | 54.2 KB, 18.9 KB gzip | |
+| Sharing chunk (loaded by the page) | 245.4 KB, 72.6 KB gzip, plus the Opus encoder 0.32 MB | |
+| Frame page, frame script, Worker | 0.9 KB + 3.5 KB + 115.7 KB (39.5 KB gzip; the Ed25519 fallback is 6.0 KB of it) | |
+| Engine | 2.32 MB WebAssembly (1.92 MB gzip) + 15 KB glue; threads build 2.34 MB | 0.67 MB |
+| Model open (files on the device), Node 22 | 136 to 162 ms | 30 to 39 ms |
+| New page session to a ready model (keys, attest, config, lease, open), Node, API in memory | 168 to 191 ms | |
+| First visit of a site: install of 57 MB ciphertext (Core) | 1.19 to 1.29 s | |
+| Per 320 ms chunk, mean over a 20 s clip, Node | 30.8 to 38.1 ms | 32.8 to 37.0 ms |
+| Chrome (headless), first visit, local servers: create to a ready model | 2.26 s | |
 
-### Heads
+The open is about 110 ms longer than today's because the device form is decrypted (ChaCha20-Poly1305 in
+WebAssembly) into the engine's memory; per chunk nothing changes. Runs on a shared machine: the
+ranges are three interleaved runs each.
 
-Twelve heads, the same names on every platform. A Session computes `log_probs`, `inter1_log_probs`,
-`timing_log_probs`, `gem`, `attr_qalqalah` and `conf` unless `heads` names others (`log_probs` is always
-computed: the decoded layer and the speech events come from it).
+## Recited ayat and your app's judgement
 
-| Head | Kind | Frame | Classes |
-| - | - | - | - |
-| `log_probs`, `inter1_log_probs`, `inter4_log_probs` | `ctc` (log-probs over the 38 tokens) | 40 ms | 38 |
-| `id_log_probs`, `timing_log_probs` | `ctc` | 20 ms | 38 |
-| `gem` | `attribute` (probabilities) | 20 ms | 2: single, held |
-| `attr_tafkheem` | `attribute` | 20 ms | 3: thin, heavy, low heavy |
-| `attr_ghunna` | `attribute` | 20 ms | 5: none, plain, geminate, ikhfa, idgham |
-| `attr_qalqalah` | `attribute` | 20 ms | 3: none, sughra, kubra |
-| `attr_face` | `attribute` | 20 ms | 4: none, imala, tasheel, sakt |
-| `boundary`, `conf` | `attribute` (one logit) | 20 ms | 1 |
-
-`heads.get(name)` gives `{ name, kind, frameMs, frames, classes, values }` (`values` a `Float32Array`,
-`frames x classes`, row major), or null for a head the take did not compute. `heads.greedy(name)` gives a
-CTC head's tokens (collapsed, blank removed) with `firstMs`, `peakMs` and `lastMs`.
-
-### Events
-
-`session.events` is one stream of what happened to the take:
-
-| Event | When |
-| - | - |
-| `speechStarted` (`atMs`) | The model emitted a token after silence. |
-| `speechEnded` (`atMs`, `silenceMs`) | Silence after speech: 1.5 s, or `endOnSilenceMs`. With that option the take finishes here. |
-| `interrupted` (`cause`) | `listen` only. `interruption`: the system took the audio (a call, another app); nothing is read until `resumed`. `routeChange`: another input device; the microphone is opened again and the take goes on. |
-| `resumed` | The interruption ended. |
-| `ended` (`reason`) | The take ended without your `finish()`: `silence`, `hidden` (the page was hidden or left), `interrupted` (the input went away), `sourceEnd` (the clip ran out), `limit` (the take reached 20 minutes of audio), `error` (with a `TajweedError`). The last chunk has `isFinal`, `chunks` ends, and `finish()` gives the take's Heads. |
-
-A take holds at most 20 minutes of audio: there it ends by itself (`ended: limit`) with everything up to the
-limit decoded and its Heads kept, and a later `push` is `session_closed`. `chunks` keeps at most 256 chunks and
-`events` at most 64 events waiting for a reader; when full, the oldest waiting one is dropped (the last chunk
-and `ended` never are, each chunk's `decoded` is the take so far, and `finish()` returns the whole take).
-`client.diagnose()` counts the dropped chunks. A microphone take whose device decodes slower than real time
-ends with `engine_failed` once 30 s of audio wait for the engine.
-
-Speech and silence come from the model's own output, by one definition for the events, `chunk.speech` and the
-usage statistics: a 40 ms frame is speech when the recognition head (`log_probs`) or the timing head
-(`timing_log_probs`) shows a sound on it. The recognition head shows a sound for a moment and is blank while
-the sound is held; the timing head holds it for as long as it sounds. So a held vowel is speech throughout (a
-madd of six counts lasts seconds), and silence is counted from the last frame with a sound: `speechEnded`
-comes when the window has passed after it (1.5 s by default), within one chunk more. The SDK computes the
-timing head on every Session for this, also when your `heads` leave it out; you get it only when you select
-it. `endOnSilenceMs` is off (absent, `null` or 0) or a whole number from 500 to 60000.
-
-A hidden page ends a `listen` take: the SDK never holds the microphone in the background. Start a new
-take when the page is visible again (one line, in the example).
-
-## Running without a microphone
-
-The model carries a few short sample clips. `model.sampleClips` lists them (`name`, `kind`,
-`durationMs`), and `listen` takes one in place of the microphone, at real-time pace or as fast as possible:
+The SDK works out which ayat a take recited by itself (in the Core) and counts them into your anonymous daily
+totals. `session.reportRecited(surah, ayahFrom, ayahTo)` is the fallback: it is used only for a take the SDK could
+not count, and a take is never counted twice. If your app judges a recitation, pass the result with the same call:
 
 ```js
-const session = await model.listen({ from: model.sampleClips[0], pace: 'fast' });
-for await (const chunk of session.chunks) console.log(chunk.decoded.text);
+session.reportRecited(2, 255, 257, {
+  outcome: { correct: false, mistakes: 2, rules: ['madd', 'qalqalah'] },   // the whole range
+  perAyah: { 255: { correct: true } },                                     // overrides per ayah
+});
 ```
 
-`listen({ from: samples, sampleRate })` does the same with a `Float32Array` you already have. The take
-ends with `ended: sourceEnd` when the audio ran out. This is how the examples, CI and a coding assistant's
-check show real output on a machine with no microphone. In Node `listen()` without `from` fails with
-`microphone_unavailable`. Apps that only want samples use `Microphone.open()`, `mic.sampleRate`,
-`mic.samples()` and `mic.close()`.
+These numbers are your app's own judgement; Quran Lab's SDK does not judge a recitation. A take's record is kept in
+the frame's IndexedDB so that a closed tab or a crash loses at most a few seconds of a take, and the take is counted
+once at the next visit.
 
-## Ready before the learner taps
+The SDK keeps anonymous daily totals for your statistics at sdk.quranlab.ai: sessions and takes, seconds of audio and
+of recitation, the ayat recited per surah and per juz, the hour of the day in the learner's own time, how long takes
+and sessions are (a session is one page visit), how many installs were active and came back, and how the model ran on
+the device. Nothing is kept per learner: no audio, no text, no ayah numbers, no identifier, no location beyond the
+country the request came from. The device keeps its own list of the days it was used, in the frame's storage, to
+work out those totals, and that list never leaves the device.
+
+These anonymous totals are always kept: SDK 4.0 has no option to turn them off, because they are daily counts and
+durations only, never audio, text, names or device identifiers. Only Quran Lab can switch them off, from its signed
+config. (3.x had `analytics: 'off'`; in 4.0 an `analytics` passed to `create()` is refused with `invalid_argument`,
+whose message points to [docs/migrating-to-4.md](docs/migrating-to-4.md): delete it.)
+
+## Recitation sharing
+
+Every learner is asked, on the SDK's sheet in your page (`<quranlab-consent>`), under the rules below, and the choice
+is theirs: they can say "Not now", and they can turn sharing off or delete what they shared at any time
+(`<quranlab-sharing-settings>`, `client.sharing`). A learner who says yes is never asked again. No app is exempt and
+no option of yours changes this. The sheet's wording comes from Quran Lab's server and the version the learner agreed
+to is recorded with every shared recording. The code runs in your page, loaded by the loader as a separate chunk it
+checks by hash, and Quran Lab's frame holds nothing of it. Quran Lab's signed config keeps one switch over sharing,
+`flags.contributions`: a global incident switch that pauses sharing for every app at once.
+
+When the SDK asks is gentler in 4.0. The first ask is the full sheet, never in the first 24 hours after the install,
+never before the learner's 3rd completed session, and only at the end of a good session (a take that ended normally,
+with at least a minute recited in this visit), once the moment has settled (3 seconds with no new take). After
+"Not now" a re-ask is a small card at the bottom of the page, "Your recitation today could help another learner
+tomorrow.", with "See how it helps" (the full sheet, where consent is given) and "Not now"; it blocks nothing and
+takes no focus, and it goes when a take starts or the page is hidden. The card comes only when both 14 days and 7
+completed sessions have passed since the last ask, the next one after 30 days and 10 sessions. Three asks at most,
+ever (the sheet and two cards). `client.sharing.ask()` asks at your app's own moment only when an ask is due by these
+rules (without the minute), never before a completed take of the visit and never during a take; otherwise it
+resolves with null and shows nothing. Quran Lab's signed config can make asking rarer, never more frequent.
+
+Every app shows the same sheet, under the same rules; no option selects another. (3.x had an `audience` option; in
+4.0 an `audience` passed to `create()`, whatever its value, is refused with `invalid_argument`, whose message points to
+[docs/migrating-to-4.md](docs/migrating-to-4.md): delete it.) A learner who already said yes in 3.x keeps that yes
+and is never asked again.
+
+## Threads
+
+One thread by default. For the threads engine your page must be cross-origin isolated (serve it with
+`Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` or `credentialless`, and
+every resource it loads with CORS or `Cross-Origin-Resource-Policy`), and ask for it:
+`TajweedClient.create({ key, threads: 'auto' })`. The loader then gives the frame `allow="cross-origin-isolated"`
+and asks Quran Lab for the isolated frame; on a device with 4 or more cores the frame runs the threads build.
+
+## Node
+
+A desktop app (for example a tool that listens to a live stream) runs the same API in Node 20 or later, with a
+**desktop key** and the app id you gave it at sdk.quranlab.ai:
 
 ```js
-await client.prefetch({ unmeteredOnly: true, onProgress: ({ bytesDone, bytesTotal }) => {} });
-const model = await client.model();        // opens and warms the engine; call it early
-console.log(await client.storage());        // { models: [{ version, build, bytes }], sharingQueueBytes }
-console.log(await client.diagnose());       // one report, safe to paste into an issue
+import { TajweedClient } from '@quran-lab/tajweedformer';   // the package's `node` condition (or '.../node')
+
+const client = await TajweedClient.create({ key: 'qlk_v1_...', appId: 'org.example.live' });
+const model = await client.model();
+const session = model.session();          // push Float32Array samples at 16 kHz (or say sampleRate)
+session.push(samples);
+const heads = await session.finish();
+await client.close();
 ```
 
-- `prefetch` downloads and verifies the model ahead of use. It resumes after an interruption and does
-  nothing when the model is already here. With `unmeteredOnly` it waits on a metered connection (cellular, or
-  the browser's data saver) and with none, and downloads on an unmetered one. The option cannot be honoured
-  where the runtime cannot tell: Safari and Firefox have no Network Information API, Chrome on a desktop gives
-  no connection type, and Node has neither. There `diagnose().connection` is `unknown` and the model is
-  downloaded.
-- A first run with no network fails with `needs_connection`, at once. After one download every start works
-  offline.
-- `client.model('4.0.0')` pins a model version; without it Quran Lab's config chooses. `model.version` is
-  the version, `model.build` the build id (for diagnostics only).
-- `client.removeModels()` removes the model files, never the consent state or the sharing queue.
-- `client.diagnose()` reports the SDK version and whether a newer one exists, whether the key was accepted,
-  whether the signed config is fresh, the model's version and build, the context and backend in force, the
-  microphone permission, storage, the code of the last error, the chunks dropped unread, and the connection
-  (`unmetered`, `metered`, `none` or `unknown`). No audio, text or identifier is in it.
+- **No frame, no page.** The Core, its lease and the model's ciphertext live in a worker thread of your process, so a
+  take never holds up your event loop. Audio comes in as samples (`session.push`, or `model.listen({ from })`).
+- **The same signed engine** as the web frame: fetched from Quran Lab, its Ed25519-signed index and every file's
+  SHA-256 checked, kept in the storage folder and checked again at every start.
+- **Where files live:** `storage` (a folder), by default your OS's cache folder, then `quranlab/tajweedformer/<appId>`
+  (`%LOCALAPPDATA%` on Windows, `~/Library/Caches` on a Mac, `$XDG_CACHE_HOME` or `~/.cache` on Linux). It holds
+  ciphertext only, the signed engine, the SDK's small state, and the install keys, sealed under a key made from this
+  machine's id and the user's id (mode 0600): a folder copied to another machine does not open there, and the app
+  starts as a new install. One Client per folder in a process.
+- **Leases:** the desktop class, 24 hours. The lease is kept across runs, so a run within its 24 hours starts with no
+  request to Quran Lab's lease service, and with no network at all when the model is already in the folder. When Quran
+  Lab cannot be reached after the lease has ended, the model keeps opening for up to 24 hours more, as on the web.
+- **The honest limit:** a desktop key file is protected by software only (`hw 0` in its certificate). On a machine the
+  developer controls, the protection is the Core's: the model is never written in plaintext, and the lease opens it
+  only in this folder on this machine.
+- No recitation sharing in Node (it needs the consent sheet in a page): `client.sharing.isAvailable` is false.
 
-## Calibration and reference data
+## What 4.0.0 does not do yet
 
-Two pieces of read-only data come with the model for apps that build their own judge. The SDK never
-applies either one.
+- **Expected units per ayah** (`model.reference`): read by the Core from the build's reference data, downloaded with the
+  model; null only for a build that has none.
 
-**`model.calibration`** is `calibration.json` exactly as shipped (null when the model has none):
-`text` (the file), `json` (parsed, frozen), `sha256`, `format`, `contexts`, `classes`, `presets`,
-`context(name)` and `threshold(context, class, preset)`. What is in it:
+## The honest limit
 
-- `classes`: the kinds of single-unit difference a judge can test (`vowel_sub`, `vowel_del`, `vowel_ins`,
-  `short_to_long`, `long_to_short`, `cons_sub`, `cons_del`, `insertion`); `presets` (`strict`, `balanced`,
-  `sensitive`, `very_sensitive`), each with its target false-alarm rate.
-- `contexts.<ctx>.fusion`: the heads the site thresholds apply to (`log_probs` and `inter1_log_probs`), the
-  weight `a` per class (`llr = a * llr(log_probs) + (1 - a) * llr(inter1_log_probs)`), how `inter1_log_probs`
-  is prepared (the word bar merged into blank) and the clip of the LLRs.
-- `contexts.<ctx>.sites.<class>.thresholds.<preset>`: a threshold in nats on the fused LLR, which is
-  log P(best single-unit alternative) minus log P(expected sequence) by a full-sequence CTC forward on the
-  take's heads. A judge flags a site when the LLR is above the threshold. `status` says whether the class is
-  `validated`, `experimental` or `off`.
-- `contexts.<ctx>.madd`, `qalqalah`, `gemination`, `word`: the cuts and taus for counting a long vowel from
-  `timing_log_probs`, for qalqalah from `attr_qalqalah`, for gemination from `gem`, and for a per-word score.
+A model that runs on a device can be taken by someone who controls that device and has the skill and the time. The
+goal of 4.0 is that a key, an AI agent, a copied folder or a script gets nothing usable, and that taking the model
+needs an expert, weeks, and a new effort for every release.
 
-**`model.reference`** is the table of the expected units of each ayah (null when the model build has none).
-It is not part of the model download: `await model.reference.fetch()` downloads and verifies it once
-(`isDownloaded` says whether it is here), and `await model.reference.units(surah, ayah)` gives
-`{ units, words, wordCount }`: the unit ids in reading order with the word bar between words, and each
-unit's word. The ids are those of `model.tokens`. Before the fetch `units` fails with `reference_missing`.
-The SDK never aligns the units with a take and never compares them with one.
+## Build and test
 
-A judge needs the heads of a take (`session.finish()`), the vocabulary (`model.tokens`), the expected units
-(`model.reference`) and the thresholds (`model.calibration`); the alignment and the LLRs are yours to
-compute. [docs/migrating-to-3.md](docs/migrating-to-3.md) describes them.
-
-## Analytics your app can add
-
-The SDK counts what it measures itself (takes, minutes, speech and silence, latency, tokens). What it can
-no longer know without a judge, your app may report; nothing is sent if it does not:
-
-```js
-session.reportRecited(1, 1, 7);                       // surah, first ayah, last ayah of this take
-client.analytics.reportChecks('vowel_sub', 31, 1);    // your judge: rule, times checked, times flagged
+```sh
+npm install
+python scripts/build_web4.py engine --core <quranlab-core at f006676 (Core 4.0.0-c3)> --emsdk <emsdk> --work <scratch> --test-key
+python scripts/build_web4.py hosted            # dist/hosted/4: loader, frame, Worker, build.json (SRI)
+QL_CONTRACT=<quranlab-contract at 1c971ab>/sdk_4.0.0 QL_TEST_BUILD=<protected test build sdk/v4.0> npm test
+python scripts/build_web4.py hosted --test && QL_TEST_BUILD=... node scripts/browser-web4.mjs
+QL_TEST_BUILD=... node scripts/bench-web4.mjs <clip.f32>
 ```
 
-Both go into the day's anonymous totals (ayahs per surah; checks and flags per rule) and are marked as
-reported by the app. A value out of range is the error `invalid_argument`.
-
-## Delivery
-
-`client.model()` fetches only what a browser needs from the signed manifest of the build Quran Lab's config
-names: `tokens.txt`, `calibration.json`, the shared `layers.zfw` and `frontend.zfw`, and the context's graph
-and `frames.zfw`. Never CoreML or NPU files, the ONNX graphs, the other contexts, the reference table or
-the sample clips (those come when asked for). Big files travel gzip: 56.5 MB for c16_l64 (73.5 MB stored);
-another context later adds 0.65 to 0.86 MB. Files come in 4 MiB ranges, resume after an interruption, are
-checked against the manifest's size and SHA-256 (as stored and as decoded), and are kept by SHA-256 in the
-Cache API (IndexedDB where there is none; a folder in Node, `storage` in the Client's options). A second
-start reads only the manifest from the network, and none of it when offline.
-
-The manifest is signed by Quran Lab (Ed25519) and names the model version. The SDK checks, in this order:
-the build the config named, the manifest's shape, the signature, that it has a version (a build for SDK 2.x
-has none: `model_incompatible`), its minimum SDK version, and the version the config named.
-A model comes only from Quran Lab's server, through the Client (3.1.0): the SDK has no call that takes a
-model as a folder, a URL or bytes. The Client opens only a build it downloaded itself on this device. It
-keeps a record of each download, bound to the device (in a browser with a key that cannot be exported, kept
-in IndexedDB; in Node with a key derived from the machine and the user), and model files that are in its
-storage without a valid record are deleted and downloaded again.
-
-Where that key cannot live as usual (3.1.3):
-
-- **A browser that blocks the site's storage** (cookies and site data blocked, for the site or for every
-  site: IndexedDB and the Cache API are there and refuse) keeps nothing, so the model is downloaded at every
-  visit and runs from memory for that page load. A private window is not such a browser: it keeps the model
-  until it is closed.
-- **Node on a machine whose id cannot be read** (a container without `/etc/machine-id`): the key is a random
-  key file, `models/device/key` in the SDK's folder (`storage`), made at the first download. Such a machine
-  is bound by that key file alone, and a copy of the folder carries it. Keep the folder on a volume and every
-  container that mounts it opens the model with no download. The host name is no part of any key.
-- **Node on Windows and macOS** reads the machine id with a command of the system (`reg`, `ioreg`). The SDK
-  keeps the answer in its folder and uses the kept one when a later read fails or times out, so a slow start
-  does not cost a download. A folder carried to another machine is not that machine's: the model is
-  downloaded once there.
-
-The response time is the model's context: `c8_l64` (160 ms chunks), `c16_l64` (320 ms, the default),
-`c24_l72` and `c24_l256` (480 ms). A Session runs on the `context` option when your app sets it, else on the
-one chosen for the app on sdk.quranlab.ai (the signed config's `inference.context`), else on the model's
-default. Another context's files are fetched on first use.
-
-## Client
-
-```js
-const client = await TajweedClient.create({ key, appVersion: '1.0.0', analytics: 'on', audience: 'general' });
-```
-
-- **Keys:** a web key works only from the origins you gave it on sdk.quranlab.ai. In Node use a desktop
-  key and pass `appId` (your app id) and, if you like, `storage` (a folder).
-- **Model requests:** every request for a model file carries the install's token
-  (`authorization: Bearer <token>`) and the key. A token that has run out is renewed once and the request
-  repeated once; a redirect is never followed.
-- **A refused app:** when an answer of Quran Lab refuses the key or the app with one of the reasons
-  `key_revoked`, `key_unknown`, `app_not_allowed`, `origin_not_allowed`, `key_type_mismatch`, `app_blocked` or
-  `developer_not_approved`, `client.model()` and `client.prefetch()` fail with that refusal's error
-  (`invalid_key` for a revoked or unknown key, else `server_rejected` with the reason), also when the model is
-  on the device and also at a later start without a network, until Quran Lab accepts the key again; a refusal
-  of a model request ends only when a later model request is served. In a page, a refusal that the browser
-  hides (Quran Lab answers CORS only for a key's own origins) is read from the origin check and counts the
-  same. A Model that is already open keeps running until your app closes it. An answer without one of these
-  reasons never stops a model on the device: no connection, a failure or a limit of the server, `sdk_too_old`,
-  `invalid_key` without a reason.
-- **A refused app's model is removed:** when Quran Lab refuses the key or the app (a revoked key, a paused or
-  blocked app), the SDK stops running the model and removes the downloaded model from the browser. Once the
-  key is accepted again the model is downloaded again. It removes what `removeModels()` removes, in the Cache
-  API and in IndexedDB, and nothing else (the sharing state and unsent recordings stay). The SDK asks for
-  model files with `cache: 'no-store'`, so the browser's HTTP cache holds no copy of them; a copy your own
-  service worker kept is yours to remove. Another tab of the same origin that has a Model open keeps it running
-  from memory; once that tab closes it, its next `client.model()` finds the stored refusal and fails with it.
-- **Signed config:** Ed25519 over the exact bytes with Quran Lab's pinned key id, `expires_at` checked,
-  ETag revalidation; a config that fails is ignored and the last good one stays. Where the browser's WebCrypto
-  has no Ed25519, the SDK verifies with the vendored @noble/ed25519 2.3.0 (MIT, `web/third_party`). When the
-  device clock is off by more than five minutes from the server's time (the answer's `Date` header),
-  `expires_at` is judged by the server's time; a config the server's clock calls expired is never accepted.
-- **Telemetry:** on by default, anonymous by construction: sums and histograms only (takes, minutes of
-  audio, speech and silence, latency and real-time factor, load times, tokens per head, margins and
-  confidence, launches, how often the sharing sheet was shown, accepted and declined, and what your app
-  reports). No audio, no text, no identifiers, no time finer than the UTC day. It is sent as deltas during
-  the day: every 15 minutes while the page is visible, when it is hidden or left, and at launch. Quran Lab
-  can switch it off for your app; you can with `analytics: 'off'`.
-- **Foreground and background:** automatic in browsers. In Node call `client.background()` and
-  `client.foreground()`.
-- **Newer SDK:** in development the SDK logs once per load when Quran Lab's signed config names a newer SDK.
-  Production stays silent.
-- What the SDK sends, when, and what your app can change: [docs/platform-client.md](docs/platform-client.md)
-  (the same page in every TajweedFormer SDK).
-
-## Errors
-
-Every failure is a `TajweedError` with `code` (stable, the same in every TajweedFormer SDK), `message`,
-`fix` (one sentence you can act on) and `docs` (`https://sdk.quranlab.ai/docs/errors#<code>`). The codes:
-`invalid_argument`, `invalid_key`, `sdk_too_old`, `server_rejected`, `client_exists`, `model_unavailable`,
-`needs_connection`, `network_not_permitted`, `download_failed`, `storage_full`, `storage_failed`,
-`model_missing`, `model_invalid`, `signature_invalid`, `checksum_mismatch`, `model_incompatible`,
-`reference_missing`, `session_open`, `session_closed`, `cancelled`, `engine_failed`, `microphone_denied`,
-`microphone_unavailable`, `interrupted`, `sharing_unavailable`, `runtime_unsupported`. `model_unavailable`
-means Quran Lab has no model build for this SDK version yet: nothing to change in the app.
-
-- **A refusal says what to do.** When Quran Lab refuses the app, the error is `server_rejected` and its
-  `message` and `fix` are the ones of the reason: the account has no access yet, the key is of another type
-  or environment, the key belongs to another app (a key works for the first app that used it; for a page that
-  is its origin), the page's origin is not on the key, or a production key is used on a local address. Show
-  the message and, under it, the fix.
-- **An origin that is not on the key.** A browser gives such a page no answer from Quran Lab at all, which
-  looks like no network. When a request gets no answer, the SDK asks Quran Lab's origin check once per page
-  load and raises the refusal it names; `needs_connection` is raised only when that check cannot be reached
-  either. A page that works never calls it.
-- **`runtime_unsupported`** is a browser or a Node without something the SDK needs; the message names it
-  (WebCrypto, for one; since 3.1.6 Ed25519 in WebCrypto is not needed). `network_not_permitted` belongs to the other TajweedFormer SDKs; this one
-  does not raise it.
-
-## Recitation sharing (the learner opts in)
-
-```js
-const sharing = client.sharing;
-document.querySelector('quranlab-sharing-settings').client = client;   // the SDK's settings element
-```
-
-Whether sharing is offered is Quran Lab's decision, per app, in the signed config (`sharing.isAvailable`).
-Where it is offered, the SDK shows its own consent sheet (`<quranlab-consent>`, right-to-left where the
-language is) after a finished take in which the model heard speech, never on first launch, and at most
-three times per install ("Not now" is asked again at most twice, seven sessions apart). A learner who said
-"Share", or who turned sharing off, is never asked again; a yes is kept, with the consent version agreed
-to, across copy decks, wording changes and SDK upgrades. Offered is never consent: nothing is recorded for
-sharing before the learner answers "Share". A learner who agrees shares each whole take while the SDK
-listens (Ogg Opus, uploaded in the background, resumable).
-
-| Member | Meaning |
-| - | - |
-| `isAvailable` | Quran Lab's config allows sharing for this app. |
-| `isOn` | The learner said yes. |
-| `setOn(on)` | The settings switch. Off aborts every upload request in flight and deletes the unsent queue; the SDK starts no request after the call (what the browser or the system had already buffered of the segment in flight may still go out). It returns a promise that resolves when the queue is gone (within 3 s, whatever was in flight). A recording that was waiting when sharing was turned off is never uploaded later (3.0.2): it is deleted at the off, also in a page that has not recorded a take, when the page starts and before every upload pass. |
-| `ask()` | Ask now, at your own moment, if an ask is still allowed. |
-| `feed(samples, sampleRate)` | Audio your app already captures outside takes (see below). |
-| `items()` | The outbox: each recording's status (a promise). |
-| `summary()` | The learner's summary, for a thank-you line. |
-| `delete()` | "Delete what I shared". Only this browser's non-extractable key can sign it: no app key or token can delete a learner's recordings. The first thing the call does is to stop the uploads and to store the learner's answer as off, so a page that is closed while Quran Lab is asked starts with sharing off (3.0.2); `isOn` does not change until Quran Lab has answered. When Quran Lab accepts, the unsent queue is deleted too and sharing is off (`isOn` false, since 3.0.1): the learner turns it on again with the switch, is not asked again, and shares under a new contributor from then on. When Quran Lab does not take it (an error, or no answer), the promise rejects and nothing changed: sharing is still on and the queue goes on. |
-| `recoveryCode` | The code for deletion when the device is lost. |
-| `setWording(overrides)` | Your own wording, `{ 'sheet.title': '...' }` with the deck's keys; `null` restores the SDK's. The learner then agrees to your text, recorded under its own consent version. |
-
-The sheet is the same design as on Apple and Android: the emblem and the name Quran Lab, the title, the
-body, one card with what is shared, who receives it and how to stop, the hadith, and a bar that stays in
-view with two buttons of the same size. A bottom sheet under 600 px wide, a centred card up to 480 px wide
-above that; light and dark follow `prefers-color-scheme`. Its sizes follow the browser's text size, and
-nothing of the page's styles changes its type. The sheets take these CSS custom properties (on the element,
-on an ancestor, or through `theme`): `--ql-accent` (the share button, "Not now" and the icons; the tints are
-made from it), `--ql-accent-fg` (the share button's label; by default white when white has 3 to 1 against the accent, else near-black), `--ql-bg`, `--ql-fg`, `--ql-muted`, `--ql-radius` (the sheet's corners, 28px by
-default; the cards, buttons and emblem follow it), `--ql-font` and `--ql-title-font` (font families). An accent under 3 to 1 against its tint gives "Not now" and the emblem's glyph the text colour, and under 3 to 1 against the card the icons too; under `prefers-contrast: more` that bar is 4.5 to 1. A theme never
-changes the words, hides a line or changes the consent version. A call that needs sharing while it is not
-offered fails with `sharing_unavailable`.
-
-**Takes in a row are one recording.** An app often stops and starts takes while the learner keeps reciting.
-When a take ends, the shared recording stays open for a few seconds (3 s by default): a take that starts
-in that time at the same sample rate continues the same Ogg stream. The recording closes when no take
-follows in time, when the page is hidden, or when sharing is turned off. A recording never holds more than 20
-minutes: where its audio reaches that, also inside a take, it closes as a whole recording and the take goes on
-in a new one.
-
-**Lead-in and tail.** A `listen` take captures only between `listen()` and the end of the take, and that is
-what is shared. If your app pushes its own audio and keeps capturing between takes, hand that audio to
-`sharing.feed(samples, sampleRate)`: the SDK keeps the last second of it in memory and puts it before the
-next take, and adds up to half a second after a take, so a shared recording does not begin or end in the
-middle of a word. Without a yes, or with sharing off, fed audio is dropped at once. The model never sees it.
-After every take the recording stays open for that tail for 1.5 s, and only audio you feed goes into it: the
-SDK's own microphone is closed when a `listen` take ends and is never kept or reopened for a tail.
-
-**Bitrate on bad networks.** Opus starts at 192 kbit/s and steps down (96, 64, 32 kbit/s) when uploads fail
-for network reasons or the queue backs up, and back up when they succeed again.
-
-Web uploads run at the platform's lower trust tier (the web key's origin lock, per-key and per-learner
-caps). Browsers upload straight to storage, which needs the bucket's CORS rule for your origin (a Quran Lab
-launch step).
-
-## Platform notes
-
-- **Off the main thread.** In browsers the engine runs in a Worker (a module Worker the SDK starts
-  itself): a chunk of inference never blocks your page. `session.push` posts the audio to it, and chunks and
-  events come back as messages, which is why everything a streaming UI needs arrives with the chunk and
-  there is no "output so far" call. In a browser without module Workers, and in Node, the engine runs in
-  the calling thread.
-- **Bundlers.** `vite build` works with no line of config ([examples/vite](examples/vite/README.md); `npm run
-  example:build` builds it in CI). Nothing a bundler follows from the browser entry imports a Node built-in:
-  Node gets its own entry through the `node` condition of the package's `exports`. The Worker and the
-  WebAssembly files are referenced with `new Worker(new URL(..., import.meta.url), { type: 'module' })` and
-  `new URL(..., import.meta.url)`, which Vite, webpack 5 and Parcel resolve; the microphone's AudioWorklet is
-  made in the page and needs no file. Without a bundler, serve `web/` and `dist/` as they are.
-- **Secure context.** `https`, or `http://localhost`: a browser gives the microphone and WebCrypto to
-  nothing else, and the microphone needs a tap or a click.
-- **What is collected.** Anonymous usage statistics (no audio, no text, no identifier), and, only after
-  the learner's yes on the SDK's sheet, the audio of takes. The details and what your privacy notice should
-  say are in [docs/platform-client.md](docs/platform-client.md).
-
-## Exactness
-
-The engine gives the same tokens and the same bits for every value of every head of every chunk as
-the reference (ONNX Runtime's ARM int8 run of the published model), checked on the 35 conformance
-clips. This package is checked through its own engine host (`npm test`, where the model files are staged):
-
-| Check | Node 22 |
-| - | - |
-| c16_l64 audio, 12 outputs every chunk, vs ONNX Runtime armv7 | 35/35 |
-| c8_l64 audio (160 ms), the same, vs ONNX Runtime armv7 | 35/35 |
-| c24_l72 and c24_l256, vs the native engine | 35/35 each |
-| The engine's top-2 and top-K vs the SDK's ranking | 35/35 and 5/5 |
-| Sample clips through `listen({ from })` vs the self-test file (two contexts) | 10/10 |
-| Reference lookup vs the table | 6236/6236 ayahs |
-| Shared vectors (manifest, speech, settled, telemetry, context) | all cases |
-
-`npm test` runs the Node checks; `npm run test:browser` runs the quick start page in headless Chrome with a
-fake audio device, the engine in its Worker.
-
-## Build from source
-
-Needs the [Emscripten SDK](https://emscripten.org) 6.0.11 on `PATH` and the engine
-(`git clone --recurse-submodules`, or `TAJWEEDFORMER_SDK_DIR` pointing at a checkout).
-
-```bash
-npm run build          # dist/tajweedformer.mjs + .wasm: the engine with the TajweedFormer binding
-npm run build:opus     # dist/tajweedformer-opus: libopus for recitation sharing (loaded lazily)
-npm test
-npm run test:browser   # headless Chrome (CHROME=path)
-```
-
-## Download size
-
-A page downloads only the CPU profile of the model folder (`sdk/v4.0`, manifest format 3), gzip on the wire
-(inflated with `DecompressionStream`), resumable, every file checked against the signed manifest, and caches it
-(Cache API or IndexedDB; a directory in Node). Model revision v4.0-2026-11-10, default context `c16_l64`:
-**55.5 MB** (68.1 MB decoded); another context later adds 0.65 to 0.86 MB. The opt-in
-sharing encoder (libopus in WebAssembly, 316 KB) loads only for the first shared session.
+The tests use the contract's test keys (a default build of the Core is its test release, 4.0.0-c1) and a local
+stand-in for Quran Lab's API and CDN; they never call a production endpoint. CI runs them on Quran Lab's own runner
+(`.github/workflows/ci.yml`). `docs/server-for-web-4.md` is what Quran Lab's CDN Worker serves; `docs/core-requests.md`
+lists what this SDK asks of the Core.
 
 ## Problems and wishes
 

@@ -1,5 +1,5 @@
-// Recitation sharing in 2.0.1: Quran Lab's signed config decides whether the sheet is offered (not the app's
-// `contributions` option), consent is never assumed, and a learner's "Share" really gets a session uploaded
+// Recitation sharing in 2.0.1: the signed config (Quran Lab's incident switch), never the app's `contributions`
+// option, says whether the sheet can be offered, consent is never assumed, and a learner's "Share" really gets a session uploaded
 // through the SDK's own wiring (QuranLab -> enableSharing -> createSharingSession -> outbox -> PUT). In 2.0.0
 // that wiring never uploaded anything (the telemetry device shape, a token string, a flags snapshot); this
 // test drives it against a stub API with real libopus (dist/tajweedformer-opus.mjs) and decodes what the
@@ -20,9 +20,9 @@ const have = existsSync(path.join(root, 'dist', 'tajweedformer-opus.mjs'));
 if (!have && process.env.REQUIRE_OPUS === '1') throw new Error('dist/tajweedformer-opus.mjs is missing: npm run build:opus');
 const skipAudio = have ? false : 'dist/tajweedformer-opus.mjs is not built (npm run build:opus)';
 
-import { stubApi, client, KEY } from './sharing_stub_api.mjs';
+import { stubApi, client, KEY, NOW } from './sharing_stub_api.mjs';
 
-test('the signed config decides whether sharing is offered; the app option no longer does', async () => {
+test('the signed config (Quran Lab\'s incident switch) says whether sharing can be offered; the app option never does', async () => {
   const on = await stubApi({ analytics: true, issues: true, contributions: true });
   assert.equal((await client(on)).sharingAllowed(), true, 'offered by the config, without the app option');
   assert.equal((await client(on, { contributions: false })).sharingAllowed(), true, 'the option cannot veto the backend');
@@ -41,17 +41,21 @@ test('offered is never consent: no capture before "Share"; a grant keeps sharing
   const api = await stubApi({ contributions: true });
   const ql = await client(api);
   const st = new SharingState(ql.state, { enabled: () => ql.sharingAllowed(), consentVersion: 'deck-2' });
+  const good = { type: 'take_end', end: 'normal', speech_ms: 60000, offered: true };
   assert.equal(st.sharing, false, 'offered, not asked: not sharing');
-  assert.deepEqual(st.sessionCompleted({ feedback: true }), { variant: 'first', guardian: false });
+  // an install two days old with two sessions (client()'s state): the third good session asks, with the sheet
+  assert.deepEqual([st.decide(good).action, st.decide({ type: 'shown' }).action], ['sheet', 'sheet']);
   assert.equal(st.sharing, false, 'asked, not answered: not sharing');
   st.answer(false);
   assert.equal(st.sharing, false, '"Not now": not sharing');
   st.answer(true);
-  assert.equal(st.sharing, true);
+  assert.equal(st.sharing, false, 'a yes with no ask in hand is no yes');
+  st.setSharing(true);
+  assert.equal(st.sharing, true, 'the settings switch');
   const newer = new SharingState(ql.state, { enabled: () => ql.sharingAllowed(), consentVersion: 'deck-3' });
   assert.equal(newer.sharing, true, 'a grant to deck-2 keeps sharing under deck-3');
   assert.equal(newer.grantVersion, 'deck-2', 'under the version agreed to');
-  for (let i = 0; i < 30; i++) assert.equal(newer.sessionCompleted({ feedback: true }), null, 'and is never asked again');
+  for (let i = 0; i < 30; i++) assert.equal(newer.decide(good).action, 'none', 'and is never asked again');
   st.setSharing(false);
   assert.equal(st.sharing, false, 'withdrawn');
 });
@@ -65,7 +69,7 @@ test('a learner who said "Share" gets the whole session uploaded through the SDK
     const api = await stubApi({ contributions: true });
     const ql = await client(api);
     const asked = [];
-    const ctl = enableSharing(ql, { lang: 'en', ask: async (a) => { asked.push(a); return { yes: true }; } });
+    const ctl = enableSharing(ql, { lang: 'en', timers: NOW, ask: async (a) => { asked.push(a); return { yes: true }; } });
     const clip = new Float32Array(readFileSync(path.join(root, 'test', 'sharing', 'selftest_16k.f32')).buffer.slice(0));
     const pcm = new Float32Array(16000 * 12);
     for (let i = 0; i < pcm.length; i += clip.length) pcm.set(clip.subarray(0, Math.min(clip.length, pcm.length - i)), i);
@@ -75,7 +79,7 @@ test('a learner who said "Share" gets the whole session uploaded through the SDK
       for (let i = 0; i < pcm.length; i += 640) s.pushAudio(pcm.subarray(i, i + 640));
       s.finish();
       await new Promise((r) => setTimeout(r, 300));
-      return ctl.sessionCompleted({ feedback: true });
+      return ctl.takeEnded({ end: 'normal', speechMs: 60000 });
     };
     assert.ok(await run(), 'the first scored session asks');
     assert.equal(asked.length, 1);
@@ -87,7 +91,7 @@ test('a learner who said "Share" gets the whole session uploaded through the SDK
     assert.equal(m.consent_version, copyFor('en').consentVersion, 'the deck version the learner agreed to');
     assert.equal(m.device_class, 'node');
     assert.ok(Number.isInteger(m.os_major));
-    assert.equal(m.decode.sdk_version, '3.1.6');
+    assert.equal(m.decode.sdk_version, '4.0.0');
     const keys = [...api.state.puts.keys()].sort();
     assert.equal(keys.length, 2, `12 s is two segments (10 s, then the rest): ${keys.join(', ')}`);
     const all = Buffer.concat(keys.map((k) => api.state.puts.get(k)));

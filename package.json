@@ -1,37 +1,37 @@
 {
   "name": "@quran-lab/tajweedformer",
-  "version": "3.1.6",
-  "description": "TajweedFormer for browsers and Node, a pure inference SDK: the exact engine in WebAssembly (bit-identical to the native engine, in a Worker in browsers), cached and verified model delivery, every head of the network, the decoded layer (top-1 and runner-up, confidence, timings, speech and silence), one call from microphone to output, and the Quran Lab client (signed config, telemetry, opt-in recitation sharing).",
+  "version": "4.0.0",
+  "description": "TajweedFormer, API 4. In a browser: a thin wrapper that loads Quran Lab's hosted loader, which runs the protected engine in a frame and Worker on Quran Lab's origin. In Node: a desktop app, the same signed engine in a worker thread. The model is only usable through the SDK.",
   "type": "module",
   "main": "web/index.js",
   "types": "web/index.d.ts",
   "exports": {
     ".": {
       "types": "./web/index.d.ts",
-      "node": "./web/index.node.js",
+      "node": "./sdk4/node/index.js",
       "default": "./web/index.js"
+    },
+    "./node": {
+      "types": "./web/index.d.ts",
+      "default": "./sdk4/node/index.js"
     },
     "./package.json": "./package.json"
   },
   "files": [
     "web/",
-    "dist/tajweedformer.mjs",
-    "dist/tajweedformer.wasm",
-    "dist/tajweedformer-opus.mjs",
-    "dist/tajweedformer-opus.wasm",
+    "sdk4/node/",
+    "sdk4/frame/",
+    "sdk4/shared/",
+    "sdk4/loader/model.js",
+    "sdk4/loader/errors.js",
     "README.md",
     "AGENTS.md",
     "CHANGELOG.md",
+    "NAMES.md",
     "docs/api.md",
-    "docs/migrating-to-3.md",
-    "docs/platform-client.md",
+    "docs/migrating-to-4.md",
     "examples/quickstart.html",
-    "examples/node.mjs",
-    "examples/vite/index.html",
-    "examples/vite/main.js",
-    "examples/vite/package.json",
-    "examples/vite/.npmrc",
-    "examples/vite/README.md"
+    "examples/node.mjs"
   ],
   "engines": {
     "node": ">=20"
@@ -41,18 +41,21 @@
     "build:all": "bash scripts/build.sh && bash scripts/build_opus.sh",
     "bench": "bash scripts/bench.sh",
     "bench:rt": "node test/pool_bench.mjs",
-    "test": "node --max-old-space-size=2048 --expose-gc --test --test-concurrency=3 --test-timeout=300000 \"test/*.test.mjs\"",
+    "test": "node --max-old-space-size=2048 --test --test-concurrency=2 --test-timeout=600000 \"test/v4/*.test.mjs\" \"test/sharing_*.test.mjs\"",
     "test:wasm": "node test/smoke.mjs",
     "conformance": "bash scripts/conformance.sh",
     "serve": "node scripts/serve.mjs",
     "build:opus": "bash scripts/build_opus.sh",
     "build:1x": "bash scripts/build.sh --with-1x && bash scripts/build.sh --with-1x --threads 4 && bash scripts/build.sh --with-1x --no-simd",
-    "test:browser": "node scripts/browser-quickstart.mjs",
     "proof": "node scripts/proof.mjs",
     "example:build": "node scripts/build-example.mjs",
     "check:package": "node scripts/check-package.mjs",
+    "api-doc": "node scripts/make_api_doc.mjs",
     "size": "node scripts/size.mjs",
-    "gen:errors": "node scripts/gen_errors.mjs"
+    "gen:errors": "node scripts/gen_errors.mjs",
+    "test:3x": "node --max-old-space-size=2048 --expose-gc --test --test-concurrency=3 --test-timeout=300000 \"test/*.test.mjs\"",
+    "build:web4": "python scripts/build_web4.py hosted",
+    "test:browser4": "node scripts/browser-web4.mjs"
   },
   "license": "SEE LICENSE IN README.md",
   "repository": {
@@ -60,9 +63,8 @@
     "url": "https://github.com/Quran-Lab/tajweedformer-web"
   },
   "devDependencies": {
+    "esbuild": "^0.25.12",
     "puppeteer-core": "^24.43.1"
   },
-  "sideEffects": [
-    "./web/consent/*.js"
-  ]
+  "sideEffects": false
 }

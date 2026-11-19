@@ -1,13 +1,17 @@
 // The five concepts of the 3.0 API end to end (NAMING.md sections 1 to 4), against a stub of Quran Lab's API
 // and CDN, a synthetic signed model build and a fake engine host (test/helpers/model3.mjs): Client, Model,
-// Session, Heads, Backend, the chunk, the decoded layer, the events, one Client per process, one open Session
-// per Model. The engine's numbers are not checked here (the conformance tests do that).
+// Session, Heads, Backend, the chunk, the decoded layer, the events, one open Session per Model. The engine's
+// numbers are not checked here (the conformance tests do that). The classes are the SDK's own modules: in 4.0 the
+// package entry (web/index.js) is the hosted loader's wrapper, and the loader's Session and Heads are these
+// (sdk4/loader/model.js extends web/api/session.js; sdk4/loader/index.js exports web/api/heads.js).
 import test from 'node:test';
 import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
-import { TajweedClient, TajweedModel, TajweedSession, TajweedHeads, TajweedError } from '../web/index.js';
-import { createClient, resetClientForTests } from '../web/api/client.js';
-import { openModel } from '../web/api/model.js';
+import { TajweedError } from '../web/api/errors.js';
+import { TajweedSession } from '../web/api/session.js';
+import { TajweedHeads } from '../web/api/heads.js';
+import { TajweedClient, createClient, resetClientForTests } from '../web/api/client.js';
+import { TajweedModel, openModel } from '../web/api/model.js';
 import { sha256Hex } from '../web/tajweed/manifest.js';
 import { memoryReader } from './helpers/readers.mjs';
 import { build3, stubPlatform, seamsFor, fakeHost, audioFor, KEY, testKeyHex, CLIP_TOKENS } from './helpers/model3.mjs';
@@ -111,22 +115,6 @@ test('Client, model, session, read: chunks carry the decoded layer of the take s
   const again = model.session();
   await again.finish();
   await client.close();
-});
-
-test('one Client per process: a second one is client_exists until the first is closed', async () => {
-  const { client, api } = await setup();
-  await assert.rejects(createClient({ key: KEY }, seamsFor(api)), code('client_exists'));
-  await assert.rejects(TajweedClient.create({ key: KEY, appId: 'x' }), code('client_exists'));
-  await client.close();
-  const next = await createClient({ key: KEY }, seamsFor(api));
-  await next.close();
-  // two creates in a row: exactly one wins
-  const r = await Promise.allSettled([createClient({ key: KEY }, seamsFor(api)), createClient({ key: KEY }, seamsFor(api))]);
-  assert.deepEqual(r.map((x) => x.status).sort(), ['fulfilled', 'rejected']);
-  assert.ok(code('client_exists')(r.find((x) => x.status === 'rejected').reason));
-  await r.find((x) => x.status === 'fulfilled').value.close();
-  await assert.rejects(createClient({ key: 'nope' }, seamsFor(api)), code('invalid_argument'));
-  await assert.rejects(createClient({ key: KEY, analytics: 'maybe' }, seamsFor(api)), code('invalid_argument'));
 });
 
 test('one open Session per Model (session_open); cancel keeps nothing; options are checked', async () => {

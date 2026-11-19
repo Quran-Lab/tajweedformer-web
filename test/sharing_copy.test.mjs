@@ -1,11 +1,13 @@
 // SDK 3.1.2, the copy deck of contract 1.15.0 (SPEC 11.8): deck 2026-11-13.1, consent share-2026-11-09. Every
 // string is the string of deck 2026-11-09.1; the sentence that deck 2026-11-12.1 added to `sheet.who` and
-// `what.detail` is not in it.
+// `what.detail` is not in it. SDK 4.0 bundles deck 2026-11-19.1: those strings and the three of the re-ask card
+// (SHARE_ASK_40 20.7: `card.line`, `card.open`, `card.not_now`), without the four `sheet.guardian.*` strings
+// (ONE_SHEET_40 26.1: one sheet for every app), under the same consent version.
 //
 //   - the bundled decks are the contract's: each file's SHA-256 is the one sharing_copy/READY gives, and with the
 //     contract's folder at hand (SHARING_COPY_DIR=<contract>/sharing_copy) every bundled field is the file's;
 //   - the sheet the SDK shows, in each of the eight languages, holds the deck's `sheet.who` whole as one of its
-//     lines (the sheet and its guardian variant), and the settings' "What is shared" holds `what.detail` whole:
+//     lines (the first ask and the re-ask), and the settings' "What is shared" holds `what.detail` whole:
 //     with a stand-in for the page's DOM (runs everywhere) and in headless Chrome (where a developer has it;
 //     the public runner has no browser);
 //   - nothing the SDK shows or hands to an app holds the sentence that deck 2026-11-12.1 added, in any of the
@@ -28,16 +30,16 @@ import { QuranLabConsent, QuranLabSharingSettings } from '../web/consent/element
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const LANGS = ['ar', 'bn', 'en', 'fr', 'id', 'ms', 'tr', 'ur'];
-// sharing_copy/READY of contract 1.15.0 (main 336b4de)
+// sharing_copy/READY of deck 2026-11-19.1
 const READY = {
-  en: '3bac94a18f4691e7fb51021e9aa4f241d409a6dc4f8f89ec22a82761ebd75051',
-  ar: '03fc6aa2eed9134b5b5780ba2abcc5590c043024d0c6daf829c876742519f599',
-  id: 'f0621036f69d8f3754a0dfffea58b6c99e13a22c8356ba4cece0b20c3ba9abd0',
-  ms: '2c15cf8515885ef1bebe59117c61926dfd93ce406100fe2434e4b10d6c8e3e9d',
-  tr: '227783a34b2fdf6870ebd5d32eafb9e3ebcf496bed44797de87b571744200099',
-  fr: '9895b3eaf3e67afa250629b9ea3d93613d0298168d068fb6aba2e00450dda7ca',
-  ur: '755e2b9873180336b7e06bb44c0a9910441d8ee59dced42142c8f420ae77875a',
-  bn: 'e6b0a844386437838adcd0c3693ae39f93d40e5c3dba3b614c7f71574028a6b6',
+  en: '4011ed13cb1683348cc2d26c8b5a6adf96ebeb4bc5143cb77eb72104d5992d21',
+  ar: '1159dff6482b974798d46686855c0ff0b90293f4ee7bc9890b17c76596cfc474',
+  id: 'ddd02973988f286e007a9fc5e0a979b16766c43cb6d276a64ea7b59c7f17483f',
+  ms: '502835016af3430f898b669cb986ac87cbec4aa89fc10849ea33fe1226d93bcb',
+  tr: 'faabab1693a40f2f9c12a94808e0d7840e66094c3cf32db1bf1695fee48008f0',
+  fr: '03b2026cef95cc4707a841d53e08596fa18af343c9e33ee57feffd373b8411f7',
+  ur: '9dec0fd78c867a08aac9a641849ab628b441f2dae88102392b1855f9931aee05',
+  bn: 'ef6ebcac7798a5e3f2c6c6bc930518e1d7290b2a29821dc83865e7c3249ef949',
 };
 const DIR = process.env.SHARING_COPY_DIR || '';
 
@@ -59,11 +61,36 @@ const findFragments = (lang, text) => windowsWith(FRAGMENTS.languages[lang], tex
 /** Every string of a deck's `strings` (a plural line is several). */
 const stringsOf = (strings) => Object.values(strings).flatMap((v) => (typeof v === 'string' ? [v] : Object.values(v)));
 
-test('the bundled decks are the contract\'s 2026-11-13.1 (consent share-2026-11-09), by the SHA-256 of each file', () => {
+test('the bundled decks are the contract\'s 2026-11-19.1 (consent share-2026-11-09), by the SHA-256 of each file', () => {
   assert.deepEqual(Object.keys(DECKS).sort(), LANGS);
   for (const l of LANGS) {
     assert.deepEqual(DECK_SOURCES[l], { file: `${l}.json`, sha256: READY[l] }, l);
-    assert.deepEqual([DECKS[l].version, DECKS[l].consent_version], ['2026-11-13.1', 'share-2026-11-09'], l);
+    assert.deepEqual([DECKS[l].version, DECKS[l].consent_version], ['2026-11-19.1', 'share-2026-11-09'], l);
+  }
+});
+
+test('deck 2026-11-19.1 has no sheet.guardian.* string in any language (ONE_SHEET_40 26.1, SCHEMA.md Removed keys), and the SDK gives none', () => {
+  for (const l of LANGS) {
+    assert.deepEqual(Object.keys(DECKS[l].strings).filter((k) => /guardian/.test(k)), [], l);
+    for (const k of ['sheet.guardian.title', 'sheet.guardian.body', 'sheet.guardian.confirm', 'sheet.guardian.share']) {
+      assert.equal(copyFor(l).has(k), false, `${l} ${k}`);
+      assert.equal(copyFor(l).t(k), undefined, `${l} ${k}: no English fallback either`);
+    }
+  }
+});
+
+test('every deck has the re-ask card\'s three strings: its "Not now" is the sheet\'s word for word, its button no longer than the sheet\'s share button, no dash', () => {
+  assert.deepEqual([DECKS.en.strings['card.line'], DECKS.en.strings['card.open'], DECKS.en.strings['card.not_now']],
+    ['Your recitation today could help another learner tomorrow.', 'See how it helps', 'Not now'], 'the English source (SHARE_ASK_40 20.7)');
+  for (const l of LANGS) {
+    const s = DECKS[l].strings, c = copyFor(l);
+    for (const k of ['card.line', 'card.open', 'card.not_now']) {
+      assert.ok(typeof s[k] === 'string' && s[k].trim() === s[k] && s[k].length > 0, `${l} ${k}`);
+      assert.doesNotMatch(s[k], /[–—]/, `${l} ${k}: an en or em dash`);
+      assert.equal(c.t(k), s[k], `${l} ${k}: as the SDK gives it`);
+    }
+    assert.equal(s['card.not_now'], s['sheet.not_now'], `${l}: the card's Not now is the sheet's`);
+    assert.ok(s['card.open'].length <= s['sheet.share'].length, `${l}: card.open is no longer than sheet.share`);
   }
 });
 
@@ -102,7 +129,7 @@ test('what an app is handed to show holds none of the sentence that deck 2026-11
 
 test('with the contract\'s folder: READY names these hashes, and every bundled field is the file\'s', { skip: DIR && existsSync(path.join(DIR, 'READY')) ? false : 'SHARING_COPY_DIR is not set (the contract\'s sharing_copy folder)' }, () => {
   const ready = readFileSync(path.join(DIR, 'READY'), 'utf8');
-  assert.match(ready, /version 2026-11-13\.1 consent_version share-2026-11-09/);
+  assert.match(ready, /version 2026-11-19\.1 consent_version share-2026-11-09/);
   for (const l of LANGS) {
     const bytes = readFileSync(path.join(DIR, `${l}.json`));
     assert.equal(createHash('sha256').update(bytes).digest('hex'), READY[l], `${l}.json`);
@@ -130,25 +157,25 @@ function standIn(el, attrs = {}) {
   return { shadow, fire: (key) => (listeners[key] || []).forEach((f) => f({ target: { checked: false } })) };
 }
 
-test('the sheet in each of the eight languages shows the deck\'s sheet.who whole, also the guardian variant; "What is shared" shows what.detail whole; neither holds the sentence that deck 2026-11-12.1 added (a stand-in for the DOM)', async () => {
+test('the sheet in each of the eight languages shows the deck\'s sheet.who whole; "What is shared" shows what.detail whole; neither holds the sentence that deck 2026-11-12.1 added (a stand-in for the DOM)', async () => {
   const found = [];
   for (const l of LANGS) {
     const s = DECKS[l].strings;
-    for (const guardian of [false, true]) {
+    for (const variant of ['first', 'reask']) {
       const el = new QuranLabConsent();
       const { shadow, fire } = standIn(el);
-      const answer = el.show({ lang: l, guardian });
+      const answer = el.show({ lang: l, variant });
       const items = itemsOf(shadow.innerHTML, 'li');
-      assert.ok(items.includes(s['sheet.who']), `${l}${guardian ? ' guardian' : ''}: sheet.who whole`);
+      assert.ok(items.includes(s['sheet.who']), `${l} ${variant}: sheet.who whole`);
       assert.ok(items.includes(s['sheet.what']) && items.includes(s['sheet.control']), `${l}: the other disclosure lines`);
       // everything the element wrote (its whole markup, as text)
-      if (findFragments(l, unescape(shadow.innerHTML)).length) found.push(`${l}${guardian ? ' guardian' : ''} sheet`);
+      if (findFragments(l, unescape(shadow.innerHTML)).length) found.push(`${l} ${variant} sheet`);
       fire('#no click');
-      assert.deepEqual(await answer, { yes: false, guardianConfirmed: false });
+      assert.deepEqual(await answer, { yes: false });
     }
     const settings = new QuranLabSharingSettings();
     const { shadow } = standIn(settings, { lang: l });
-    settings.controller = { state: { sharing: true, guardianVariant: false }, recoveryCode: () => null, lang: l, wording: null, theme: null };
+    settings.controller = { state: { sharing: true }, recoveryCode: () => null, lang: l, wording: null, theme: null };
     const details = itemsOf(shadow.innerHTML, 'p');
     assert.ok(details.includes(s['what.detail']), `${l}: what.detail whole`);
     if (findFragments(l, unescape(shadow.innerHTML)).length) found.push(`${l} "What is shared"`);
@@ -166,8 +193,8 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>sheet</title><script t
 import { QuranLabConsent } from '/web/consent/element.js';
 import { DECKS } from '/web/consent/decks.js';
 window.DECKS = DECKS;
-window.read = async (lang, guardian) => {
-  const p = QuranLabConsent.ask({ lang, guardian });
+window.read = async (lang, variant) => {
+  const p = QuranLabConsent.ask({ lang, variant });
   const el = document.querySelector('quranlab-consent');
   const out = { items: [...el.shadowRoot.querySelectorAll('li')].map((x) => x.textContent), dir: el.shadowRoot.querySelector('dialog').dir,
     sheetText: el.shadowRoot.querySelector('dialog').innerText + ' | ' + el.shadowRoot.textContent };
@@ -176,7 +203,7 @@ window.read = async (lang, guardian) => {
   const s = document.createElement('quranlab-sharing-settings');
   s.setAttribute('lang', lang);
   document.body.appendChild(s);
-  s.controller = { state: { sharing: true, guardianVariant: false }, recoveryCode: () => null, lang, wording: null, theme: null };
+  s.controller = { state: { sharing: true }, recoveryCode: () => null, lang, wording: null, theme: null };
   out.detail = s.shadowRoot.querySelector('details p').textContent;
   out.settingsText = s.shadowRoot.textContent;
   s.remove();
@@ -185,7 +212,7 @@ window.read = async (lang, guardian) => {
 window.ready = true;
 </script>`;
 
-test('in headless Chrome: the sheet in each of the eight languages shows the deck\'s sheet.who whole (sheet and guardian variant), "What is shared" shows what.detail whole; neither holds the sentence that deck 2026-11-12.1 added', { skip: skipBrowser, timeout: 300000 }, async (t) => {
+test('in headless Chrome: the sheet in each of the eight languages shows the deck\'s sheet.who whole (first ask and re-ask), "What is shared" shows what.detail whole; neither holds the sentence that deck 2026-11-12.1 added', { skip: skipBrowser, timeout: 300000 }, async (t) => {
   const found = [];
   const server = createServer(async (req, res) => {
     const p = new URL(req.url, 'http://x').pathname;
@@ -202,19 +229,19 @@ test('in headless Chrome: the sheet in each of the eight languages shows the dec
     await page.waitForFunction('window.ready === true');
     for (const l of LANGS) {
       const s = DECKS[l].strings;
-      for (const guardian of [false, true]) {
-        const r = await page.evaluate((lang, g) => window.read(lang, g), l, guardian);
-        assert.ok(r.items.includes(s['sheet.who']), `${l}${guardian ? ' guardian' : ''}: sheet.who whole`);
+      for (const variant of ['first', 'reask']) {
+        const r = await page.evaluate((lang, v) => window.read(lang, v), l, variant);
+        assert.ok(r.items.includes(s['sheet.who']), `${l} ${variant}: sheet.who whole`);
         assert.equal(r.dir, DECKS[l].dir, l);
-        assert.deepEqual(r.answer, { yes: false, guardianConfirmed: false });
+        assert.deepEqual(r.answer, { yes: false });
         assert.equal(r.detail, s['what.detail'], `${l}: what.detail whole`);
         // all the text of the open sheet (as laid out, and every text node) and of the settings element
-        if (findFragments(l, r.sheetText).length) found.push(`${l}${guardian ? ' guardian' : ''} sheet`);
-        if (findFragments(l, r.settingsText).length) found.push(`${l}${guardian ? ' guardian' : ''} "What is shared"`);
+        if (findFragments(l, r.sheetText).length) found.push(`${l} ${variant} sheet`);
+        if (findFragments(l, r.settingsText).length) found.push(`${l} ${variant} "What is shared"`);
       }
     }
     assert.deepEqual(found, [], 'what is shown that holds the sentence deck 2026-11-12.1 added');
-    t.diagnostic('Chrome: the sheet (and its guardian variant) and "What is shared" in ar, bn, en, fr, id, ms, tr, ur');
+    t.diagnostic('Chrome: the sheet (first ask and re-ask) and "What is shared" in ar, bn, en, fr, id, ms, tr, ur');
   } finally {
     await browser.close();
     server.close();

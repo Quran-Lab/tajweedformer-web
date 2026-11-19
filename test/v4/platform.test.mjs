@@ -3,10 +3,10 @@
 // build is served, telemetry v2 (closed body, 202/400 handling, kill switch), issues
 // (no free text, deduped), the error table's stop codes, and the sharing state machine.
 import test from 'node:test';
-import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
+import '../../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
-import { QuranLab, verifySignedConfig, keyId, memoryState, Telemetry, bucket } from '../web/platform/index.js';
-import { SharingState, MAX_ASKS, REASK_GAP, copyFor } from '../web/consent/index.js';
+import { QuranLab, verifySignedConfig, keyId, memoryState, Telemetry, bucket } from '../../web/platform/index.js';
+import { SharingState, MAX_ASKS, copyFor } from '../../web/consent/index.js';
 
 const enc = new TextEncoder();
 const b64u = (b) => Buffer.from(b).toString('base64url');
@@ -64,9 +64,9 @@ test('launch: unattested token, register (new install once), signed config verif
   assert.equal(attest.headers.origin, 'https://app.example');
   const reg = api.log.find((x) => x.path === '/v1/register');
   assert.equal(reg.body.new_install, true);
-  assert.equal(reg.body.sdk_version, '3.1.6');
+  assert.equal(reg.body.sdk_version, '4.0.0');
   const cfgReq = api.log.find((x) => x.path === '/v1/config');
-  assert.match(cfgReq.query, /sdk=3\.1\.6/);
+  assert.match(cfgReq.query, /sdk=4\.0\.0/);
   assert.match(cfgReq.query, /bucket=\d+/);
   // second launch on the same storage and UTC day: no register (once per day); config answered 304 from the stored ETag
   api.log.length = 0;
@@ -105,7 +105,10 @@ test('config: a tampered body, an unknown kid, an expired config are refused; th
     const ql = await QuranLab.configure(opts(api, trusted ? { trustedKeys: trusted } : {}));
     assert.equal(ql.config, null, what);
     assert.ok(ql.lastError && ['signature_invalid', 'config_expired'].includes(ql.lastError.code), `${what}: ${ql.lastError}`);
-    assert.ok(what === 'expired' || api.log.some((x) => x.path === '/v1/issues' && x.body.kind === 'signature_invalid'), `${what}: issue sent`);
+    // 4.0 (ERRORS_40.md 24.1, as 3.1.7): a silent error report of the config's stage and reason, sent at the launch's
+    // send point; the signature_invalid issue kind of 3.x is gone
+    const sent = api.log.filter((x) => x.path === '/v1/issues').map((x) => [x.body.kind, x.body.code, x.body.error && x.body.error.stage, x.body.error && x.body.error.reason]);
+    assert.deepEqual(sent, [['error', 'none', 'config', what === 'expired' ? 'expired' : 'signature']], `${what}: reported`);
   }
   // keyId: first 8 bytes of SHA-256 of the raw key
   const k = new Uint8Array(32);
@@ -135,7 +138,7 @@ test('telemetry v2 deltas: closed body with the 2.0.1 fields, sealed at a send p
   const [p] = ql.telemetry.pending();
   assert.deepEqual(Object.keys(p), ['v', 'day', 'product', 'platform', 'sdk_version', 'app_version', 'device', 'cohorts', 'coverage',
     'ayahs', 'words', 'surah_ayahs', 'rule_checks', 'rule_flags', 'reported', 'report_id']);
-  assert.equal(p.v, 2); assert.equal(p.product, 'web'); assert.equal(p.day, '2026-11-06'); assert.equal(p.sdk_version, '3.1.6');
+  assert.equal(p.v, 2); assert.equal(p.product, 'web'); assert.equal(p.day, '2026-11-06'); assert.equal(p.sdk_version, '4.0.0');
   const c = p.cohorts[0];
   assert.equal(c.sessions, 1); assert.equal(c.minutes, 0.5); assert.equal(c.chunks, 3);
   assert.deepEqual(c.latency_ms, { le_20: 1, le_40: 1, gt_320: 1 });
@@ -181,16 +184,16 @@ test('telemetry v2 deltas: closed body with the 2.0.1 fields, sealed at a send p
   assert.equal(bucket('rtf', 0.3), 'le_0_5');
 });
 
-test('issues: no free text, deduped per day; error table: invalid_key stops the network for the launch', async () => {
+test('issues: the engine_failed issue (the one issue kind 4.0 keeps, for the engine rollback): no free text, deduped per day; error table: invalid_key stops the network for the launch', async () => {
   const api = await mockApi();
   const ql = await QuranLab.configure(opts(api));
-  assert.equal(ql.reportIssue('model_load', 'stage:ENOSPC /home/user/x'), true);
-  assert.equal(ql.reportIssue('model_load', 'stage:ENOSPC /home/user/x'), false);
+  assert.equal(ql.reportIssue('engine_failed', 'engine_load_failed:20261118.aaaaaaaaaaaa:fetch /home/user/x'), true);
+  assert.equal(ql.reportIssue('engine_failed', 'engine_load_failed:20261118.aaaaaaaaaaaa:fetch /home/user/x'), false);
   const q = ql.state.get('issues.queue');
-  assert.equal(q[0].code, 'stage:ENOSPC__home_user_x');
+  assert.deepEqual([q.length, q[0].kind, q[0].code], [1, 'engine_failed', 'engine_load_failed:20261118.aaaaaaaaaaaa:fetch__home_user_x']);
   assert.ok(!('message' in q[0]));
   await ql.flush();
-  assert.equal(api.log.filter((x) => x.path === '/v1/issues').length, 1);
+  assert.equal(api.log.filter((x) => x.path === '/v1/issues' && x.body.kind === 'engine_failed').length, 1);
   const bad = await QuranLab.configure(opts(api, { key: 'qlk_v1_bad_bbbbbbbbbbbbbbbbbbbbbb' }));
   assert.equal(bad.stopped, 'invalid_key');
   const before = api.log.length;
@@ -198,16 +201,23 @@ test('issues: no free text, deduped per day; error table: invalid_key stops the 
   assert.equal(api.log.length, before, 'no request after a stop code');
 });
 
-test('sharing state: never before a session with feedback; first ask, two re-asks 7 sessions apart, then never; guardian; settings', () => {
+test('sharing state (SDK 4.0, contract section 20): never after a take that did not complete; the sheet after 24 hours and 3 good sessions, two cards after "Not now", then never; one sheet for every app; settings', () => {
   const st = memoryState();
   let enabled = true;
-  const s = new SharingState(st, { enabled: () => enabled, consentVersion: 'en-1' });
-  assert.equal(s.sessionCompleted({ feedback: false }), null, 'no feedback: no ask');
-  assert.deepEqual(s.sessionCompleted({ feedback: true }), { variant: 'first', guardian: false });
-  assert.equal(s.answer(false), 'declined');
+  const DAY = 86_400_000;
+  let now = Date.parse('2027-01-15T08:00:00Z');
+  const s = new SharingState(st, { enabled: () => enabled, consentVersion: 'en-1', clock: () => now, tzMin: () => 0 });
+  const good = { type: 'take_end', end: 'normal', speech_ms: 90_000, offered: true };
+  s.decide({ type: 'launch' });
+  assert.equal(s.decide({ ...good, end: 'interrupted' }).why, 'not_completed', 'an interrupted take: no ask');
   const asks = [];
-  for (let i = 0; i < 40; i++) { const a = s.sessionCompleted({ feedback: true }); if (a) { asks.push(s.s.sessions); s.answer(false); } }
-  assert.deepEqual(asks, [2 + REASK_GAP, 2 + 2 * REASK_GAP]);
+  for (let d = 1; d <= 80; d++) {
+    now += DAY;
+    s.decide({ type: 'launch' });
+    const r = s.decide(good);
+    if (r.action !== 'none') { assert.equal(s.decide({ type: 'shown' }).action, r.action); s.answer(false); asks.push([d, r.action]); }
+  }
+  assert.deepEqual(asks, [[3, 'sheet'], [17, 'card'], [47, 'card']]); // (day 0 had no completed take)
   assert.equal(s.s.consent, 'final');
   assert.equal(s.s.asks, MAX_ASKS);
   assert.equal(s.sharing, false);
@@ -220,18 +230,23 @@ test('sharing state: never before a session with feedback; first ask, two re-ask
   assert.equal(s.takeThanks(), false);
   s.setSharing(false);
   assert.equal(s.s.consent, 'final');
-  // guardian variant: a yes needs the confirmation
-  const g = new SharingState(memoryState(), { enabled: () => true, audience: 'children' });
-  assert.deepEqual(g.sessionCompleted({ feedback: true }), { variant: 'first', guardian: true });
-  assert.throws(() => g.answer(true));
-  assert.equal(g.answer(true, { guardianConfirmed: true }), 'granted');
-  assert.equal(g.s.guardian, true);
+  // one sheet for every app (ONE_SHEET_40 26.1): an audience given is not read, a yes takes nothing more, and a new
+  // grant stores no guardian field
+  const gs = memoryState();
+  gs.set('sharing.v1', { v: 1, consent: 'unknown', asks: 0, sessions: 2, lastAskSession: 0, installedAt: now - 2 * DAY });
+  const g = new SharingState(gs, { enabled: () => true, audience: 'children', clock: () => now });
+  assert.equal(g.decide(good).action, 'sheet');
+  assert.equal('guardianVariant' in g, false);
+  g.decide({ type: 'shown' });
+  assert.equal(g.answer(true).why, null);
+  assert.equal(g.s.consent, 'granted');
+  assert.equal('guardian' in gs.get('sharing.v1'), false, 'a 4.0 grant stores no guardian');
   // copy: Quran Lab's decks; RTL for Arabic and Urdu; the consent version; plural impact lines; {days}
   const ar = copyFor('ar-EG');
   assert.equal(ar.lang, 'ar'); assert.equal(ar.dir, 'rtl'); assert.equal(copyFor('ur').dir, 'rtl'); assert.equal(copyFor('en').dir, 'ltr');
   assert.equal(copyFor('xx').lang, 'en');
   assert.equal(ar.consentVersion, 'share-2026-11-09');
-  assert.equal(ar.version, '2026-11-13.1'); assert.equal(ar.deleteTiming, 'immediate');
+  assert.equal(ar.version, '2026-11-19.1'); assert.equal(ar.deleteTiming, 'immediate');
   assert.ok(copyFor('en').t('sheet.hadith').length > 20 && copyFor('en').t('sheet.hadith_ref') === 'Sahih Muslim 1631');
   assert.match(copyFor('en').minutes(1), /1 minute of/);
   assert.match(copyFor('en').minutes(12), /12 minutes/);
@@ -241,16 +256,16 @@ test('sharing state: never before a session with feedback; first ask, two re-ask
     assert.equal(c.lang, l);
     for (const k of ['sheet.title', 'sheet.what', 'sheet.who', 'sheet.control', 'sheet.share', 'sheet.not_now', 'thanks', 'settings.toggle', 'what.detail']) {
       assert.ok(typeof c.t(k) === 'string' && c.t(k).length, `${l} ${k}`);
-      assert.ok(!/[–—]/.test(c.t(k)), `${l} ${k}: no en or em dashes`);
+      assert.ok(!/[\u2013\u2014]/.test(c.t(k)), `${l} ${k}: no en or em dashes`);
     }
   }
 });
 
 test('contributor key material: recovery codes and hashes (the shared sharing vectors/recovery.json), deletion message bytes (signing.json), a non-extractable P-256 key', async () => {
-  const { recoveryCodeFromBytes, normaliseRecoveryCode, recoveryHash, deletionMessage, contributorKey, forgetContributorKey } = await import('../web/platform/index.js');
+  const { recoveryCodeFromBytes, normaliseRecoveryCode, recoveryHash, deletionMessage, contributorKey, forgetContributorKey } = await import('../../web/platform/index.js');
   const fs = await import('node:fs');
   const { fileURLToPath } = await import('node:url');
-  const dir = process.env.SHARING_VECTORS || fileURLToPath(new URL('./sharing/vectors', import.meta.url));
+  const dir = process.env.SHARING_VECTORS || fileURLToPath(new URL('../sharing/vectors', import.meta.url));
   const rec = JSON.parse(fs.readFileSync(`${dir}/recovery.json`, 'utf8'));
   let n = 0;
   for (const c of rec.cases) {
@@ -281,7 +296,7 @@ test('contributor key material: recovery codes and hashes (the shared sharing ve
 
 test('platform client fixtures (local stack e2e recordings): the recorded signed configs verify with the local key pinned; our telemetry, issue and register bodies use only the recorded fields', async () => {
   const fs = await import('node:fs');
-  const fx = JSON.parse(fs.readFileSync(new URL('./platform_client_fixtures.json', import.meta.url), 'utf8'));
+  const fx = JSON.parse(fs.readFileSync(new URL('../platform_client_fixtures.json', import.meta.url), 'utf8'));
   assert.equal(await keyId(fx.local_public_key_hex), fx.local_key_id);
   let verified = 0;
   for (const e of fx.exchanges.filter((x) => x.request.path.startsWith('/v1/config') && x.response.status === 200)) {
@@ -334,7 +349,7 @@ test('model source: the signed base, then cdn.quranlab.ai/models; modelsUrl wins
 });
 
 test('the telemetry product follows the platform, as the server checks it: a desktop app in Node is native, a page web', async () => {
-  const { Telemetry, productOf } = await import('../web/platform/telemetry.js');
+  const { Telemetry, productOf } = await import('../../web/platform/telemetry.js');
   assert.equal(productOf('web'), 'web');
   assert.equal(productOf('windows'), 'native');
   assert.equal(productOf('linux'), 'native');

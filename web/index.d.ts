@@ -1,5 +1,13 @@
-// Type definitions for @quran-lab/tajweedformer 3.1.6: the whole public surface, and nothing else.
+// Type definitions for @quran-lab/tajweedformer 4.0.0 (web API 4): the whole public surface, and nothing else.
+// The package is a thin wrapper that loads Quran Lab's hosted loader; the same names are on globalThis.QuranLab.
 // Five concepts: Client, Model, Session, Heads, Backend. Call order: Client, model, listen, read.
+
+/** The hosted loader's URL for API 4. */
+export declare const LOADER_URL: string;
+/** The API number of this package and of the loader it loads. */
+export declare const API: 4;
+/** Load the hosted loader (once): an explicit URL and its SRI hash when the site pins one. */
+export declare function loadQuranLab(options?: { src?: string; integrity?: string }): Promise<unknown>;
 
 /** Every failure the SDK raises. `code` is stable and the same in every TajweedFormer SDK. */
 export declare class TajweedError extends Error {
@@ -16,18 +24,20 @@ type TajweedErrorCode =
   | 'checksum_mismatch' | 'model_incompatible' | 'model_unavailable' | 'reference_missing' | 'session_open' | 'session_closed' | 'cancelled'
   | 'engine_failed' | 'microphone_denied' | 'microphone_unavailable' | 'interrupted' | 'sharing_unavailable' | 'runtime_unsupported';
 
+/** The options of TajweedClient.create(). There is no analytics option in 4.0: the anonymous analytics are always on, and
+ * an `analytics` key, whatever its value, is refused with invalid_argument. There is no audience option either: every
+ * app shows the same sharing sheet, and an `audience` key, whatever its value, is refused with invalid_argument. */
 export interface TajweedClientOptions {
   /** The developer key, qlk_v1_..., from sdk.quranlab.ai (a web key in browsers, a desktop key in Node). */
   key: string;
-  /** Node only: the app id of the desktop key. In browsers the page's origin is the app. */
-  appId?: string;
   appVersion?: string;
-  /** Node: the folder the SDK keeps its files in. Browsers: a name that separates this client's stored state. */
+  /** Node only (a desktop key): the app id you gave that key at sdk.quranlab.ai. Required in Node. */
+  appId?: string;
+  /** In a browser: a name that separates this client's stored state (letters, digits, dot, dash, underscore; at most 40).
+   * In Node: the storage folder (default: the OS cache folder, then quranlab/tajweedformer/<appId>). */
   storage?: string;
-  /** Anonymous usage statistics, on by default; 'off' is the one developer opt-out. */
-  analytics?: 'on' | 'off';
-  /** 'children' selects the guardian wording of the sharing sheet. */
-  audience?: 'general' | 'children';
+  /** 'off' (default): one thread. 'auto': the threads engine when this page is cross-origin isolated and the device has 4 or more cores. */
+  threads?: 'auto' | 'off';
 }
 
 /** The app's link to Quran Lab. One per process (per page): a second one while the first is open is client_exists. */
@@ -41,7 +51,7 @@ export declare class TajweedClient {
     Promise<{ bytesDone: number; bytesTotal: number; complete: boolean }>;
   /** What the SDK holds on this device, in bytes. */
   storage(): Promise<{ models: { version: string; build: string; bytes: number }[]; sharingQueueBytes: number }>;
-  /** Remove the model files (never the consent state or the sharing queue). */
+  /** Remove the model files of this site (ciphertext only is ever stored). */
   removeModels(): Promise<void>;
   /** One structured report, safe to paste into an issue. */
   diagnose(): Promise<TajweedDiagnosis>;
@@ -80,9 +90,11 @@ export interface TajweedDiagnosis {
   connection: 'unmetered' | 'metered' | 'none' | 'unknown';
 }
 
-/** Recitation sharing: Quran Lab decides whether it is offered; the learner decides whether to share. */
+/** Recitation sharing: every learner is asked, under the SDK's rules, and the choice is theirs: "Not now", and turning
+ * sharing off or deleting what they shared at any time. */
 export interface TajweedSharing {
-  /** Quran Lab's config allows sharing for this app. */
+  /** Sharing can be offered now: false in Node, on a platform where it is not offered yet, and while Quran Lab has paused
+   * it for everyone (its global incident switch in the signed config). Never a decision about one app. */
   readonly isAvailable: boolean;
   /** The learner said yes. */
   readonly isOn: boolean;
@@ -90,8 +102,11 @@ export interface TajweedSharing {
    * browser or the system had already buffered of that segment may still go out) and deletes the unsent queue. */
   /** Off: the promise resolves when the uploads in flight are aborted and the unsent queue is gone. */
   setOn(on: boolean): Promise<void>;
-  /** Ask now, if an ask is still allowed (at most three; a yes is never asked again). */
-  ask(): Promise<{ yes: boolean; guardianConfirmed?: boolean } | null>;
+  /** Ask at the app's own moment: only when an ask is due by the SDK's rules (the first after 24 hours and 3
+   * completed takes, a re-ask card after 14 days and 7 takes, then 30 days and 10; three at most; never again
+   * after a yes), never before a completed take of this visit and never during a take. Resolves with the
+   * learner's answer, or null when no ask is due (nothing is shown). */
+  ask(): Promise<{ yes: boolean } | null>;
   /** Audio the app already captures outside takes: used for the lead-in and tail of shared recordings only. */
   feed(samples: Float32Array, sampleRate: number): void;
   /** The outbox: each recording's status. */
@@ -207,9 +222,16 @@ export declare class TajweedSession {
   /** End the take and keep nothing. */
   cancel(): Promise<void>;
   readonly backend: TajweedBackend;
-  /** Where the learner recited in this take (anonymous daily totals; never sent with a recording). */
-  reportRecited(surah: number, ayahFrom: number, ayahTo: number): void;
+  /**
+   * Where the learner recited in this take, used only where the SDK could not measure it itself, and optionally how
+   * the app judged it (anonymous daily totals; a take is never counted twice). One report per take, until the next
+   * take starts.
+   */
+  reportRecited(surah: number, ayahFrom: number, ayahTo: number, options?: { outcome?: RecitedOutcome; perAyah?: Record<number, RecitedOutcome> }): void;
 }
+
+/** The app's own judgement of an ayah: correct, or incorrect with how many mistakes and which rule ids. */
+export type RecitedOutcome = { correct: true } | { correct: false; mistakes?: number; rules?: string[] };
 
 export interface TajweedChunk {
   index: number;
@@ -305,11 +327,4 @@ export declare class Microphone {
   /** Mono float samples, block by block, until close(). */
   samples(): AsyncIterable<Float32Array>;
   close(): void;
-}
-
-/** <quranlab-consent>: the SDK's consent sheet. */
-export declare class QuranLabConsent extends HTMLElement {}
-/** <quranlab-sharing-settings>: the sharing switch, what is shared, delete, the recovery code. Set `client`. */
-export declare class QuranLabSharingSettings extends HTMLElement {
-  client: TajweedClient | null;
 }

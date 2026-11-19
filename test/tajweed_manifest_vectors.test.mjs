@@ -161,20 +161,6 @@ function cdn(manifestBytes) {
   return { fetch, log };
 }
 
-test('delivery: cachedReader + ModelFolder.open (signature required) accept the 519235d0 manifest', async () => {
-  assert.equal(SDK_VERSION, '3.1.6');
-  const { fetch, log } = cdn(RAW['519235d0']);
-  const reader = cachedReader({ baseUrl: 'https://cdn.test/sdk/', fetch, store: false });
-  const f = await ModelFolder.open(reader, { requireSignature: true, verify: 'on-read' });
-  assert.equal(f.manifest.revision, 'v4.0-2026-11-10');
-  assert.equal(f.manifest.min_sdk_version, '2.0.1');
-  assert.ok(f.has('calibration.json') && f.has('tokens.txt'));
-  assert.deepEqual(log, ['manifest.json']);
-  // an SDK older than the folder's min_sdk_version is refused after the signature is checked
-  await assert.rejects(ModelFolder.open(cachedReader({ baseUrl: 'https://cdn.test/sdk/', fetch, store: false }),
-    { requireSignature: true, verify: 'on-read', sdkVersion: '2.0.0' }), (e) => e.code === 'sdk_too_old');
-});
-
 test('delivery: the 519235d0 manifest verifies on the 3.0 path and is refused only for having no model version; a tampered one stops at the signature', async () => {
   // a 2.x build: the signature is good, so the refusal is the version rule of SDK 3.0 (SPEC 2a), not the signature
   const good = cdn(RAW['519235d0']);

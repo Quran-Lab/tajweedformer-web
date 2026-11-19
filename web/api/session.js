@@ -6,6 +6,7 @@
 // session's own append-only copy of log_probs and conf, so a take of many minutes does not build one decoded
 // layer per chunk unless the app reads them.
 import { TajweedError, toTajweedError, invalid } from './errors.js';
+import { tag, tagEngine } from '../platform/error-reports.js';
 import { TajweedHeads, decodedOf, joinArrays } from './heads.js';
 import { SpeechTracker, DEFAULT_SILENCE_MS, greedyIds } from './speech.js';
 import { ayahsIn } from './surahs.js';
@@ -149,7 +150,7 @@ export class TajweedSession {
     let over = null;
     if (this._pending > 0 && this._pending + pcm.length > this._maxPending) {
       over = this._live
-        ? new TajweedError('engine_failed', { detail: 'this device decodes slower than the microphone delivers audio' })
+        ? tag(new TajweedError('engine_failed', { detail: 'this device decodes slower than the microphone delivers audio' }), { stage: 'session', reason: 'deadline' })
         : invalid('too much audio is waiting to be decoded; push as the chunks arrive');
     }
     if (over) {
@@ -222,7 +223,7 @@ export class TajweedSession {
   }
 
   _fail(e) {
-    const error = toTajweedError(e);
+    const error = toTajweedError(tagEngine(e, 'session'));
     if (this._state === 'open') this._close('self', { reason: 'error', error, flush: false });
     // audio queued before finish() failed after it: the take ends as a failed one
     else if (this._state === 'closing' && !this._failed) { this._failed = error; this._drop = true; }
@@ -262,10 +263,17 @@ export class TajweedSession {
     this._state = cancelled ? 'cancelled' : 'ended';
     // a take counts when it ended with its Heads: finish(), or ended with any reason but error
     this._counts = !cancelled && reason !== 'error';
+    // how the take ended, for the ask to share (SDK 4.0, contract 20.2): the app's finish(), or by itself on
+    // silence, its limit or the end of its clip: normal; the page hidden or the microphone lost: interrupted
+    this._end4 = cancelled ? 'cancelled' : reason === 'error' ? 'error' : (kind === 'finish' || ['silence', 'limit', 'sourceEnd'].includes(reason)) ? 'normal'
+      : ['hidden', 'background', 'interrupted'].includes(reason) ? 'interrupted' : 'normal';
     if (!cancelled) this._heads = new TajweedHeads(joinArrays(st.arrays), st.n40, this._m.names, { topK: this._o.topK, isFinal: true });
     if (cancelled) this._error = new TajweedError('cancelled');
     else if (reason === 'error') this._error = error || new TajweedError('engine_failed', { detail: 'the take failed' });
     if (kind === 'self') this._emit({ type: 'ended', reason, ...(reason === 'error' ? { error: this._error } : {}) });
+    // 3.1.7: a take that failed, or ended on a lost microphone, is an error report (ERRORS_40.md section 24)
+    const failed = reason === 'error' ? this._error : reason === 'interrupted' && error && error.name === 'TajweedError' ? error : null;
+    if (failed && this._m.platform) { try { this._m.platform.reportFailure(failed); } catch (_) { /* never in the way */ } }
     if (this._tap) { try { if (cancelled) this._tap.free(); else this._tap.finish(); } catch (_) { /* sharing never stops a take */ } }
     try { this._report(); } catch (_) { /* telemetry never stops a take */ }
     this._chunks.close();
@@ -293,7 +301,9 @@ export class TajweedSession {
       firstMs: this._firstMs, margins, confidences, tokens, speechFrames: counts.speech, silenceFrames: counts.silence,
     });
     if (this._counts && this._recited) { p.telemetry.recited(this._recited.surah, this._recited.ayahs); this._recitedCounted = true; }
-    if (this._counts && counts.speech > 0 && typeof p.takeFinished === 'function') p.takeFinished();
+    // every take, with how it ended and its speech (40 ms a speech frame): the sharing controller decides whether it
+    // was a completed session and the moment to ask (SDK 4.0, contract 20.5 take_end)
+    if (typeof p.takeFinished === 'function') p.takeFinished({ end: this._end4 || 'normal', speechMs: 40 * counts.speech });
   }
 
   /** End the take; resolves with the take's Heads. On a listen Session it also stops the microphone. */

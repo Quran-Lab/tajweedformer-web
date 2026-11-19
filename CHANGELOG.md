@@ -1,5 +1,72 @@
 # Changelog
 
+## 4.0.0
+
+The model is protected. A loader hosted by Quran Lab opens Quran Lab's frame on your page, and the engine, the model
+and its lease live there; your page's scripts never see the model's files. The calls of a take stay as they were.
+Moving from 3.x: [docs/migrating-to-4.md](docs/migrating-to-4.md).
+
+- **Install: one script tag**, `https://web.quranlab.ai/4/loader.js`, or the npm package, which now wraps the same
+  loader. If your site sends a Content-Security-Policy, add the README's lines.
+- **Two hosts.** When `web.quranlab.ai` gives no answer within 4 seconds, the loader opens the same frame from
+  `web2.quranlab.ai`.
+- **The lease, kept across page loads.** The model opens under a 24-hour lease for this browser and your site; a page
+  loaded within it opens the model with no connection. When it has ended and Quran Lab cannot be reached, the model
+  keeps opening for 24 hours more; a refusal ends that at once.
+- **An invisible check.** The first lease passes Cloudflare Turnstile inside the frame, and a learner never sees a box.
+  A check that fails or cannot run still gives a lease.
+- **Node, for desktop apps.** The package's Node entry runs the same API with a desktop key and its app id, with
+  24-hour leases kept in its storage folder.
+- **Removed: the `analytics` option.** The anonymous analytics (daily counts and durations, never audio, text, names
+  or device identifiers) are always on. Passing `analytics`, whatever its value, is refused with `invalid_argument`:
+  delete it.
+- **Removed: the `audience` option.** Every app shows the same sharing sheet, with no guardian variant;
+  `TajweedClient.create()` with an `audience` key, whatever its value, fails with `invalid_argument`. Delete the
+  option. Complying with children's privacy law is the app's and the app store's. A learner who said yes before keeps
+  that yes and is never asked again.
+- **Error reports.** Every error your page gets (except misuse of the API) and every failure the SDK goes on from
+  reaches Quran Lab as a small anonymous report. You see them on your app's Problems page at sdk.quranlab.ai.
+- **More exact error codes.** `needs_connection` only when Quran Lab gave no answer; an answer from a server that
+  failed is `download_failed`, with what answered in the message.
+- **Recited ayahs.** The SDK counts the ayahs of each take itself; `reportRecited` is the fallback, and its new
+  `outcome` and `perAyah` carry your app's own judgement.
+- **Sharing.** Asked later and less often (never in the first 24 hours, at most three times), and a recording stays
+  open up to 60 seconds between takes. There is still no developer switch.
+- **Every learner is asked** and the choice is theirs: Not now, stop, or delete at any time. No app is exempt.
+- **Model versions.** From V4.1 on, new model versions are published only encrypted, for SDK 4.0. SDK 3.x stops
+  receiving the V4 model on 15 January 2027, 00:00 UTC.
+
+## 3.1.7
+
+Every failure a learner can hit is now reported to Quran Lab, so a model that does not load can be explained from
+data instead of a screenshot. No call changed.
+
+- **New: error reports.** Every `TajweedError` your app is given (except the ones that only say a call was used
+  wrongly: `invalid_argument`, `client_exists`, `session_open`, `session_closed`, `cancelled`), a take that
+  failed or lost its microphone, and the failures the SDK goes on without (a browser that blocks storage, model
+  files the browser evicted, the engine that could not start in a Worker, a config, register or token call that
+  failed with an answer, a telemetry report refused or kept a week, a recording that will not be uploaded)
+  become one small report: the stage of the cause and a reason, the HTTP status, the error's class (never its
+  message), the code your app was given, whether it was the install's first launch, how many times it happened
+  that day, and what the browser can do: its family and major version, the OS family, mobile or not,
+  `crossOriginIsolated`, WebAssembly SIMD and threads, `SharedArrayBuffer`, WebCrypto and Ed25519,
+  `AudioWorklet`, whether the engine runs in a Worker, the Cache API and IndexedDB, online, the device memory
+  bucket and a bucket of free storage. No message, URL, path, user agent string, text, audio or identifier. One
+  report per day per kind of failure, at most 16 kinds a day and 32 waiting; sent at the launch, at each
+  telemetry send point and 30 seconds after a new one, and kept until the network works. Quran Lab can switch
+  them off in the signed config. They appear on your app's Problems page at sdk.quranlab.ai.
+- **Fixed: an answer that could not be used was `needs_connection`.** A config that did not verify or had
+  expired, with no stored one to stand in, raised `needs_connection`; it is now `download_failed`, and a server
+  error (5xx, 429) says so in the message. `needs_connection` now means only that no request got an answer and
+  the model is not on the device.
+- **Fixed: the engine running out of memory was `invalid_argument`.** Where the engine runs on the page (no
+  module Worker), a WebAssembly memory failure was a `RangeError` and reached the app as `invalid_argument`. It
+  is now `engine_failed` with "not enough memory" in the message; a failed take likewise.
+- **Fixed: a failed model download was never counted.** The day's telemetry now counts it with its reason
+  (network, http, hash mismatch, signature, storage, other), as the other SDKs do.
+- **Changed: the engine starts when the model is opened, not at its first call**, so a runtime that cannot run it
+  is reported as such. A Worker's error keeps its class (a `CompileError`, a `RangeError`) on its way to the page.
+
 ## 3.1.6
 
 Two causes of a model that never loads, seen on live pages: a browser without Ed25519 in WebCrypto, and a

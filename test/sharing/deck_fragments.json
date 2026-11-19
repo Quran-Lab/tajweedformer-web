@@ -1,7 +1,7 @@
 {
  "format": "quranlab.deck-fragments/1",
  "archived": "2026-11-12.1",
- "bundled": "2026-11-13.1",
+ "bundled": "2026-11-19.1",
  "note": "Per language: the UTF-8 length and SHA-256 of what the archived deck's strings have and the bundled deck's do not. Made by test/sharing/deck_fragments.mjs; never edited by hand.",
  "languages": {
   "ar": [

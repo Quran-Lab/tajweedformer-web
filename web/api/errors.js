@@ -92,6 +92,18 @@ export function toTajweedError(e, { fallback = 'engine_failed', sdk = '', origin
   if (e instanceof TajweedError) return e;
   const name = e && e.name, code = e && e.code, message = (e && e.message) || String(e);
   const make = (c, values = {}) => new TajweedError(c, { detail: message, ...values }, { cause: e });
+  // 3.1.7 (ERRORS_40.md 24.4): a failure of the engine itself (marked where it was seen: starting it, opening the
+  // model, a take) is the engine's, never the app's argument: a RangeError of WebAssembly memory is engine_failed
+  const rep = e && e.qlReport;
+  // a store that failed under a call: full is storage_full, anything else storage_failed (24.4 rule 5)
+  if (rep && (rep.stage === 'storage' || (rep.stage === 'download' && (rep.reason === 'storage' || rep.reason === 'quota')))) {
+    return rep.reason === 'quota' || name === 'QuotaExceededError' ? make('storage_full', { needed: 'more', available: 'too few' }) : make('storage_failed');
+  }
+  if (rep && (rep.stage === 'runtime' || rep.stage === 'model_open' || rep.stage === 'session')) {
+    if (rep.reason === 'memory') return make('engine_failed', { detail: 'not enough memory to start the engine on this device' });
+    if (['wasm_unsupported', 'simd', 'threads'].includes(rep.reason)) return make('runtime_unsupported', { detail: rep.reason === 'simd' ? 'this browser has no WebAssembly SIMD' : 'this runtime has no usable WebAssembly', minimum: RUNTIME_MINIMUM });
+    return make('engine_failed');
+  }
   // a runtime that cannot check a signature at all (no WebCrypto) is not a fault of the model, nor offline
   if (name === 'ModelFolderError' && code === 'signature_unsupported') return make('runtime_unsupported', { detail: 'this runtime has no WebCrypto', minimum: RUNTIME_MINIMUM });
   if (name === 'PlatformError' && code === 'runtime_unsupported') return make('runtime_unsupported', { detail: 'this runtime has no WebCrypto', minimum: RUNTIME_MINIMUM });
@@ -128,9 +140,13 @@ export function toTajweedError(e, { fallback = 'engine_failed', sdk = '', origin
       return make('sdk_too_old', { version: v || 'the newest release', sdk });
     }
     if (code === 'model_unavailable') return make('model_unavailable', { sdk });
+    // 3.1.7 (ERRORS_40.md 24.4): an answer that came and cannot be used is never needs_connection
+    if (code === 'signature_invalid') return make('download_failed', { detail: 'the signed config from Quran Lab did not verify' });
+    if (code === 'config_expired') return make('download_failed', { detail: 'the signed config from Quran Lab has expired (check the device clock)' });
     // a refusal: the reason's own message and fix when the catalogue has them (a 403 code, or the origin check's answer)
     if (e.status === 403 || REASONS[code]) return serverRejected(code, { origin: e.origin || origin }, { cause: e });
     if (e.status === 0 || code === 'offline') return make('needs_connection');
+    if (e.status >= 500 || e.status === 429) return make('download_failed', { detail: `Quran Lab's server answered ${e.status}; try again later` });
     return make('download_failed');
   }
   if (name === 'QuotaExceededError') return make('storage_full', { needed: 'more', available: 'too few' });

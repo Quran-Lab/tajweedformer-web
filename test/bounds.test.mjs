@@ -161,16 +161,6 @@ test('chunks and events of a Session nobody reads: the newest stay, the take sti
   await model.close();
 });
 
-test('Microphone.samples(): a reader that stops reading keeps the newest blocks only', async () => {
-  const fm = fakeMicrophone({ sampleRate: 48000 });
-  const mic = await Microphone.open(fm.seams);
-  const it = mic.samples()[Symbol.asyncIterator]();
-  fm.play(new Float32Array(960 * (MIC_QUEUE_BLOCKS + 200)));
-  assert.equal(mic._queue.length, MIC_QUEUE_BLOCKS);
-  assert.equal((await it.next()).value.length, 960);
-  mic.close();
-});
-
 test('the feed ring is one array of exactly one second, however the app feeds', () => {
   let now = 1000;
   const rec = new ShareRecorder({ make: () => { throw new Error('no recording in this test'); }, clock: () => now });

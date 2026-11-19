@@ -4,12 +4,12 @@
 //
 //   - with a stand-in for the page's DOM (runs everywhere): the header carries the name Quran Lab in every
 //     language, before the title, left to right, out of every part a page can style; the blocks in the design's
-//     order (the disclosure before the hadith, the re-ask line between the title and the body, the guardian's
-//     confirmation after the hadith and no mistakes line in the guardian variant); the direction and the type
+//     order (the disclosure before the hadith, the re-ask line between the title and the body); one sheet for
+//     every app (SDK 4.0, ONE_SHEET_40 26.1: no other variant, whatever a caller passes); the direction and the type
 //     rules from the deck; the hadith only when the deck says where it was verified;
 //   - in headless Chrome (where a developer has it; the public runner has no browser): both buttons the same
-//     size in every language, viewport and text size; the share button disabled until the guardian's switch is
-//     on; the direction from the deck, not from the page; a low-contrast accent takes the fallback and on-accent
+//     size in every language, viewport and text size; the share button answers at once; the direction from the
+//     deck, not from the page; a low-contrast accent takes the fallback and on-accent
 //     follows the accent; a page's styles and custom properties change nothing of the sheet's type and never
 //     remove the name; the browser's text size scales it; Escape is "Not now" and a click beside the sheet does
 //     nothing (as in 3.1.0); focus moves in and stays in; the fades; reduced motion.
@@ -35,7 +35,7 @@ function standIn(el) {
     addEventListener(type, f) { (listeners[`${id} ${type}`] = listeners[`${id} ${type}`] || []).push(f); },
     focus() { focused.push(id); }, close() {}, showModal() {}, setAttribute() {} });
   const focused = [];
-  const shadow = { innerHTML: '', querySelector: (sel) => (sel === '#g' ? null : node(sel)) };
+  const shadow = { innerHTML: '', querySelector: (sel) => node(sel) };
   el.attachShadow = () => shadow;
   el.style = { setProperty() {} };
   el.getAttribute = () => null;
@@ -47,18 +47,18 @@ async function sheetHtml(o) {
   const answer = el.show(o);
   const html = s.shadow.innerHTML;
   s.fire('#no click');
-  assert.deepEqual(await answer, { yes: false, guardianConfirmed: false });
+  assert.deepEqual(await answer, { yes: false });
   return { html, focused: s.focused };
 }
 const unescape = (x) => x.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
 const esc = (x) => String(x).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const at = (html, text) => { const i = html.indexOf(`>${esc(text)}<`); assert.ok(i >= 0, `not on the sheet: ${text.slice(0, 40)}`); return i; };
 
-test('the header carries the name Quran Lab in every language (sheet, guardian, re-ask): a constant, left to right, before the title, in no part a page can style', async () => {
+test('the header carries the name Quran Lab in every language (first ask and re-ask): a constant, left to right, before the title, in no part a page can style', async () => {
   assert.equal(SHEET_NAME, 'Quran Lab');
   for (const lang of LANGS) {
-    for (const [guardian, variant] of [[false, 'first'], [true, 'first'], [false, 'reask'], [true, 'reask']]) {
-      const { html, focused } = await sheetHtml({ lang, guardian, variant });
+    for (const variant of ['first', 'reask']) {
+      const { html, focused } = await sheetHtml({ lang, variant });
       const tag = '<span class="name" id="n" dir="ltr" tabindex="-1">Quran Lab</span>';
       assert.equal(html.split(tag).length, 2, `${lang}: the name once, as a left to right text`);
       const head = html.slice(html.indexOf('<div class="head">'), html.indexOf('</div>', html.indexOf('<div class="head">')));
@@ -73,7 +73,7 @@ test('the header carries the name Quran Lab in every language (sheet, guardian, 
   }
 });
 
-test('the blocks in the design\'s order: header, title, re-ask, body, the disclosure card, the hadith, mistakes; the guardian variant with its confirmation and no mistakes line; the bar last', async () => {
+test('the blocks in the design\'s order: header, title, re-ask, body, the disclosure card, the hadith, mistakes; the bar last', async () => {
   for (const lang of LANGS) {
     const s = DECKS[lang].strings;
     let { html } = await sheetHtml({ lang, variant: 'reask' });
@@ -81,20 +81,30 @@ test('the blocks in the design\'s order: header, title, re-ask, body, the disclo
       at(html, s['sheet.who']), at(html, s['sheet.control']), at(html, s['sheet.hadith']), at(html, s['sheet.hadith_ref']), at(html, s['sheet.mistakes']),
       at(html, s['sheet.share']), at(html, s['sheet.not_now'])];
     assert.deepEqual(order, order.slice().sort((a, b) => a - b), `${lang}: order`);
-    assert.ok(!html.includes(esc(s['sheet.guardian.confirm'])), `${lang}: no guardian line on the sheet`);
     ({ html } = await sheetHtml({ lang }));
     assert.ok(!html.includes(`>${esc(s.reask)}<`), `${lang}: the re-ask line only on a re-ask`);
-    ({ html } = await sheetHtml({ lang, guardian: true }));
-    const g = [at(html, 'Quran Lab'), at(html, s['sheet.guardian.title']), at(html, s['sheet.guardian.body']), at(html, s['sheet.what']), at(html, s['sheet.who']),
-      at(html, s['sheet.control']), at(html, s['sheet.hadith']), at(html, s['sheet.guardian.confirm']), at(html, s['sheet.guardian.share']), at(html, s['sheet.not_now'])];
-    assert.deepEqual(g, g.slice().sort((a, b) => a - b), `${lang} guardian: order`);
-    assert.ok(!html.includes(esc(s['sheet.mistakes'])) && !html.includes(`>${esc(s['sheet.body'])}<`), `${lang} guardian: no mistakes line, the guardian's body`);
-    assert.match(html, /<input type="checkbox" role="switch" class="switch" id="g">/, `${lang}: the guardian's switch, off`);
-    assert.match(html, /<button type="button" class="primary" part="primary" id="yes" disabled>/, `${lang}: share disabled until the switch is on`);
+    assert.match(html, /<button type="button" class="primary" part="primary" id="yes">/, `${lang}: the share button, enabled`);
     // real buttons, the two parts of 3.1.0 and the rest of its parts
-    for (const p of ['sheet', 'title', 'body', 'primary', 'secondary', 'guardian']) assert.ok(html.includes(`part="${p}"`), `${lang}: part ${p}`);
+    for (const p of ['sheet', 'title', 'body', 'primary', 'secondary']) assert.ok(html.includes(`part="${p}"`), `${lang}: part ${p}`);
     assert.equal((html.match(/<button type="button"/g) || []).length, 2);
   }
+});
+
+test('one sheet for every app (SDK 4.0, ONE_SHEET_40 26.1): a `guardian` a 3.x caller still passes is not read; no other title, body, switch, part or button; the answer is { yes } alone', async () => {
+  for (const lang of LANGS) {
+    for (const variant of ['first', 'reask']) {
+      const plain = await sheetHtml({ lang, variant });
+      const old = await sheetHtml({ lang, variant, guardian: true });
+      assert.equal(old.html, plain.html, `${lang} ${variant}: the same sheet`);
+      assert.ok(!/guardian|type="checkbox"|disabled/.test(plain.html.replace(/<style>[\s\S]*?<\/style>/, '')), `${lang} ${variant}: no second variant in the markup`);
+      assert.ok(!/guardian|\.switch/.test(plain.html), `${lang} ${variant}: nor in its styles`);
+    }
+  }
+  const el = new QuranLabConsent();
+  const s = standIn(el);
+  const answer = el.show({ lang: 'en', guardian: true });
+  s.fire('#yes click');
+  assert.deepEqual(await answer, { yes: true });
 });
 
 test('the direction and the type rules come from the deck: right to left for Arabic and Urdu, Latin tracking only for Latin scripts', async () => {
@@ -178,7 +188,7 @@ test('in headless Chrome: the sheet\'s design', { skip: skipBrowser, timeout: 60
     return Object.assign(page, { textSize });
   };
   try {
-    await t.test('both buttons are the same size (width and height, at least 52 high) in every language, at 320, 390 and 1280 wide, at the default text size and twice it, also in the guardian variant', async () => {
+    await t.test('both buttons are the same size (width and height, at least 52 high) in every language, at 320, 390 and 1280 wide, at the default text size and twice it, on the first ask and the re-ask', async () => {
       const page = await open();
       let n = 0;
       for (const [width, height] of [[320, 568], [390, 844], [1280, 800]]) {
@@ -186,9 +196,9 @@ test('in headless Chrome: the sheet\'s design', { skip: skipBrowser, timeout: 60
         for (const k of [1, 2]) {
           await page.textSize(k);
           for (const lang of LANGS) {
-            for (const guardian of [false, true]) {
-              const r = await page.evaluate((lang, guardian) => { openSheet({ lang, guardian }); const out = { yes: box(R().querySelector('#yes')), no: box(R().querySelector('#no')), bar: box(R().querySelector('.bar')) }; close1(); return out; }, lang, guardian);
-              const what = `${lang}${guardian ? ' guardian' : ''} ${width}x${height} text x${k}`;
+            for (const variant of ['first', 'reask']) {
+              const r = await page.evaluate((lang, variant) => { openSheet({ lang, variant }); const out = { yes: box(R().querySelector('#yes')), no: box(R().querySelector('#no')), bar: box(R().querySelector('.bar')) }; close1(); return out; }, lang, variant);
+              const what = `${lang} ${variant} ${width}x${height} text x${k}`;
               assert.ok(Math.abs(r.yes.w - r.no.w) < 0.5 && Math.abs(r.yes.h - r.no.h) < 0.5, `${what}: ${JSON.stringify(r)}`);
               assert.ok(r.yes.h >= 51.5, `${what}: ${r.yes.h} high`);
               assert.ok(r.yes.x >= r.bar.x && r.yes.x + r.yes.w <= r.bar.x + r.bar.w + 0.5, `${what}: inside the bar`);
@@ -201,29 +211,18 @@ test('in headless Chrome: the sheet\'s design', { skip: skipBrowser, timeout: 60
       await page.close();
     });
 
-    await t.test('the share button is disabled until the guardian\'s switch is on; "Not now" always works; the switch is a real switch', async () => {
+    await t.test('one sheet for every app: the share button answers at once, also when a 3.x caller passes `guardian`; there is no switch to turn on first', async () => {
       const page = await open();
-      const r = await page.evaluate(async () => {
-        openSheet({ lang: 'en', guardian: true });
-        const yes = R().querySelector('#yes'), no = R().querySelector('#no'), g = R().querySelector('#g');
-        const out = { role: g.getAttribute('role'), start: [yes.disabled, no.disabled, g.checked] };
-        yes.click(); await new Promise((r) => setTimeout(r, 50));
-        out.afterDisabledClick = window.answered;
-        g.click(); out.on = [yes.disabled, g.checked];
-        g.click(); out.off = [yes.disabled, g.checked];
-        // the label is part of the switch: a tap on its text turns it on
-        R().querySelector('label.guardian span').click(); out.byLabel = [yes.disabled, g.checked];
-        yes.click(); out.answer = await window.answer;
-        return out;
-      });
-      assert.deepEqual(r, { role: 'switch', start: [true, false, false], afterDisabledClick: null, on: [false, true], off: [true, false], byLabel: [false, true], answer: { yes: true, guardianConfirmed: true } });
-      // the keyboard: Space on the focused switch
-      const k = await page.evaluate(() => { openSheet({ lang: 'ar', guardian: true }); R().querySelector('#g').focus(); return true; });
-      assert.ok(k);
-      await page.keyboard.press('Space');
-      assert.equal(await page.evaluate(() => R().querySelector('#yes').disabled), false);
-      await page.evaluate(() => close1());
-      assert.deepEqual(await page.evaluate(() => window.answer), { yes: false, guardianConfirmed: true });
+      for (const o of [{ lang: 'en' }, { lang: 'ar', guardian: true }]) {
+        const r = await page.evaluate(async (o) => {
+          openSheet(o);
+          const yes = R().querySelector('#yes');
+          const out = { disabled: yes.disabled, inputs: R().querySelectorAll('input').length };
+          yes.click(); out.answer = await window.answer;
+          return out;
+        }, o);
+        assert.deepEqual(r, { disabled: false, inputs: 0, answer: { yes: true } }, JSON.stringify(o));
+      }
       await page.close();
     });
 
@@ -311,15 +310,15 @@ test('in headless Chrome: the sheet\'s design', { skip: skipBrowser, timeout: 60
       await page.close();
     });
 
-    await t.test('a page\'s styles change nothing inside the sheet (`* { font-weight: 900; font-size: 30px; line-height: 3 }`, light and dark, English and Arabic, the guardian variant, twice the text size), and its custom properties and part rules never remove the name', async () => {
+    await t.test('a page\'s styles change nothing inside the sheet (`* { font-weight: 900; font-size: 30px; line-height: 3 }`, light and dark, English and Arabic, the first ask and the re-ask, twice the text size), and its custom properties and part rules never remove the name', async () => {
       for (const [scheme, text] of [['light', 1], ['dark', 1], ['light', 2]]) {
         const clean = await open('/', { scheme, text }), hostile = await open('/hostile', { scheme, text });
         for (const lang of ['en', 'ar']) {
-          for (const guardian of [false, true]) {
-            const sig = (p) => p.evaluate((lang, guardian) => { openSheet({ lang, guardian }); const s = sig(); close1(); return s; }, lang, guardian);
+          for (const variant of ['first', 'reask']) {
+            const sig = (p) => p.evaluate((lang, variant) => { openSheet({ lang, variant }); const s = sig(); close1(); return s; }, lang, variant);
             const a = await sig(clean), b = await sig(hostile);
             assert.ok(a.length > 20);
-            assert.deepEqual(b, a, `${lang}${guardian ? ' guardian' : ''} ${scheme} text x${text}`);
+            assert.deepEqual(b, a, `${lang} ${variant} ${scheme} text x${text}`);
           }
         }
         // what the page does reach: its own root's size (rem), never the sheet's
@@ -376,7 +375,7 @@ test('in headless Chrome: the sheet\'s design', { skip: skipBrowser, timeout: 60
         assert.equal(await page.evaluate(() => R().querySelector('dialog').open && window.answered === null), true, `${width}: a click beside the sheet`);
         await page.keyboard.press('Escape');
         await new Promise((r) => setTimeout(r, 100));
-        assert.deepEqual(await page.evaluate(() => window.answered), { yes: false, guardianConfirmed: false });
+        assert.deepEqual(await page.evaluate(() => window.answered), { yes: false });
         assert.equal(await page.evaluate(() => document.querySelector('quranlab-consent')), null, 'the element is gone');
         await page.close();
       }

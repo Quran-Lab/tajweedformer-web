@@ -1,177 +1,430 @@
-# @quran-lab/tajweedformer 3.1.6: API
+# @quran-lab/tajweedformer 4.0.0: API
 
-The whole public surface. Every type is in [`web/index.d.ts`](../web/index.d.ts); a test keeps this page, the
-type definitions and the package's exports in step. The names and the call order are the same in the Android,
-Apple and C SDKs.
+Every public name of the package, generated from [`web/index.d.ts`](../web/index.d.ts) by
+`scripts/make_api_doc.mjs`: do not edit this page by hand. In a browser the hosted loader
+(`https://web.quranlab.ai/4/loader.js`) puts the same names on `globalThis.QuranLab`; the npm package hands out the
+same classes, and in Node its `node` entry runs them with a desktop key and its app id. The names and the call order
+are the same in the Android, Apple and C SDKs.
 
-## Entry points
-
-| Import | What |
-| --- | --- |
-| `@quran-lab/tajweedformer` | everything below |
+> Type definitions for @quran-lab/tajweedformer 4.0.0 (web API 4): the whole public surface, and nothing else. The package is a thin wrapper that loads Quran Lab's hosted loader; the same names are on globalThis.QuranLab. Five concepts: Client, Model, Session, Heads, Backend. Call order: Client, model, listen, read.
 
 ## Call order
 
 ```js
-import { TajweedClient } from '@quran-lab/tajweedformer';
-const client = await TajweedClient.create({ key: 'qlk_v1_...' });
+const client = await QuranLab.TajweedClient.create({ key: 'qlk_v1_...' });   // or import { TajweedClient } from '@quran-lab/tajweedformer'
 const model = await client.model();
 const session = await model.listen({ endOnSilenceMs: 1500 });
 for await (const chunk of session.chunks) console.log(chunk.decoded.text);
 ```
 
-An app that owns its audio replaces `listen` with `const session = model.session({ sampleRate })` and
-`session.push(samples)`.
+An app that owns its audio replaces `listen` with `model.session({ sampleRate })` and `session.push(samples)`.
+There is no `analytics` option in 4.0: the anonymous analytics are always on, and `create()` refuses an `analytics`
+key, whatever its value, with `invalid_argument` (see [migrating-to-4.md](migrating-to-4.md)). There is no `audience`
+option either: every app shows the same sharing sheet, and `create()` refuses an `audience` key the same way.
 
-## TajweedClient
+## Contents
 
-One per page (per process in Node): `create` while another Client is open fails with `client_exists`.
+- [`LOADER_URL`](#loader_url) (constant)
+- [`API`](#api) (constant)
+- [`loadQuranLab`](#loadquranlab) (function)
+- [`TajweedError`](#tajweederror) (class)
+- [`TajweedErrorCode`](#tajweederrorcode) (type)
+- [`TajweedClientOptions`](#tajweedclientoptions) (interface)
+- [`TajweedClient`](#tajweedclient) (class)
+- [`TajweedAnalytics`](#tajweedanalytics) (interface)
+- [`TajweedDiagnosis`](#tajweeddiagnosis) (interface)
+- [`TajweedSharing`](#tajweedsharing) (interface)
+- [`TajweedBackend`](#tajweedbackend) (interface)
+- [`TajweedTokens`](#tajweedtokens) (interface)
+- [`TajweedCalibration`](#tajweedcalibration) (interface)
+- [`TajweedReference`](#tajweedreference) (interface)
+- [`TajweedClip`](#tajweedclip) (interface)
+- [`TajweedSessionOptions`](#tajweedsessionoptions) (interface)
+- [`TajweedModel`](#tajweedmodel) (class)
+- [`TajweedSession`](#tajweedsession) (class)
+- [`RecitedOutcome`](#recitedoutcome) (type)
+- [`TajweedChunk`](#tajweedchunk) (interface)
+- [`TajweedEvent`](#tajweedevent) (type)
+- [`TajweedDecoded`](#tajweeddecoded) (interface)
+- [`TajweedToken`](#tajweedtoken) (interface)
+- [`TajweedWord`](#tajweedword) (interface)
+- [`TajweedFrame`](#tajweedframe) (interface)
+- [`TajweedHead`](#tajweedhead) (interface)
+- [`TajweedHeads`](#tajweedheads) (class)
+- [`Microphone`](#microphone) (class)
 
-| Member | |
-| --- | --- |
-| `TajweedClient.create(options)` | Promise of the Client. `options` is a `TajweedClientOptions`. Network trouble does not make it fail. |
-| `client.model(version?)` | Promise of the `TajweedModel` for this app: downloads on first use, verifies, opens and warms the engine. `version` ("4.0.0") pins a model version. |
-| `client.prefetch({ unmeteredOnly, onProgress, version })` | Download and verify ahead of use. `onProgress({ bytesDone, bytesTotal })`. Resolves with `{ bytesDone, bytesTotal, complete }`. With `unmeteredOnly` it waits on a `metered` connection and with `none`, and downloads on `unmetered` and `unknown` (see `connection` below). |
-| `client.storage()` | Promise of `{ models: [{ version, build, bytes }], sharingQueueBytes }`. |
-| `client.removeModels()` | Remove the model files (never the consent state or the sharing queue). |
-| `client.diagnose()` | Promise of a `TajweedDiagnosis`. |
-| `client.sharing` | A `TajweedSharing`. |
-| `client.analytics` | A `TajweedAnalytics`: `reportChecks(rule, checked, flagged)`. |
-| `client.pin` | `{ version, status }` when the server could not serve a pinned version, else null. |
-| `client.background()`, `client.foreground()` | The app left or returned to the foreground. Automatic in browsers. |
-| `client.close()` | Close the Client and its Model. |
+## LOADER_URL
 
-`TajweedClientOptions`: `key` (required), `appId` (Node: the app id of a desktop key), `appVersion`, `storage`
-(Node: a folder; browsers: a name for this client's stored state), `analytics` (`'on'` or `'off'`), `audience`
-(`'general'` or `'children'`).
+The hosted loader's URL for API 4.
 
-`TajweedDiagnosis`: `sdk` (`version`, `latest`), `key` (`accepted`: true, false or null while no answer was seen;
-`reason`), `config` (`'fresh'`, `'stale'`, `'none'`), `model` (null, or `version`, `build`, `verified`),
-`context` and `backend` (what a Session of the default context would run on now, with or without an open Model;
-null when no model is on the device), `microphone` (`'granted'`, `'denied'`, `'notAsked'`, `'none'`),
-`storage`, `lastError` (a code or null), `droppedChunks` (waiting chunks dropped because the app did not read
-`chunks`, since the Client was made), `connection` (`'unmetered'`, `'metered'`, `'none'`, or `'unknown'` where the
-runtime cannot tell: Node, a browser without the Network Information API such as Safari and Firefox, and a
-browser that gives no connection type).
+```ts
+export declare const LOADER_URL: string
+```
 
-## TajweedModel
+## API
 
-A Model comes from `client.model()`, and only from there (3.1.0): no call takes a model as a folder, a URL, a
-reader or bytes, and the Client opens only a build it downloaded itself on this device. A browser that blocks
-the site's storage (cookies and site data blocked) keeps nothing: there the model is downloaded at every visit
-(3.1.3; before, `client.model()` failed there with `storage_failed`). In Node the record of a download is bound
-with the machine's id and the user; where no machine id can be read (a container), with a key file in the
-SDK's folder, which a copy of that folder carries. When an answer of
-Quran Lab refuses the key or the app with one of the reasons `key_revoked`, `key_unknown`, `app_not_allowed`,
-`origin_not_allowed`, `key_type_mismatch`, `app_blocked` or `developer_not_approved`, `client.model()` and
-`client.prefetch()` fail with that refusal's error (`invalid_key` for a revoked or unknown key, else
-`server_rejected`), also with the model on the device and at a later start without a network, until Quran Lab
-accepts the key again. With the refusal the SDK removes the downloaded model from the browser (what
-`removeModels()` removes); once the key is accepted again the model is downloaded again. An answer without one
-of these reasons never does this. A Model that is already open when the refusal arrives keeps running until the
-app closes it.
+The API number of this package and of the loader it loads.
 
-| Member | |
-| --- | --- |
-| `id`, `version`, `build` | `"v4.0"`, `"4.0.0"`, the build id (diagnostics only). |
-| `contexts`, `defaultContext`, `chunkMs(context?)` | The context names, the one a Session uses by default, a context's chunk length in ms. |
-| `tokens` | A `TajweedTokens`: `count`, `blank`, `wordBar`, `name(id)`, `id(name)`. |
-| `calibration` | A `TajweedCalibration` or null: `format`, `sha256`, `text`, `json`, `contexts`, `classes`, `presets`, `context(name)`, `threshold(context, class, preset)`. Read-only data; never applied. |
-| `reference` | A `TajweedReference` or null: `isDownloaded`, `fetch()`, `units(surah, ayah)` giving `{ units, words, wordCount }`. |
-| `sampleClips` | A list of `TajweedClip`: `name`, `kind`, `durationMs`. |
-| `backend` | The `TajweedBackend` the next Session will use. |
-| `listen(options?)` | Promise of a `TajweedSession` fed by the microphone; with `from` (a clip, or a `Float32Array` with `sampleRate`) fed by that audio. |
-| `session(options?)` | A `TajweedSession` the app pushes audio into. |
-| `close()` | Release the engine. |
+```ts
+export declare const API: 4
+```
 
-`TajweedSessionOptions`: `context`, `sampleRate` (pushed audio and `from` samples; default 16000), `heads` (names,
-or `'all'`), `backend` (`'auto'` or `'cpu'`), `topK` (0 to 38), `endOnSilenceMs` (off: 0 or null; else 100 to
-60000), `pace` (`'realTime'` or `'fast'`, with `from` only), `onChunk`, `onEvent`.
+## loadQuranLab
 
-## TajweedSession
+Load the hosted loader (once): an explicit URL and its SRI hash when the site pins one.
 
-| Member | |
-| --- | --- |
-| `push(samples)` | Mono float samples at the Session's `sampleRate` (a Session made with `session()` only). |
-| `chunks` | Async iterable of `TajweedChunk`; ends when the take ends. |
-| `events` | Async iterable of `TajweedEvent`. |
-| `finish()` | End the take. Promise of the take's `TajweedHeads`. Stops the microphone of a `listen` Session. |
-| `cancel()` | End the take and keep nothing. |
-| `backend` | The `TajweedBackend` in force. |
-| `reportRecited(surah, ayahFrom, ayahTo)` | Where the learner recited (anonymous daily totals). |
-
-`TajweedChunk`: `index`, `startMs`, `endMs`, `firstFrame`, `backend`, `speech`, `heads` (this chunk's
-`TajweedHeads`), `decoded` (the `TajweedDecoded` of the take so far).
-
-`TajweedDecoded`: `text`, `tokens` (`TajweedToken`: `id`, `name`, `firstMs`, `peakMs`, `lastMs`, `confidence`),
-`words` (`TajweedWord`: `index`, `text`, `tokens`, `firstMs`, `lastMs`, `confidence`), `frames` (`TajweedFrame`:
-`top1`, `top1LogProb`, `runnerUp`, `runnerUpLogProb`, `margin`, and `topK` when asked), `settled`, `isFinal`.
-
-`TajweedEvent`, by `type`: `speechStarted` (`atMs`), `speechEnded` (`atMs`, `silenceMs`), `interrupted` (`cause`:
-`'interruption'` or `'routeChange'`), `resumed`, `backendChanged` (`backend`, `fromChunk`; never raised on the
-web), `ended` (`reason`: `'silence'`, `'background'`, `'hidden'`, `'interrupted'`, `'sourceEnd'`, `'limit'` (the take reached 20 minutes of audio), `'error'`; with
-`error` for `'error'`).
-
-## TajweedHeads
-
-| Member | |
-| --- | --- |
-| `names` | The heads it holds. |
-| `get(name)` | A `TajweedHead` (`name`, `kind`, `frameMs`, `frames`, `classes`, `values`) or null. |
-| `greedy(name = 'log_probs')` | A CTC head's tokens: `id`, `firstMs`, `peakMs`, `lastMs`. |
-| `decoded()` | The `TajweedDecoded` of exactly these Heads. |
-
-Head names: `log_probs`, `inter1_log_probs`, `inter4_log_probs`, `id_log_probs`, `timing_log_probs`, `gem`,
-`attr_tafkheem`, `attr_ghunna`, `attr_qalqalah`, `attr_face`, `boundary`, `conf`.
-
-## TajweedBackend
-
-`kind` (`'cpu'` or `'accelerator'`), `name`, `stage`, `reason`. On the web always
-`{ kind: 'cpu', name: 'wasm', stage: 'cpu', reason: null }`.
-
-## TajweedSharing
-
-`isAvailable`, `isOn`, `setOn(on)` (a promise: off resolves when every upload in flight is aborted and the
-unsent queue is gone, within 3 s; a recording that waited then is never uploaded later), `ask()`, `feed(samples, sampleRate)`, `items()` (a promise), `summary()`,
-`delete()` (a promise: accepted by Quran Lab it also turns sharing off; not taken, it rejects and nothing
-changed; `isOn` does not change while Quran Lab is asked), `recoveryCode`, `setWording(overrides)`. The elements `QuranLabConsent` (`<quranlab-consent>`) and
-`QuranLabSharingSettings` (`<quranlab-sharing-settings>`, set its `client`) are the SDK's sheets. The consent
-sheet is a bottom sheet under 600 px wide and a centred card up to 480 px wide above that, with the same design
-as on Apple and Android. The sheets take these CSS custom properties, on the element, on an ancestor or through
-`theme`: `--ql-accent` (the share button, "Not now" and the icons; the tints are made from it), `--ql-accent-fg`
-(the share button's label; by default white when white has 3 to 1 against the accent, else near-black), `--ql-bg`,
-`--ql-fg`, `--ql-muted` (the hadith's reference), `--ql-radius` (the sheet's corners, 28px by default; the cards,
-buttons and emblem follow it), `--ql-font` and `--ql-title-font` (font families). An accent under 3 to 1 against its tint gives "Not now" and the emblem's glyph the text colour, and under 3 to 1 against the card the icons too; under `prefers-contrast: more` that bar is 4.5 to 1. Light and dark follow
-`prefers-color-scheme`. The page's other styles do not reach the sheets' type, and their sizes follow the
-browser's text size. A theme never changes the words, hides a line or changes the consent version.
-
-The learner's answer is stored per origin. When the device refuses to store it (a full quota), the page goes
-by the answer in force and stores it with the next write. With two pages of one origin open: an off one page
-holds unsaved stays in force there when the other page writes the stored answer, and is stored next; an on
-held unsaved gives way to what is stored.
-
-## TajweedAnalytics
-
-`reportChecks(rule, checked, flagged)`: `rule` is lower-case letters, digits and underscores (at most 24, a
-letter first); `0 <= flagged <= checked <= 100000`.
-
-## Microphone
-
-`Microphone.open()` (a promise), `sampleRate`, `samples()` (async iterable of `Float32Array` blocks), `close()`.
+```ts
+export declare function loadQuranLab(options?: { src?: string; integrity?: string }): Promise<unknown>
+```
 
 ## TajweedError
 
-`code`, `message`, `fix`, `docs`. Codes: `invalid_argument`, `invalid_key`, `sdk_too_old`, `server_rejected`,
-`client_exists`, `model_unavailable`, `needs_connection`, `network_not_permitted`, `download_failed`,
-`storage_full`, `storage_failed`, `model_missing`, `model_invalid`, `signature_invalid`, `checksum_mismatch`,
-`model_incompatible`, `reference_missing`, `session_open`, `session_closed`, `cancelled`, `engine_failed`,
-`microphone_denied`, `microphone_unavailable`, `interrupted`, `sharing_unavailable`, `runtime_unsupported`.
+Every failure the SDK raises. `code` is stable and the same in every TajweedFormer SDK.
 
-A refusal of the server is `server_rejected`, and its `message` and `fix` say what to do for the server's reason
-(the account has no access yet, the key is of another type or environment, the key belongs to another app, the
-page's origin is not on the key, a production key on a local address, the app is blocked or paused, a model
-request this install may not make). A page whose origin is not on its key
-gets no answer from the API at all; the SDK then asks Quran Lab's origin check once per page load and raises
-that refusal instead of `needs_connection`. `runtime_unsupported` is a browser or a Node without something the
-SDK needs (its `message` names it). `network_not_permitted` is in the shared catalogue for the other SDKs; the
-web SDK does not raise it.
+```ts
+export declare class TajweedError extends Error
+```
+
+- `readonly code: TajweedErrorCode`: One of the catalogue's codes, for example "needs_connection" or "microphone_denied".
+- `readonly fix: string`: One sentence a developer can act on.
+- `readonly docs: string`: https://sdk.quranlab.ai/docs/errors#<code>
+
+## TajweedErrorCode
+
+```ts
+type TajweedErrorCode =
+  | 'invalid_argument' | 'invalid_key' | 'sdk_too_old' | 'server_rejected' | 'client_exists' | 'needs_connection' | 'network_not_permitted'
+  | 'download_failed' | 'storage_full' | 'storage_failed' | 'model_missing' | 'model_invalid' | 'signature_invalid'
+  | 'checksum_mismatch' | 'model_incompatible' | 'model_unavailable' | 'reference_missing' | 'session_open' | 'session_closed' | 'cancelled'
+  | 'engine_failed' | 'microphone_denied' | 'microphone_unavailable' | 'interrupted' | 'sharing_unavailable' | 'runtime_unsupported'
+```
+
+## TajweedClientOptions
+
+The options of TajweedClient.create(). There is no analytics option in 4.0: the anonymous analytics are always on, and an `analytics` key, whatever its value, is refused with invalid_argument. There is no audience option either: every app shows the same sharing sheet, and an `audience` key, whatever its value, is refused with invalid_argument.
+
+```ts
+export interface TajweedClientOptions
+```
+
+- `key: string`: The developer key, qlk_v1_..., from sdk.quranlab.ai (a web key in browsers, a desktop key in Node).
+- `appVersion?: string`
+- `appId?: string`: Node only (a desktop key): the app id you gave that key at sdk.quranlab.ai. Required in Node.
+- `storage?: string`: In a browser: a name that separates this client's stored state (letters, digits, dot, dash, underscore; at most 40). In Node: the storage folder (default: the OS cache folder, then quranlab/tajweedformer/<appId>).
+- `threads?: 'auto' | 'off'`: 'off' (default): one thread. 'auto': the threads engine when this page is cross-origin isolated and the device has 4 or more cores.
+
+## TajweedClient
+
+The app's link to Quran Lab. One per process (per page): a second one while the first is open is client_exists.
+
+```ts
+export declare class TajweedClient
+```
+
+- `static create(options: TajweedClientOptions): Promise<TajweedClient>`
+- `model(version?: string | { version?: string }): Promise<TajweedModel>`: The Model for this app: downloads on first use, verifies, opens and warms the engine. `version` pins a model version.
+- `prefetch(options?: { unmeteredOnly?: boolean; onProgress?: (p: { bytesDone: number; bytesTotal: number }) => void; version?: string }): Promise<{ bytesDone: number; bytesTotal: number; complete: boolean }>`: Download and verify the model ahead of use: resumable, a no-op when done.
+- `storage(): Promise<{ models: { version: string; build: string; bytes: number }[]; sharingQueueBytes: number }>`: What the SDK holds on this device, in bytes.
+- `removeModels(): Promise<void>`: Remove the model files of this site (ciphertext only is ever stored).
+- `diagnose(): Promise<TajweedDiagnosis>`: One structured report, safe to paste into an issue.
+- `readonly sharing: TajweedSharing`
+- `readonly analytics: TajweedAnalytics`
+- `readonly pin: { version: string; status: string } | null`: The answer to a pinned model version the server could not serve, or null.
+- `background(): Promise<void>`: The app left the foreground. Automatic in browsers; a call in Node.
+- `foreground(): void`: The app returned to the foreground. Automatic in browsers; a call in Node.
+- `close(): Promise<void>`
+
+## TajweedAnalytics
+
+```ts
+export interface TajweedAnalytics
+```
+
+- `reportChecks(rule: string, checked: number, flagged: number): void`: The app's own judge checked `rule` `checked` times and flagged `flagged` of them (anonymous daily totals).
+
+## TajweedDiagnosis
+
+```ts
+export interface TajweedDiagnosis
+```
+
+- `sdk: { version: string; latest: string | null }`
+- `key: { accepted: boolean | null; reason: 'invalid_key' | 'sdk_too_old' | 'server_rejected' | null }`: accepted: null while no answer from Quran Lab was seen (offline).
+- `config: 'fresh' | 'stale' | 'none'`
+- `model: { version: string; build: string; verified: boolean } | null`: The open model (verified), or the one last used on this device; null when there is none.
+- `context: string | null`
+- `backend: TajweedBackend | null`
+- `microphone: 'granted' | 'denied' | 'notAsked' | 'none'`
+- `storage: { models: { version: string; build: string; bytes: number }[]; sharingQueueBytes: number }`
+- `lastError: TajweedErrorCode | null`: The code of the last TajweedError, or null.
+- `droppedChunks: number`: Waiting chunks dropped because the app did not read `chunks` (at most 256 wait), since the Client was made.
+- `connection: 'unmetered' | 'metered' | 'none' | 'unknown'`: The connection as far as the runtime can tell; 'unknown' in Node and where the browser has no Network Information API.
+
+## TajweedSharing
+
+Recitation sharing: every learner is asked, under the SDK's rules, and the choice is theirs: "Not now", and turning sharing off or deleting what they shared at any time.
+
+```ts
+export interface TajweedSharing
+```
+
+- `readonly isAvailable: boolean`: Sharing can be offered now: false in Node, on a platform where it is not offered yet, and while Quran Lab has paused it for everyone (its global incident switch in the signed config). Never a decision about one app.
+- `readonly isOn: boolean`: The learner said yes.
+- `setOn(on: boolean): Promise<void>`: The settings switch. Off starts no upload request from the call on, aborts the one in flight (what the browser or the system had already buffered of that segment may still go out) and deletes the unsent queue. Off: the promise resolves when the uploads in flight are aborted and the unsent queue is gone.
+- `ask(): Promise<{ yes: boolean } | null>`: Ask at the app's own moment: only when an ask is due by the SDK's rules (the first after 24 hours and 3 completed takes, a re-ask card after 14 days and 7 takes, then 30 days and 10; three at most; never again after a yes), never before a completed take of this visit and never during a take. Resolves with the learner's answer, or null when no ask is due (nothing is shown).
+- `feed(samples: Float32Array, sampleRate: number): void`: Audio the app already captures outside takes: used for the lead-in and tail of shared recordings only.
+- `items(): Promise<Array<{ id: string; status: string; [key: string]: unknown }>>`: The outbox: each recording's status.
+- `summary(): Promise<{ you: { sessions: number; minutes: number }; app: { contributors: number; minutes: number } | null; all: { contributors: number; minutes: number } } | null>`: The learner's summary (the gratitude line), or null.
+- `delete(): Promise<unknown>`: "Delete what I shared".
+- `readonly recoveryCode: string | null`: The code for deletion when the device is lost; null before the first shared recording.
+- `setWording(overrides: Record<string, string> | null): { version: string; textSha256: string | null; canonicalText: string | null }`: The app's own wording ({ deck key: text }); null goes back to the SDK's wording.
+
+## TajweedBackend
+
+What ran or will run the model. On the web always the CPU engine in WebAssembly.
+
+```ts
+export interface TajweedBackend
+```
+
+- `kind: 'cpu' | 'accelerator'`
+- `name: string`
+- `stage: 'cpu' | 'downloading' | 'compiling' | 'testing' | 'promoted' | 'demoted'`
+- `reason: string | null`
+
+## TajweedTokens
+
+The vocabulary of the model.
+
+```ts
+export interface TajweedTokens
+```
+
+- `readonly count: number`
+- `readonly blank: number`
+- `readonly wordBar: number`
+- `name(id: number): string | null`
+- `id(name: string): number | null`
+
+## TajweedCalibration
+
+calibration.json as shipped: read-only data for a developer's own judge. The SDK never applies it.
+
+```ts
+export interface TajweedCalibration
+```
+
+- `readonly format: string | null`
+- `readonly sha256: string`
+- `readonly text: string`: The file's exact text.
+- `readonly json: Readonly<Record<string, unknown>>`: The file parsed, frozen.
+- `readonly contexts: readonly string[]`
+- `readonly classes: readonly string[]`
+- `readonly presets: readonly string[]`
+- `context(name: string): Readonly<Record<string, unknown>> | null`
+- `threshold(context: string, cls: string, preset: string): number | null`: The threshold of a site class at a preset in a context (nats on the fused LLR), or null.
+
+## TajweedReference
+
+The expected units of each ayah: read-only data, downloaded only when the app asks.
+
+```ts
+export interface TajweedReference
+```
+
+- `readonly isDownloaded: boolean`
+- `fetch(): Promise<void>`: Download and verify the table, once.
+- `units(surah: number, ayah: number): Promise<{ units: number[]; words: number[]; wordCount: number }>`: The unit ids of an ayah in reading order (the word bar between words included), each unit's word, the word count.
+
+## TajweedClip
+
+A sample clip of the model (its self-test set).
+
+```ts
+export interface TajweedClip
+```
+
+- `readonly name: string`
+- `readonly kind: string`
+- `readonly durationMs: number`
+
+## TajweedSessionOptions
+
+```ts
+export interface TajweedSessionOptions
+```
+
+- `context?: string`: Default: the config's inference.context, then the manifest's default.
+- `sampleRate?: number`: For pushed audio only (default 16000); listen sets it from the microphone or the clip.
+- `heads?: string[] | 'all'`: Head names, or 'all'. Default: log_probs, inter1_log_probs, timing_log_probs, gem, attr_qalqalah, conf.
+- `backend?: 'auto' | 'cpu'`
+- `topK?: number`: Rank this many tokens in every decoded frame (default 0).
+- `endOnSilenceMs?: number`: When set, the take finishes after that much silence following speech.
+- `pace?: 'realTime' | 'fast'`: listen({ from }) only: 'realTime' (default) or 'fast'.
+- `onChunk?: (chunk: TajweedChunk) => void`
+- `onEvent?: (event: TajweedEvent) => void`
+
+## TajweedModel
+
+One verified model build on this device, from `client.model()`. Holds the engine (in a Worker in browsers).
+
+```ts
+export declare class TajweedModel
+```
+
+- `readonly id: string`
+- `readonly version: string`
+- `readonly build: string`: The build id, for diagnostics only.
+- `readonly contexts: readonly string[]`
+- `readonly defaultContext: string`
+- `chunkMs(context?: string): number`
+- `readonly tokens: TajweedTokens`
+- `readonly calibration: TajweedCalibration | null`
+- `readonly reference: TajweedReference | null`
+- `readonly sampleClips: readonly TajweedClip[]`
+- `readonly backend: TajweedBackend`
+- `listen(options?: TajweedSessionOptions & { from?: TajweedClip | Float32Array }): Promise<TajweedSession>`: A Session fed by the microphone (asks for the permission), or by a clip or samples with `from`.
+- `session(options?: TajweedSessionOptions): TajweedSession`: A Session the app pushes audio into.
+- `close(): Promise<void>`
+
+## TajweedSession
+
+One take: audio in, chunks and events out, the take's Heads at the end.
+
+```ts
+export declare class TajweedSession
+```
+
+- `push(samples: Float32Array): void`: Mono float samples at the Session's sampleRate (only on a Session made with model.session()).
+- `readonly chunks: AsyncIterable<TajweedChunk>`
+- `readonly events: AsyncIterable<TajweedEvent>`
+- `finish(): Promise<TajweedHeads>`: End the take; the take's Heads. On a listen Session it also stops the microphone.
+- `cancel(): Promise<void>`: End the take and keep nothing.
+- `readonly backend: TajweedBackend`
+- `reportRecited(surah: number, ayahFrom: number, ayahTo: number, options?: { outcome?: RecitedOutcome; perAyah?: Record<number, RecitedOutcome> }): void`: Where the learner recited in this take, used only where the SDK could not measure it itself, and optionally how the app judged it (anonymous daily totals; a take is never counted twice). One report per take, until the next take starts.
+
+## RecitedOutcome
+
+The app's own judgement of an ayah: correct, or incorrect with how many mistakes and which rule ids.
+
+```ts
+export type RecitedOutcome = { correct: true } | { correct: false; mistakes?: number; rules?: string[] }
+```
+
+## TajweedChunk
+
+```ts
+export interface TajweedChunk
+```
+
+- `index: number`
+- `startMs: number`
+- `endMs: number`
+- `firstFrame: number`
+- `backend: TajweedBackend`
+- `speech: boolean`: The chunk holds speech frames.
+- `heads: TajweedHeads`: The Heads of this chunk only.
+- `readonly decoded: TajweedDecoded`: The decoded layer of the take so far.
+
+## TajweedEvent
+
+```ts
+export type TajweedEvent =
+  | { type: 'speechStarted'; atMs: number }
+  | { type: 'speechEnded'; atMs: number; silenceMs: number }
+  | { type: 'interrupted'; cause: 'interruption' | 'routeChange' }
+  | { type: 'resumed' }
+  | { type: 'backendChanged'; backend: TajweedBackend; fromChunk: number }
+  | { type: 'ended'; reason: 'silence' | 'background' | 'hidden' | 'interrupted' | 'sourceEnd' | 'limit' | 'error'; error?: TajweedError }
+```
+
+## TajweedDecoded
+
+```ts
+export interface TajweedDecoded
+```
+
+- `text: string`
+- `tokens: TajweedToken[]`
+- `words: TajweedWord[]`
+- `frames: TajweedFrame[]`
+- `settled: number`: The count of leading tokens that will not change in this take.
+- `isFinal: boolean`: True on the last decoded layer of the take.
+
+## TajweedToken
+
+```ts
+export interface TajweedToken
+```
+
+- `id: number`
+- `name: string`
+- `firstMs: number`
+- `peakMs: number`
+- `lastMs: number`
+- `confidence: number | null`: 0 to 1 from the conf head; null when the take did not compute it.
+
+## TajweedWord
+
+```ts
+export interface TajweedWord
+```
+
+- `index: number`
+- `text: string`
+- `tokens: TajweedToken[]`
+- `firstMs: number`
+- `lastMs: number`
+- `confidence: number | null`
+
+## TajweedFrame
+
+```ts
+export interface TajweedFrame
+```
+
+- `top1: number`
+- `top1LogProb: number`
+- `runnerUp: number`
+- `runnerUpLogProb: number`
+- `margin: number`
+- `topK?: Array<{ id: number; name: string; logProb: number; margin: number }>`: With the topK option: the best tokens of the frame, ranked.
+
+## TajweedHead
+
+```ts
+export interface TajweedHead
+```
+
+- `name: string`
+- `kind: 'ctc' | 'attribute'`
+- `frameMs: number`: 40 or 20.
+- `frames: number`
+- `classes: number`
+- `values: Float32Array`: [frames x classes], row major: log-probs for a ctc head, probabilities (or one logit) for an attribute head.
+
+## TajweedHeads
+
+Raw model output for a span of audio (a chunk or a whole take).
+
+```ts
+export declare class TajweedHeads
+```
+
+- `readonly names: string[]`
+- `get(name: string): TajweedHead | null`
+- `greedy(name?: string): Array<{ id: number; firstMs: number; peakMs: number; lastMs: number }>`: Greedy tokens of a CTC head (collapsed, blank removed).
+- `decoded(): TajweedDecoded`: The decoded layer of exactly these Heads.
+
+## Microphone
+
+The SDK's optional microphone, for apps that want samples only (browsers).
+
+```ts
+export declare class Microphone
+```
+
+- `static open(): Promise<Microphone>`: Ask for the microphone and open it: microphone_denied when refused, microphone_unavailable when there is none.
+- `readonly sampleRate: number`: The rate of the samples: the device's.
+- `samples(): AsyncIterable<Float32Array>`: Mono float samples, block by block, until close().
+- `close(): void`

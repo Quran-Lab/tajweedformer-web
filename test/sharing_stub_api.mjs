@@ -40,7 +40,8 @@ export async function stubApi(flags) {
       const cfg = { v: 1, app: 'linux:org.example.recfix', channel: 'stable', issued_at: now, expires_at: now + 86400, models: {}, recommended: null, denylist: [], flags: state.flags };
       const bytes = enc.encode(JSON.stringify(cfg));
       const sig = new Uint8Array(await crypto.subtle.sign({ name: 'Ed25519' }, kp.privateKey, bytes));
-      return new Response(bytes, { status: 200, headers: { 'x-qlab-signature': `ed25519=${b64u(sig)}`, 'x-qlab-key-id': kid, etag: `"v${state.configVersion++}"` } });
+      // the server's time in Date (3.1.6: a device clock days off is judged by it)
+      return new Response(bytes, { status: 200, headers: { 'x-qlab-signature': `ed25519=${b64u(sig)}`, 'x-qlab-key-id': kid, etag: `"v${state.configVersion++}"`, date: new Date().toUTCString() } });
     }
     if (u.pathname === '/v1/uploads' && init.method === 'POST') {
       const body = JSON.parse(init.body);
@@ -65,8 +66,19 @@ export async function stubApi(flags) {
   return { fetch, pub, state };
 }
 
+export const DAY = 86_400_000;
+/** SDK 4.0: a state in which the first ask is due at the next good session: an install two
+ * days old with two completed sessions (the next is the 3rd). A test that wants a fresh install passes memoryState(). */
+export function dueState(o = {}) {
+  const st = memoryState();
+  st.set('sharing.v1', { v: 1, consent: 'unknown', asks: 0, lastAskSession: 0, sessions: 2, installedAt: Date.now() - 2 * DAY, ...o });
+  return st;
+}
+/** Timers that run at once: the ask's 3 s settle (SHARE_ASK_SETTLE_MS) passes without waiting. */
+export const NOW = Object.freeze({ setTimeout: (f) => { Promise.resolve().then(f); return 0; }, clearTimeout: () => {} });
+
 export const client = async (api, extra = {}) => QuranLab.configure({ key: KEY, platform: 'linux', bundleId: 'org.example.recfix', apiUrl: 'https://api.test',
-  fetch: api.fetch, trustedKeys: [api.pub], state: memoryState(), appVersion: '1', ...extra });
+  fetch: api.fetch, trustedKeys: [api.pub], state: dueState(), appVersion: '1', ...extra });
 
 /** The model self-test clip (16 kHz) repeated to `seconds`. */
 export function clip16k(seconds) {
@@ -76,12 +88,13 @@ export function clip16k(seconds) {
   return pcm;
 }
 
-/** One listened session through the controller's wiring (a stub stream), then the session-completed hook. */
+/** One listened session through the controller's wiring (a stub stream), then the take's end (a good session: a
+ * minute recited, contract 20.2). */
 export async function listen(ctl, pcm, { complete = true } = {}) {
   const s = { pushAudio: () => 0, finish: () => 0, free: () => 0 };
   ctl.streamStarted({ sampleRate: 16000 }, s);
   for (let i = 0; i < pcm.length; i += 640) s.pushAudio(pcm.subarray(i, i + 640));
   s.finish();
   await new Promise((r) => setTimeout(r, 300));
-  return complete ? ctl.sessionCompleted({ feedback: true }) : null;
+  return complete ? ctl.takeEnded({ end: 'normal', speechMs: 60000 }) : null;
 }

@@ -1,4 +1,4 @@
-// The look of the SDK's sharing sheets (consent, guardian, thanks, settings): the same theme keys as the Swift
+// The look of the SDK's sharing sheets (consent, re-ask card, thanks, settings): the same theme keys as the Swift
 // SDK's SharingTheme, set as CSS custom properties on each element (an app can also set the properties in its
 // own CSS). A theme changes colours, corner radius and fonts, never the words or the consent version.
 

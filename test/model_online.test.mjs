@@ -1,7 +1,7 @@
 // SDK 3.1.0 (SPEC section 15): a model comes only from Quran Lab's server, through the Client.
 //
-//   15.1  no public way to hand the SDK a model (the surface is in test/api_surface.test.mjs; here: what the
-//         package's exports map lets a Node program import);
+//   15.1  no public way to hand the SDK a model: in 4.0, test/v4/package.test.mjs (the public names, the exports
+//         map a Node program resolves, the classes that only create() and client.model() make);
 //   15.2  the install record: the Client opens only a build it downloaded itself;
 //   15.3  a Client the server has refused does not run the model: every case of the shared vector
 //         test/vectors30/model_gate.json, with a model from a real download on the device and without one; a
@@ -18,8 +18,7 @@ import test from 'node:test';
 import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { TajweedError, TajweedClient, TajweedModel } from '../web/index.js';
+import { TajweedError } from '../web/index.js';
 import * as errorsModule from '../web/api/errors.js';
 import { createClient, resetClientForTests } from '../web/api/client.js';
 import { memoryState } from '../web/platform/storage.js';
@@ -719,32 +718,5 @@ test('15.3 the web\'s origin check: a page refused by its origin, its key or its
       assert.equal(dev.state.get(platform.MODEL_REFUSED_KEY), null, why);
     }
     await client.close();
-  }
-});
-
-// ---------------------------------------------------------------------------------------------- 15.1
-
-test('15.1 the classes of the package cannot be made from parts a page supplies: the constructors take only what the SDK itself hands them', async () => {
-  const dev = device(), api = await stubPlatform({ build });
-  const client = await launch(dev, api);
-  const model = await client.model();
-  // a Client from a transport, a store, a trusted key and a record checker of the page's own
-  const parts = { ql: client._ql, state: dev.state, store: dev.store, installs: { state: async () => 'installed' }, modelKeys: ['00'.repeat(32)], seams: {}, fetch: api.fetch };
-  for (const x of [undefined, {}, parts, { ...client._i }]) assert.throws(() => new TajweedClient(x), code('invalid_argument'));
-  // a Model from a folder (a reader) and an engine of the page's own
-  for (const x of [undefined, {}, { folder: { manifest: build.manifest, read: async () => null }, host: {}, contexts: [], names: [] }]) {
-    assert.throws(() => new TajweedModel(x), code('invalid_argument'));
-  }
-  await client.close();
-});
-
-test('15.1 the package\'s exports map gives a Node program the one entry: "./node" and every deep path are not exported', () => {
-  const require = createRequire(import.meta.url);
-  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.deepEqual(Object.keys(pkg.exports), ['.', './package.json']);
-  // the package resolved by its own name (as an app's import resolves it)
-  assert.match(require.resolve(pkg.name).replace(/\\/g, '/'), /\/web\/index\.node\.js$/);
-  for (const sub of ['node', 'web/api/model.js', 'web/tajweed/manifest.js', 'web/tajweed/delivery.js', 'web/index.js']) {
-    assert.throws(() => require.resolve(`${pkg.name}/${sub}`), (e) => e.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED', sub);
   }
 });

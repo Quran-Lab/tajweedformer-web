@@ -17,6 +17,10 @@ export const OPUS_REQUEST = Object.freeze({
 import { wasmArgs } from '../platform/node-hook.js';
 
 let modulePromise = null;
+let hosted = null;
+/** The hosted SDK 4.0 hands the module made from bytes it checked (sdk4/loader/sharing.js); the default import then
+ * never runs. */
+export function hostOpus(factory) { hosted = factory; modulePromise = null; }
 /**
  * The libopus module, instantiated once per page or process. `factory` replaces the bundled module
  * (tests, or an app that hosts the file elsewhere).
@@ -24,7 +28,7 @@ let modulePromise = null;
 export function loadOpus(factory) {
   if (factory) return factory();
   if (!modulePromise) {
-    modulePromise = import('../../dist/tajweedformer-opus.mjs').then(async (m) => m.default(await wasmArgs('tajweedformer-opus.wasm')));
+    modulePromise = hosted ? hosted() : import('../../dist/tajweedformer-opus.mjs').then(async (m) => m.default(await wasmArgs('tajweedformer-opus.wasm')));
   }
   return modulePromise;
 }

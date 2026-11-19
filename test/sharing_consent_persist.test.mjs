@@ -10,19 +10,21 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { enableSharing, registerDeck, EN, MAX_ASKS, REASK_GAP, LEGACY_CONSENT_VERSION, SHARING_STATE_KEY } from '../web/consent/index.js';
+import { enableSharing, registerDeck, EN, MAX_ASKS, LEGACY_CONSENT_VERSION, SHARING_STATE_KEY, SharingState } from '../web/consent/index.js';
 import { memoryState } from '../web/platform/index.js';
 import { resetSharingForTests, outbox as pipeline } from '../web/sharing/index.js';
 import { dirStorage, readJson, FILES } from '../web/sharing/outbox.js';
-import { stubApi, client, clip16k, listen } from './sharing_stub_api.mjs';
+import { stubApi, client, clip16k, listen, dueState, NOW, DAY } from './sharing_stub_api.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const have = existsSync(path.join(root, 'dist', 'tajweedformer-opus.mjs'));
 if (!have && process.env.REQUIRE_OPUS === '1') throw new Error('dist/tajweedformer-opus.mjs is missing: npm run build:opus');
 const skipAudio = have ? false : 'dist/tajweedformer-opus.mjs is not built (npm run build:opus)';
 
-// the deck this SDK bundles (3.1.2: contract 1.15.0, deck 2026-11-13.1)
+// the deck this SDK bundles (3.1.2: contract 1.15.0, deck 2026-11-13.1; 4.0: deck 2026-11-19.1, the same strings and
+// the re-ask card's three, without the four sheet.guardian.* strings, under the same consent version)
 const DECK = 'share-2026-11-09';
+const BUNDLED_DECK = '2026-11-19.1';
 // a newer deck than the bundled one, under a language tag no other test uses
 const NEXT = 'share-2026-12-01';
 registerDeck('zz', { ...EN, lang: 'en', version: '2026-12-01.1', consent_version: NEXT });
@@ -35,7 +37,7 @@ const v200 = (o) => ({ v: 1, consent: 'unknown', asks: 0, lastAskSession: 0, ses
 /** A controller whose ask handler records every call (and answers as told). */
 function wired(ql, { lang = 'en', answer = () => ({ yes: true }), wording } = {}) {
   const asked = [];
-  const ctl = enableSharing(ql, { lang, wording, ask: async (a) => { asked.push(a); return answer(a); } });
+  const ctl = enableSharing(ql, { lang, wording, timers: NOW, ask: async (a) => { asked.push(a); return answer(a); } });
   return { ctl, asked };
 }
 
@@ -107,8 +109,8 @@ test('upgrade from 2.0.0: a stored grant (with its version, and without one) sha
       assert.equal(ctl.state.sharing, true, 'sharing is on at once');
       assert.equal(asked.length, 0, 'no ask before the session');
       const s = await shareOne(api, ctl, pcm);
-      assert.equal(await ctl.sessionCompleted({ feedback: true }), null, 'no ask after the session');
-      for (let i = 0; i < 30; i++) await ctl.sessionCompleted({ feedback: true });
+      assert.equal(await ctl.takeEnded({ end: 'normal', speechMs: 60000 }), null, 'no ask after the session');
+      for (let i = 0; i < 30; i++) await ctl.takeEnded({ end: 'normal', speechMs: 60000 });
       assert.equal(asked.length, 0, 'the handler was never called');
       assert.equal(s.consent_version, want, 'the version the learner agreed to under 2.0.0');
       assert.equal('consent_text_sha256' in s, false);
@@ -120,7 +122,7 @@ test('upgrade from 2.0.0: a stored grant (with its version, and without one) sha
 
 test('a deck change with a 2.0.1 grant: no ask, sharing stays on, the JSON carries the version agreed to', { skip: skipAudio }, () => inDir('share-deck-', async () => {
   const api = await stubApi({ contributions: true });
-  const st = memoryState();
+  const st = dueState();
   const pcm = clip16k(12);
   let ql = await client(api, { state: st });
   let w = wired(ql);
@@ -134,7 +136,7 @@ test('a deck change with a 2.0.1 grant: no ask, sharing stays on, the JSON carri
   assert.equal(w.ctl.consent.version, NEXT, 'the newer deck is in force');
   assert.equal(w.ctl.state.sharing, true, 'not paused');
   const s = await shareOne(api, w.ctl, pcm);
-  for (let i = 0; i < 30; i++) assert.equal(await w.ctl.sessionCompleted({ feedback: true }), null);
+  for (let i = 0; i < 30; i++) assert.equal(await w.ctl.takeEnded({ end: 'normal', speechMs: 60000 }), null);
   assert.equal(w.asked.length, 0, 'no ask under the new deck');
   assert.equal(s.consent_version, DECK, 'the old version, not the deck in force');
   assert.equal(w.ctl.state.s.consentVersion, DECK, 'the stored grant is unchanged');
@@ -162,9 +164,9 @@ async function keptWithoutAsk(api, st, pcm, want, { wording, hash = null } = {})
   await w.ctl.closeRecording(); // the next start's recording is one of its own
   assert.equal(s.consent_version, want, 'the next recording carries the version agreed to');
   if (hash) assert.equal(s.consent_text_sha256, hash, 'and the hash of the wording agreed to'); else assert.equal('consent_text_sha256' in s, false);
-  for (let i = 0; i < 30; i++) assert.equal(await w.ctl.sessionCompleted({ feedback: true }), null, 'no ask after a session');
+  for (let i = 0; i < 30; i++) assert.equal(await w.ctl.takeEnded({ end: 'normal', speechMs: 60000 }), null, 'no ask after a session');
   assert.equal(await w.ctl.askNow(), null, 'no ask when the app asks now');
-  assert.equal(w.ctl.state.askNow(), null);
+  assert.equal(w.ctl.state.decide({ type: 'ask_now', offered: true }).action, 'none');
   assert.equal(w.asked.length, 0, 'the ask handler was never called');
   const after = st.get(SHARING_STATE_KEY);
   assert.deepEqual([after.consent, after.consentVersion, after.consentTextSha256 || null, after.asks], [before.consent, want, hash, before.asks], 'the stored yes is unchanged');
@@ -178,7 +180,7 @@ test('3.1.2: a yes stored under share-2026-11-12 (3.1.0 and 3.1.1) or under shar
   for (const [lang, version] of [['yx', DECK_311], ['yy', DECK_302]]) {
     await inDir('share-kept-', async () => {
       const api = await stubApi({ contributions: true, share_join_ms: 0 });
-      const st = memoryState();
+      const st = dueState();
       // the learner agrees in a page of the earlier release: its deck is in force
       let w = wired(await client(api, { state: st }), { lang });
       assert.equal(w.ctl.consent.version, version);
@@ -190,7 +192,7 @@ test('3.1.2: a yes stored under share-2026-11-12 (3.1.0 and 3.1.1) or under shar
       // the page loads again with 3.1.2: its own deck is in force, nothing is asked, the version is kept
       w = await keptWithoutAsk(api, st, pcm, version);
       assert.equal(w.ctl.consent.version, DECK, 'the 3.1.2 deck is in force');
-      assert.equal(w.ctl.copy.version, '2026-11-13.1');
+      assert.equal(w.ctl.copy.version, BUNDLED_DECK);
       // and after one more restart
       await keptWithoutAsk(api, st, pcm, version);
       assert.equal(st.get(SHARING_STATE_KEY).consentVersion, version, 'kept on the device');
@@ -214,18 +216,73 @@ test('upgrade from 3.1.1 to 3.1.2: the state 3.1.1 stored for a yes (under share
   const off = wired(await client(api, { state: st }));
   await off.ctl.setSharing(false);
   assert.equal(off.ctl.state.sharing, false);
-  for (let i = 0; i < 30; i++) assert.equal(await off.ctl.sessionCompleted({ feedback: true }), null);
+  for (let i = 0; i < 30; i++) assert.equal(await off.ctl.takeEnded({ end: 'normal', speechMs: 60000 }), null);
   assert.equal(off.asked.length, 0, 'and is not asked after turning it off');
 }));
 
-test('3.1.2: a learner asked from now on agrees to share-2026-11-09 (deck 2026-11-13.1), and the recording carries it', { skip: skipAudio }, () => inDir('share-new-', async () => {
+// ONE_SHEET_40 26.1.4 and Quran Lab's permanent rule (a learner who agreed is never asked again): a yes an SDK 3.x
+// page stored after its guardian sheet, { consent: 'granted', guardian: true }, is a yes like any other in 4.0. It is
+// read as it is: sharing on at once, no ask at the start, after many sessions or by the app's own ask; the recordings
+// go up under the version agreed to. 4.0 never reads `guardian` and writes it back unchanged with every write of the
+// state (the sessions counted, the thank-you, the switch turned off and on again).
+const v3GuardianYes = () => ({ v: 1, consent: 'granted', asks: 1, lastAskSession: 3, sessions: 6, thanked: false, decidedAt: '2026-11-14',
+  consentVersion: 'share-2026-11-09', consentTextSha256: null, guardian: true, changes: 1 });
+// what 4.0 may write over a 3.x state: 20.4's counts and clocks; every other field stays as 3.x stored it
+const KEPT = ['v', 'consent', 'asks', 'thanked', 'decidedAt', 'consentVersion', 'consentTextSha256', 'guardian', 'changes'];
+const kept = (o) => Object.fromEntries(KEPT.map((k) => [k, o[k]]));
+
+test('upgrade from 3.x: a yes stored with guardian true reads as granted, nobody is asked, and guardian is written back unchanged', async () => {
+  const api = await stubApi({ contributions: true });
+  const st = memoryState();
+  st.set(SHARING_STATE_KEY, v3GuardianYes());
+  const w = wired(await client(api, { state: st }));
+  assert.equal(w.ctl.state.sharing, true, 'sharing is on at once');
+  assert.equal(w.ctl.state.grantVersion, 'share-2026-11-09', 'under the version agreed to');
+  for (let i = 0; i < 30; i++) assert.equal(await w.ctl.takeEnded({ end: 'normal', speechMs: 60000 }), null, 'no ask after a session');
+  assert.equal(await w.ctl.askNow(), null, 'no ask when the app asks now');
+  w.ctl.launch();
+  assert.equal(w.ctl.state.decide({ type: 'ask_now', offered: true }).action, 'none');
+  assert.equal(w.asked.length, 0, 'the ask handler was never called');
+  let after = st.get(SHARING_STATE_KEY);
+  assert.equal(after.sessions, 36, 'the state was written (30 sessions counted)');
+  assert.deepEqual(kept(after), kept(v3GuardianYes()), 'the stored yes is as 3.x wrote it, guardian included');
+  // more writes of the state: the thank-you, the switch off and on again (SharingState itself: the switch's queue sweep
+  // is the outbox's, tested elsewhere)
+  const s = w.ctl.state;
+  assert.equal(s.takeThanks(), true);
+  assert.equal(st.get(SHARING_STATE_KEY).guardian, true, 'after the thank-you');
+  s.setSharing(false);
+  assert.deepEqual([st.get(SHARING_STATE_KEY).consent, st.get(SHARING_STATE_KEY).guardian], ['final', true], 'after the switch off');
+  s.setSharing(true);
+  after = st.get(SHARING_STATE_KEY);
+  assert.deepEqual([after.consent, after.guardian, after.changes], ['granted', true, 3], 'after the switch on: guardian as it was, never set or cleared');
+  // a 4.0 install's own grant stores no guardian field at all
+  const fresh = memoryState();
+  const n = new SharingState(fresh, { enabled: () => true, consentVersion: DECK });
+  n.setSharing(true);
+  assert.equal(fresh.get(SHARING_STATE_KEY).consent, 'granted');
+  assert.equal('guardian' in fresh.get(SHARING_STATE_KEY), false);
+});
+
+test('upgrade from 3.x: with a yes stored with guardian true, the recordings go up under the version agreed to, with no ask, and guardian stays', { skip: skipAudio }, () => inDir('share-3x-guardian-', async () => {
+  const pcm = clip16k(12);
+  const api = await stubApi({ contributions: true, share_join_ms: 0 });
+  const st = memoryState();
+  st.set(SHARING_STATE_KEY, v3GuardianYes());
+  await keptWithoutAsk(api, st, pcm, 'share-2026-11-09');
+  await keptWithoutAsk(api, st, pcm, 'share-2026-11-09');
+  // (the thank-you after the first shared recording is the one change)
+  assert.deepEqual(kept(st.get(SHARING_STATE_KEY)), kept({ ...v3GuardianYes(), thanked: true }), 'the stored yes is as 3.x wrote it, guardian included');
+}));
+
+test('3.1.2: a learner asked from now on agrees to share-2026-11-09 (deck 2026-11-13.1; 2026-11-19.1 from 4.0), and the recording carries it', { skip: skipAudio }, () => inDir('share-new-', async () => {
   const pcm = clip16k(12);
   const api = await stubApi({ contributions: true });
   const w = wired(await client(api));
   assert.ok(await listen(w.ctl, pcm));
   assert.equal(w.asked.length, 1);
   assert.equal(w.asked[0].consentVersion, 'share-2026-11-09', 'the sheet asks for share-2026-11-09');
-  assert.equal(w.asked[0].copy.version, '2026-11-13.1');
+  assert.equal(w.asked[0].copy.version, BUNDLED_DECK);
   assert.equal(w.ctl.state.grantVersion, 'share-2026-11-09');
   const s = await shareOne(api, w.ctl, pcm);
   assert.equal(s.consent_version, 'share-2026-11-09');
@@ -235,7 +292,7 @@ test('3.1.2, an app with its own wording: the custom version changes with the de
   const pcm = clip16k(12);
   const wording = { 'sheet.title': 'Help the next learner' };
   const api = await stubApi({ contributions: true, share_join_ms: 0 });
-  const st = memoryState();
+  const st = dueState();
   // the learner agrees to the app's wording in a page of 3.1.1 (base share-2026-11-12)
   let w = wired(await client(api, { state: st }), { lang: 'yx', wording });
   const held = w.ctl.consent;
@@ -269,7 +326,7 @@ test('a wording change after a custom grant: no ask, the original custom version
   const s1 = await shareOne(api, ctl, pcm);
   ctl.setWording(null);
   const s2 = await shareOne(api, ctl, pcm);
-  for (let i = 0; i < 30; i++) assert.equal(await ctl.sessionCompleted({ feedback: true }), null);
+  for (let i = 0; i < 30; i++) assert.equal(await ctl.takeEnded({ end: 'normal', speechMs: 60000 }), null);
   assert.equal(asked.length, 1, 'asked once, at the start');
   for (const s of [s1, s2]) {
     assert.equal(s.consent_version, c0.version, 'the custom version agreed to');
@@ -286,72 +343,79 @@ test('a wording change after a custom grant: no ask, the original custom version
   assert.equal(s3.consent_text_sha256, c1.textSha256);
 }));
 
-test('"Not now" three times: no fourth sheet across 30 sessions and a restart', async () => {
+// SDK 4.0: one good session a day on a fake clock, through the controller's wiring
+async function days(w, n, at, { from = 0 } = {}) {
+  const seen = [];
+  for (let d = from; d < from + n; d++) {
+    at.t = at.t0 + d * DAY;
+    w.ctl.launch();
+    if (await w.ctl.takeEnded({ end: 'normal', speechMs: 90000 })) seen.push([d, w.asked.at(-1).kind]);
+  }
+  return seen;
+}
+
+test('"Not now" three times: the sheet, then two cards (14 days and 7 sessions, then 30 days and 10), never a fourth, across a restart', async () => {
   const api = await stubApi({ contributions: true });
   const st = memoryState();
-  const w = wired(await client(api, { state: st }), { answer: () => ({ yes: false }) });
-  const at = [];
-  for (let i = 1; i <= 30; i++) { const a = await w.ctl.sessionCompleted({ feedback: true }); if (a) at.push([i, w.asked.at(-1).variant]); }
-  assert.deepEqual(at, [[1, 'first'], [1 + REASK_GAP, 'reask'], [1 + 2 * REASK_GAP, 'reask']]);
+  const at = { t0: Date.now(), t: 0 }; // (from now: the stub's signed config is valid for a day from now)
+  at.t = at.t0;
+  const w = wired(await client(api, { state: st, clock: () => at.t }), { answer: () => ({ yes: false }) });
+  // a fresh install: the first ask at its 3rd good session after 24 hours, then 14 days later, then 30 days later
+  assert.deepEqual(await days(w, 80, at), [[2, 'sheet'], [16, 'card'], [46, 'card']]);
   assert.equal(w.ctl.state.s.asks, MAX_ASKS);
   assert.equal(w.ctl.state.s.consent, 'final');
-  assert.equal(w.ctl.state.askNow(), null, 'nor through the app\'s own timing');
+  assert.equal(w.ctl.state.decide({ type: 'ask_now', offered: true }).action, 'none', 'nor through the app\'s own timing');
   // a restart: the count is stored
-  const r = wired(await client(api, { state: st }), { answer: () => ({ yes: false }) });
-  for (let i = 0; i < 30; i++) assert.equal(await r.ctl.sessionCompleted({ feedback: true }), null);
-  assert.equal(r.asked.length, 0, 'no fourth sheet');
+  const r = wired(await client(api, { state: st, clock: () => at.t }), { answer: () => ({ yes: false }) });
+  assert.deepEqual(await days(r, 60, at, { from: 80 }), []);
   assert.equal(r.ctl.state.sharing, false);
-  // a restart between asks keeps the spacing and the count
+  // a restart between asks keeps the clocks and the count
   const st2 = memoryState();
-  const a = wired(await client(api, { state: st2 }), { answer: () => ({ yes: false }) });
-  await a.ctl.sessionCompleted({ feedback: true });
-  for (let i = 0; i < 3; i++) await a.ctl.sessionCompleted({ feedback: true });
-  const b = wired(await client(api, { state: st2 }), { answer: () => ({ yes: false }) });
-  const seen = [];
-  for (let i = 0; i < 30; i++) if (await b.ctl.sessionCompleted({ feedback: true })) seen.push(i);
-  assert.deepEqual(seen, [REASK_GAP - 4, 2 * REASK_GAP - 4], 'the spacing counts the sessions before the restart');
-  assert.equal(a.asked.length + b.asked.length, MAX_ASKS);
-  // an ask an app's own UI never answered still counts as shown
-  const c = wired(await client(api), { answer: () => null });
-  for (let i = 0; i < 40; i++) await c.ctl.sessionCompleted({ feedback: true });
+  const b0 = { t0: at.t0, t: at.t0 };
+  const a = wired(await client(api, { state: st2, clock: () => b0.t }), { answer: () => ({ yes: false }) });
+  assert.deepEqual(await days(a, 10, b0), [[2, 'sheet']]);
+  const b = wired(await client(api, { state: st2, clock: () => b0.t }), { answer: () => ({ yes: false }) });
+  assert.deepEqual(await days(b, 70, b0, { from: 10 }), [[16, 'card'], [46, 'card']], 'the intervals count from before the restart');
+  // an ask an app's own UI never answered still counts once it was handed to the app
+  const c0 = { t0: at.t0, t: at.t0 };
+  const c = wired(await client(api, { state: memoryState(), clock: () => c0.t }), { answer: () => null });
+  await days(c, 120, c0);
   assert.equal(c.asked.length, MAX_ASKS);
 });
 
-test('upgrade from 2.0.0 with an ask count: two asks and a decline give one more ask at most; a final or off 2.0.0 state stays off', async () => {
+test('upgrade from 2.0.0 with an ask count: two asks and a decline give one more ask at most, 30 days after the upgrade; a final or off 2.0.0 state stays off', async () => {
   const api = await stubApi({ contributions: true });
   const st = memoryState();
   st.set(SHARING_STATE_KEY, v200({ consent: 'declined', asks: 2, lastAskSession: 9, sessions: 12, decidedAt: '2026-11-07' }));
-  const w = wired(await client(api, { state: st }), { answer: () => ({ yes: false }) });
+  const at = { t0: Date.now(), t: 0 }; // (from now: the stub's signed config is valid for a day from now)
+  at.t = at.t0;
+  const w = wired(await client(api, { state: st, clock: () => at.t }), { answer: () => ({ yes: false }) });
   assert.equal(w.ctl.state.sharing, false, 'declined stays declined');
-  const seen = [];
-  for (let i = 1; i <= 30; i++) if (await w.ctl.sessionCompleted({ feedback: true })) seen.push(12 + i);
-  assert.deepEqual(seen, [9 + REASK_GAP], 'one more ask, spaced from 2.0.0\'s last');
-  assert.equal(w.asked[0].variant, 'reask');
+  assert.deepEqual(await days(w, 60, at), [[30, 'card']], 'one more ask: a card, 30 days after the upgrade');
   assert.equal(w.ctl.state.s.consent, 'final');
-  const r = wired(await client(api, { state: st }));
-  for (let i = 0; i < 30; i++) await r.ctl.sessionCompleted({ feedback: true });
-  assert.equal(r.asked.length, 0, 'never a fourth');
+  const r = wired(await client(api, { state: st, clock: () => at.t }));
+  assert.deepEqual(await days(r, 60, at, { from: 60 }), [], 'never a fourth');
   // 2.0.0 'final' (its last "Not now", or the switch turned off): never asked, not sharing
   for (const stored of [v200({ consent: 'final', asks: 3, lastAskSession: 20, sessions: 25 }), v200({ consent: 'final', asks: 1, lastAskSession: 1, sessions: 2, consentVersion: 'share-2026-11-07' })]) {
     const s = memoryState();
     s.set(SHARING_STATE_KEY, stored);
-    const f = wired(await client(api, { state: s }));
-    for (let i = 0; i < 30; i++) await f.ctl.sessionCompleted({ feedback: true });
-    assert.equal(f.asked.length, 0);
+    const f0 = { t0: at.t0, t: at.t0 };
+    const f = wired(await client(api, { state: s, clock: () => f0.t }));
+    assert.deepEqual(await days(f, 60, f0), []);
     assert.equal(f.ctl.state.sharing, false);
   }
-  // a 2.0.0 state without an ask count starts from zero
+  // a 2.0.0 state without an ask count starts from zero, its clock at the upgrade
   const z = memoryState();
   z.set(SHARING_STATE_KEY, { v: 1, consent: 'unknown' });
-  const u = wired(await client(api, { state: z }), { answer: () => ({ yes: false }) });
-  for (let i = 0; i < 40; i++) await u.ctl.sessionCompleted({ feedback: true });
-  assert.equal(u.asked.length, MAX_ASKS);
+  const z0 = { t0: at.t0, t: at.t0 };
+  const u = wired(await client(api, { state: z, clock: () => z0.t }), { answer: () => ({ yes: false }) });
+  assert.deepEqual(await days(u, 120, z0), [[2, 'sheet'], [16, 'card'], [46, 'card']]);
 });
 
 test('a yes ends asking: the answer and askNow change nothing afterwards; turning sharing off ends asking; the switch turns it on with the version in force then', { skip: skipAudio }, () => inDir('share-switch-', async () => {
   const api = await stubApi({ contributions: true });
   const pcm = clip16k(12);
-  const st = memoryState();
+  const st = dueState();
   const ql = await client(api, { state: st });
   const { ctl, asked } = wired(ql);
   assert.ok(await listen(ctl, pcm));
@@ -361,13 +425,13 @@ test('a yes ends asking: the answer and askNow change nothing afterwards; turnin
   assert.equal(ctl.answer(true), 'granted');
   ctl.setSharing(true);
   assert.equal(ctl.state.grantVersion, DECK, 'the grant keeps the version agreed to');
-  assert.equal(ctl.state.askNow(), null);
+  assert.equal(ctl.state.decide({ type: 'ask_now', offered: true }).action, 'none');
   // off: never asked again, also across a restart
   ctl.setSharing(false);
   assert.equal(ctl.state.sharing, false);
-  for (let i = 0; i < 30; i++) assert.equal(await ctl.sessionCompleted({ feedback: true }), null);
+  for (let i = 0; i < 30; i++) assert.equal(await ctl.takeEnded({ end: 'normal', speechMs: 60000 }), null);
   const r = wired(await client(api, { state: st }));
-  for (let i = 0; i < 30; i++) assert.equal(await r.ctl.sessionCompleted({ feedback: true }), null);
+  for (let i = 0; i < 30; i++) assert.equal(await r.ctl.takeEnded({ end: 'normal', speechMs: 60000 }), null);
   assert.equal(asked.length + r.asked.length, 1, 'only the first ask');
   assert.equal(r.ctl.answer(true), 'final', 'only the switch turns it on now');
   assert.equal(r.ctl.state.sharing, false);
@@ -406,7 +470,7 @@ test('withdrawal and deletion under an old version (a 2.0.0 grant)', { skip: ski
   const r = await ctl.deleteShared();
   assert.equal(r.accepted, true);
   assert.equal(api.state.deletes, 1, 'the signed deletion went out');
-  for (let i = 0; i < 30; i++) await ctl.sessionCompleted({ feedback: true });
+  for (let i = 0; i < 30; i++) await ctl.takeEnded({ end: 'normal', speechMs: 60000 });
   assert.equal(asked.length, 0, 'never asked, before or after');
 }));
 
@@ -437,7 +501,7 @@ test('delete what I shared (3.0.1): a delete the server does not take changes no
     assert.equal(ctl.state.sharing, false, 'an accepted delete turns sharing off');
     const before = api.state.starts.length;
     await listen(ctl, pcm, { complete: false });
-    for (let i = 0; i < 30; i++) await ctl.sessionCompleted({ feedback: true });
+    for (let i = 0; i < 30; i++) await ctl.takeEnded({ end: 'normal', speechMs: 60000 });
     assert.equal(api.state.starts.length, before, 'nothing is shared while it is off');
     assert.equal(asked.length, 0, 'nobody is asked again');
     // the learner turns it on with the switch: shared again, under a new contributor

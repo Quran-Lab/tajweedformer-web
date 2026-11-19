@@ -1,5 +1,10 @@
 name: CI
 
+# SDK 4.0 for the web. The engine is the Quran Lab Core's WebAssembly, which Quran Lab signs and serves from
+# web.quranlab.ai: nothing here builds it. `npm test` runs every test that needs no input of Quran Lab's own (the
+# contract's vectors, a test engine signed with the contract's test key, a protected test build): those tests say so
+# and skip. The Opus encoder the sharing tests use is built here from the pinned libopus release.
+
 on:
   push:
   pull_request:
@@ -10,17 +15,17 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
-      - name: Engine submodule
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/ci-engine.sh vendor/zipformer-sdk
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: Dev dependencies (no lockfile in this repository)
+        run: npm install --no-audit --no-fund --no-save
       - name: Emscripten
         run: |
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
@@ -30,21 +35,36 @@ jobs:
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           npm run build:opus
-      - name: Tests without the engine (libopus required)
-        run: REQUIRE_OPUS=1 npm test
+      # `npm test`'s files and flags, but for three files and one test that read the contract's vectors at once
+      # (QL_CONTRACT, Quran Lab's own input, absent here): grace, piece and vectors, and server-parity's web_lease.json
+      # test. They run in the development repository's CI with the vectors.
+      - name: Tests (the loader, the frame, the Worker, the Node path, sharing; libopus required)
+        run: |
+          grep -q '"test": "node --max-old-space-size=2048 --test --test-concurrency=2 --test-timeout=600000 \\"test/v4/\*.test.mjs\\" \\"test/sharing_\*.test.mjs\\""' package.json \
+            || { echo "::error::package.json's test script changed: update this step"; exit 1; }
+          files=$(ls test/v4/*.test.mjs test/sharing_*.test.mjs | grep -vE '^test/v4/(grace|piece|vectors)\.test\.mjs$')
+          REQUIRE_OPUS=1 node --max-old-space-size=2048 --test --test-concurrency=2 --test-timeout=600000 \
+            --test-skip-pattern='^web_lease\.json: ' $files
       - name: Sharing upload and stream tests five times (timing races in the upload queue show up here)
         run: for i in 1 2 3 4 5; do REQUIRE_OPUS=1 node --test test/sharing_upload.test.mjs test/sharing_ogg_append.test.mjs || exit 1; done
-      - name: Build the engine and run every test with it (libopus and the mock engine required)
-        env:
-          ZF_WASM_TAJWEED: '1'
+      - name: The README's quick start is the marked region of examples/quickstart.html
         run: |
-          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
-          npm run build
-          npm run test:wasm
-          CLANG="$RUNNER_TEMP/emsdk/upstream/bin/clang" REQUIRE_OPUS=1 REQUIRE_MOCK=1 npm test
-      - name: The plain Vite example builds with no config file, and names no Node module
-        run: npm run example:build
-      - name: What npm publish would ship (README, AGENTS.md, CHANGELOG, the type declarations, the exports map)
+          node --input-type=module -e "
+          import { readFileSync } from 'node:fs';
+          const lines = (f) => readFileSync(f, 'utf8').replace(/\r\n/g, '\n').split('\n');
+          const ex = lines('examples/quickstart.html');
+          const b = ex.findIndex((l) => l.includes('README:begin')), e = ex.findIndex((l) => l.includes('README:end'));
+          if (b < 0 || e <= b) throw new Error('examples/quickstart.html has no README:begin / README:end pair');
+          const region = ex.slice(b + 1, e).join('\n');
+          const rd = lines('README.md');
+          const qs = rd.findIndex((l) => l.startsWith('## Quick start'));
+          const open = rd.findIndex((l, i) => i > qs && l.startsWith('\x60\x60\x60js'));
+          const close = rd.findIndex((l, i) => i > open && l.startsWith('\x60\x60\x60'));
+          if (qs < 0 || open < 0 || close < 0) throw new Error('README.md has no js block under Quick start');
+          if (rd.slice(open + 1, close).join('\n') !== region) throw new Error('the README quick start is not the example region');
+          console.log('the README quick start is the example region, ' + (e - b - 1) + ' lines');
+          "
+      - name: What npm would publish (README, AGENTS.md, CHANGELOG, the types, every module the entry points reach; nothing of the engine or the model)
         run: npm run check:package
-      - name: The model-backed proof (skips here; the model is gated and not on a public runner)
-        run: npm run proof
+      - name: docs/api.md is generated from the type declarations
+        run: node scripts/make_api_doc.mjs --check

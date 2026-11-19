@@ -173,7 +173,7 @@ export function workerHost(worker) {
     const w = waiting.get(id);
     if (!w) return;
     waiting.delete(id);
-    if (error) w.reject(new Error(error.message)); else w.resolve(result);
+    if (error) { const e = new Error(error.message); if (typeof error.name === 'string') e.workerName = error.name; w.reject(e); } else w.resolve(result);
   };
   worker.onerror = (ev) => fail(new Error(`the engine worker failed: ${(ev && ev.message) || 'error'}`));
   worker.onmessageerror = () => fail(new Error('the engine worker sent a message that could not be read'));

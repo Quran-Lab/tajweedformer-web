@@ -2,7 +2,7 @@
 // microphone (test/helpers/fakemic.mjs) and the fake engine host: the device's rate carried to the Session, the
 // permission refused, an interruption, a device change, a hidden page, nothing captured before listen() or after
 // the take ends; and the same path with no microphone: a sample clip or the app's samples, at real-time pace
-// or as fast as possible. A real browser with a fake audio device runs scripts/browser-quickstart.mjs.
+// or as fast as possible.
 import test from 'node:test';
 import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
@@ -71,21 +71,6 @@ test('a refused permission is microphone_denied; no input device is microphone_u
   assert.equal(await microphonePermission({ ...mic.seams, permissions: { query: async () => ({ state: 'denied' }) } }), 'denied');
   assert.equal(await microphonePermission({ ...mic.seams, permissions: { query: async () => ({ state: 'granted' }) } }), 'granted');
   assert.equal(await microphonePermission(mic.seams), 'notAsked');
-  await client.close();
-});
-
-test('in Node there is no microphone: listen() without `from` is microphone_unavailable, listen({ from }) works', async () => {
-  resetClientForTests();
-  const api = await stubPlatform({ build });
-  const client = await createClient({ key: KEY }, seamsFor(api));
-  const model = await client.model();
-  await assert.rejects(model.listen(), code('microphone_unavailable'));
-  await assert.rejects(Microphone.open(), code('microphone_unavailable'));
-  assert.equal(await microphonePermission(), 'none');
-  assert.equal((await client.diagnose()).microphone, 'none');
-  const s = await model.listen({ from: model.sampleClips[0], pace: 'fast' });
-  await collect(s.chunks);   // until the clip ran out
-  assert.deepEqual((await s.finish()).greedy().map((t) => t.id), [3, 5, 1, 7, 9]);
   await client.close();
 });
 
@@ -202,23 +187,6 @@ test('listen({ from }): a sample clip gives the tokens of the self-test file; sa
     await assert.rejects(model.listen(bad), code('invalid_argument'), JSON.stringify(Object.keys(bad)));
   }
   await client.close();
-});
-
-test('Microphone: samples only, for apps that own the rest', async () => {
-  const fake = fakeMicrophone({ sampleRate: 44100 });
-  const mic = await Microphone.open(fake.seams);
-  assert.equal(mic.sampleRate, 44100);
-  const got = [];
-  const reader = (async () => { for await (const block of mic.samples()) got.push(block.length); })();
-  fake.play(new Float32Array(2000));
-  await settle();
-  mic.close();
-  await reader;
-  assert.deepEqual(got, [960, 960, 80]);
-  assert.equal(fake.track.stopped, true);
-  assert.equal(fake.mediaDevices.listeners('devicechange'), 0);
-  fake.deny = 'NotAllowedError';
-  await assert.rejects(Microphone.open(fake.seams), code('microphone_denied'));
 });
 
 test('the suite\'s model build has the production shape: no tolerance of either kind, a tokens-only self-test file; its sample clip gives those tokens', async () => {

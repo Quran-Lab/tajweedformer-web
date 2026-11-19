@@ -50,17 +50,9 @@ test('the specifier scan sees static imports, re-exports, side-effect imports an
   assert.deepEqual(specifiers(src), ['./a.js', './b.js', './c.js', './d.js', './e.js', 'node:fs', './g.js']);
 });
 
-test('the package resolves to the browser entry for a bundler and to the Node entry in Node', () => {
-  assert.deepEqual(Object.keys(pkg.exports['.']), ['types', 'node', 'default'], 'types first, then node, then default');
-  assert.equal(pkg.exports['.'].default, './web/index.js');
-  assert.equal(pkg.exports['.'].node, './web/index.node.js');
-  assert.equal('browser' in pkg && typeof pkg.browser === 'object', false, 'no browser field that remaps modules');
-  for (const e of Object.values(pkg.exports)) {
-    for (const f of typeof e === 'string' ? [e] : Object.values(e)) assert.ok(existsSync(path.join(root, f)), `${f} exists`);
-  }
-});
-
-for (const [name, entry] of [['the browser entry (web/index.js)', 'web/index.js'], ['the engine\'s Worker (web/api/worker.js)', 'web/api/worker.js']]) {
+// the browser entry (web/index.js) is the hosted loader's thin wrapper in 4.0 and imports nothing: its test, and the
+// exports map's, are in test/v4/package.test.mjs
+for (const [name, entry] of [['the engine\'s Worker (web/api/worker.js)', 'web/api/worker.js']]) {
   test(`nothing reached from ${name} imports a Node built-in or any bare module`, () => {
     const g = walk(entry);
     assert.ok(g.files.length >= 3, `${g.files.length} files reached`);

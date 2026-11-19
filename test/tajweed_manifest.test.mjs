@@ -1,18 +1,17 @@
 // Model folder loading: the signed text against the shared vector (tajweedformer-coreml
 // publish/testdata/manifest_v2_vector.json, copied to test/tajweed/), and synthetic V4 folders
-// (good, tampered, no calibration, min_sdk 3.1.7, the model version, ...) in memory and on disk.
+// (good, tampered, no calibration, the model version, ...) in memory. A folder's min_sdk against this SDK's
+// version, and the folder on disk through dirReader, were 3.x (a 4.0 build is encrypted, and the Core checks it).
 // Run: npm test
 import test from 'node:test';
 import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   signedText, verifyManifestSignature, ModelFolder, ModelFolderError, openTajweedFolder,
   versionAtLeast, sha256Hex, hexToBytes, bytesToHex, isSafePath, parseTokens, SDK_VERSION, QURANLAB_PUBLIC_KEY_HEX,
 } from '../web/tajweed/manifest.js';
-import { dirReader, memoryReader } from './helpers/readers.mjs';
+import { memoryReader } from './helpers/readers.mjs';
 
 import { vector, sign, testKeyHex, enc, TOKENS, v4Folder, opts } from './tajweed/folder.mjs';
 import { build3 } from './helpers/model3.mjs';
@@ -144,13 +143,6 @@ test('the calibration is not needed to open (SDK 3.0); a listed file that is abs
   await rejects(openTajweedFolder(memoryReader(absent.files), opts), 'file_missing');
 });
 
-test('min_sdk_version 3.1.7: refused by this SDK (3.1.6)', async () => {
-  assert.equal(SDK_VERSION, '3.1.6');
-  const { files } = await build3({ minSdk: '3.1.7' });
-  await rejects(openTajweedFolder(memoryReader(files), opts), 'sdk_too_old');
-  for (const ok of ['3.1.6', '3.1.5', '3.1.4', '3.1.3', '3.1.2', '3.1.1', '3.1.0', '3.0.100', '3.0.0', '2.0.1', '1.9.9']) await openTajweedFolder(memoryReader((await build3({ minSdk: ok })).files), opts);
-});
-
 test('the model version (SPEC 2a): a manifest without one is refused; the signed text has the version line; the config\'s version and build are checked', async () => {
   const b = await build3();
   assert.ok(signedText(b.manifest).startsWith('quranlab-model-manifest 3\nmodel_id v4.0\nfamily tajweedformer\nrevision v4.0-test\nversion 4.0.0\nmin_sdk_version 3.0.0\n'));
@@ -210,26 +202,6 @@ test('tokens.txt without 38 entries: tokens_invalid', async () => {
   assert.deepEqual(parseTokens('a 1\nb 0\n'), ['b', 'a']);
 });
 
-test('on disk through dirReader: good folder opens, links and ".." never leave it', async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'tjf-folder-'));
-  try {
-    const { files } = await build3();
-    for (const [p, d] of Object.entries(files)) {
-      mkdirSync(path.dirname(path.join(dir, p)), { recursive: true });
-      writeFileSync(path.join(dir, p), d);
-    }
-    const r = await openTajweedFolder(dirReader(dir), opts);
-    assert.equal(r.version, '4.0.0');
-    assert.equal(await dirReader(dir).read('../x'), null);
-    assert.equal(await dirReader(dir).read('nope.bin'), null);
-    // the same folder at min_sdk 3.1.7 on disk
-    const old = await build3({ minSdk: '3.1.7' });
-    writeFileSync(path.join(dir, 'manifest.json'), old.files['manifest.json']);
-    await rejects(openTajweedFolder(dirReader(dir), opts), 'sdk_too_old');
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
 test('versionAtLeast compares as the Swift SDK does', () => {
   const t = [['2.0.0', '2.0.0', true], ['2.0.0', '3.0.0', false], ['2.0.0', '1.9.9', true], ['2.0.0', '2.0.1', false],
     ['2.10.0', '2.9.0', true], ['2.0', '2.0.0', true], ['2.0.0-beta.1', '2.0.0', true], ['x', '1.0.0', false],

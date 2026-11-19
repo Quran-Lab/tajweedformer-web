@@ -26,6 +26,9 @@ import { stubApi, client, clip16k, listen } from './sharing_stub_api.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const vector = JSON.parse(readFileSync(path.join(root, 'test', 'sharing', 'vectors', 'takes_join.json'), 'utf8'));
+// SDK 4.0: every case above with the same expectation under the 4.0
+// limit (60000), then the 4.0 cases
+const vector40 = JSON.parse(readFileSync(path.join(root, 'test', 'vectors40', 'takes_join_40.json'), 'utf8'));
 const have = existsSync(path.join(root, 'dist', 'tajweedformer-opus.mjs'));
 if (!have && process.env.REQUIRE_OPUS === '1') throw new Error('dist/tajweedformer-opus.mjs is missing: npm run build:opus');
 const skip = have ? false : 'dist/tajweedformer-opus.mjs is not built (npm run build:opus)';
@@ -106,10 +109,9 @@ function bench({ flags = {}, start = 0, enabled = () => true } = {}) {
 // ------------------------------------------------------------------------------------------------
 // 1. the shared vector
 
-test('the shared vector takes_join.json: every case through the recorder with the clock seam', async () => {
+async function replay(vector) {
   assert.equal(vector.default_window_ms, DEFAULT_JOIN_MS);
   assert.equal(vector.cap_ms, RECORDING_CAP_MS);
-  assert.equal(vector.cases.length, 10, 'the 10 cases of the vector');
   const names = [];
   for (const c of vector.cases) {
     const b = bench({ flags: c.flags });
@@ -136,28 +138,44 @@ test('the shared vector takes_join.json: every case through the recorder with th
     assert.equal(b.caps.made.length, c.expect.length, `${c.name}: one capture per recording`);
     names.push(c.name);
   }
+  return names;
+}
+
+test('the shared vector takes_join.json: every case through the recorder with the clock seam', async () => {
+  assert.equal(vector.cases.length, 10, 'the 10 cases of the vector');
+  const names = await replay(vector);
   assert.ok(names.includes('the 20-minute cap: a new recording') && names.includes('gap rounding and odd sample counts'));
 });
 
-test('the join window of the signed config: a whole number 0 to 10000, anything else 3000', () => {
-  for (const [v, want] of [[0, 0], [1, 1], [3000, 3000], [8000, 8000], [10000, 10000], [10001, 3000], [-1, 3000], [2.5, 3000], ['5', 3000], ['3000', 3000],
+test('the 4.0 vector takes_join_40.json: the 3.x cases unchanged, then windows up to 60000', async () => {
+  assert.equal(vector40.max_window_ms, MAX_JOIN_MS);
+  assert.deepEqual(vector40.cases.slice(0, vector.cases.length), vector.cases, 'the 3.x cases, the same expectations');
+  assert.equal(vector40.cases.length, 18, 'the 10 cases and the 8 of 4.0');
+  const names = await replay(vector40);
+  assert.ok(names.includes("4.0: the config's window 15000 joins a 12 s gap") && names.includes('4.0: 60001 is not a window: the default 3000'));
+});
+
+test('the join window of the signed config: a whole number 0 to 60000 (SDK 4.0; 3.x: 10000), anything else 3000', () => {
+  for (const [v, want] of [[0, 0], [1, 1], [3000, 3000], [8000, 8000], [10000, 10000], [10001, 10001], [15000, 15000], [60000, 60000], [60001, 3000], [1e9, 3000], [-1, 3000], [2.5, 3000], ['5', 3000], ['3000', 3000],
     [true, 3000], [false, 3000], [null, 3000], [undefined, 3000], [NaN, 3000], [Infinity, 3000], [[100], 3000], [{ ms: 100 }, 3000], [1e3, 1000]]) {
     assert.equal(joinWindowMs({ share_join_ms: v }), want, `share_join_ms ${JSON.stringify(v)}`);
   }
   assert.equal(joinWindowMs({}), 3000);
   assert.equal(joinWindowMs(null), 3000);
   assert.equal(joinWindowMs(undefined), 3000);
-  assert.deepEqual([DEFAULT_JOIN_MS, MAX_JOIN_MS, RECORDING_CAP_MS, MAX_TAKES, HOLD_MS], [3000, 10000, 1200000, 256, 30000]);
+  assert.deepEqual([DEFAULT_JOIN_MS, MAX_JOIN_MS, RECORDING_CAP_MS, MAX_TAKES, HOLD_MS], [3000, 60000, 1200000, 256, 30000]);
 });
 
 test('gap rounding, take starts and the take list as the server takes it', () => {
-  assert.deepEqual([0, 49, 50, 149, 150, 1200, 1249, 1250, 9949, 9950, 10000, 12000, -1, -5000].map(roundGap),
-    [0, 0, 100, 100, 200, 1200, 1200, 1300, 9900, 10000, 10000, 10000, 0, 0]);
+  assert.deepEqual([0, 49, 50, 149, 150, 1200, 1249, 1250, 9949, 9950, 10000, 12000, 14950, 59949, 59950, 60000, 99999, -1, -5000].map(roundGap),
+    [0, 0, 100, 100, 200, 1200, 1200, 1300, 9900, 10000, 10000, 12000, 15000, 59900, 60000, 60000, 60000, 0, 0]);
   assert.equal(takeStartMs(12345, 16000), 771);
   assert.equal(takeStartMs(12345 + 999, 16000), 834);
   assert.equal(takeStartMs(19184000, 16000), 1199000);
   const ok = [{ start_ms: 0, gap_ms: 0 }, { start_ms: 5000, gap_ms: 1200 }, { start_ms: 8000, gap_ms: 800 }];
   assert.deepEqual(takeList(ok), ok);
+  // 4.0: a gap up to the 60 s window (the server takes up to 60000 from qlab-api 462b997)
+  for (const gap of [10000, 12000, 15000, 60000]) assert.deepEqual(takeList([ok[0], { start_ms: 5000, gap_ms: gap }]), [ok[0], { start_ms: 5000, gap_ms: gap }], `gap ${gap}`);
   assert.equal(takesBody(ok), '{"takes":[{"start_ms":0,"gap_ms":0},{"start_ms":5000,"gap_ms":1200},{"start_ms":8000,"gap_ms":800}]}');
   // a recording recovered at 7999 ms keeps the takes that start before it; fewer than 2: no list
   assert.deepEqual(takeList(ok, 8000), ok.slice(0, 2));
@@ -166,7 +184,7 @@ test('gap rounding, take starts and the take list as the server takes it', () =>
   // 3.0.0: the first take may start after a lead-in from the feed (sharing_30.json), never before 0
   assert.deepEqual(takeList([{ start_ms: 1, gap_ms: 0 }, ok[1]]), [{ start_ms: 1, gap_ms: 0 }, ok[1]]);
   for (const bad of [null, {}, [], [ok[0]], [{ start_ms: -1, gap_ms: 0 }, ok[1]], [{ start_ms: 5001, gap_ms: 0 }, { start_ms: 6000, gap_ms: 100 }], [{ start_ms: 0, gap_ms: 100 }, ok[1]], [ok[0], { start_ms: 0, gap_ms: 100 }],
-    [ok[0], { start_ms: 5000, gap_ms: 150 }], [ok[0], { start_ms: 5000, gap_ms: 10100 }], [ok[0], { start_ms: 5000, gap_ms: -100 }],
+    [ok[0], { start_ms: 5000, gap_ms: 150 }], [ok[0], { start_ms: 5000, gap_ms: 60100 }], [ok[0], { start_ms: 5000, gap_ms: -100 }],
     [ok[0], { start_ms: 5000.5, gap_ms: 100 }], [ok[0], { start_ms: '5000', gap_ms: 100 }], [ok[0], ok[2], ok[1]],
     [ok[0], ...Array.from({ length: 256 }, (_, i) => ({ start_ms: i + 1, gap_ms: 0 }))]]) {
     assert.equal(takeList(bad), null, JSON.stringify(bad).slice(0, 80));
@@ -1103,7 +1121,7 @@ test('through the SDK wiring: two takes in a row are one shared session with its
     const pcm = clip16k(12);
     await listen(ctl, pcm, { complete: false });
     // the ask after a finished take does not close the recording
-    assert.equal(await ctl.sessionCompleted({ feedback: true }), null);
+    assert.equal(await ctl.takeEnded({ end: 'normal', speechMs: 60000 }), null);
     const mod = await import('../web/sharing/index.js');
     const sharing = await mod.outbox.sharing();
     assert.ok(sharing.recorder.recording, 'the recording waits for the next take');

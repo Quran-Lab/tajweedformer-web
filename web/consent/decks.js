@@ -2,7 +2,7 @@
 export const DECKS = {
  "ar": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-13.1",
+  "version": "2026-11-19.1",
   "lang": "ar",
   "dir": "rtl",
   "consent_version": "share-2026-11-09",
@@ -19,10 +19,6 @@ export const DECKS = {
    "sheet.control": "يمكنك التوقف في أي وقت وحذف ما شاركته من الإعدادات.",
    "sheet.share": "مشاركة تلاواتي",
    "sheet.not_now": "ليس الآن",
-   "sheet.guardian.title": "سؤال للوالدين أو ولي الأمر",
-   "sheet.guardian.body": "هذا التطبيق مخصص للأطفال. يُرجى قراءة هذا مع طفلك: تفعيل المشاركة يرسل التسجيل الصوتي لتلاواته إلى Quran Lab لمساعدة متعلمين آخرين. لا يمكن تفعيل هذا الخيار إلا من قِبل أحد الوالدين أو ولي الأمر.",
-   "sheet.guardian.confirm": "أنا والد هذا الطفل أو ولي أمره، وأوافق على مشاركة تلاواته.",
-   "sheet.guardian.share": "المشاركة كولي أمر",
    "thanks": "جزاك الله خيراً. تلاوتك تساعد الآن متعلمين آخرين. تقبل الله منك.",
    "settings.toggle": "مشاركة تلاواتي",
    "settings.what": "ما الذي تتم مشاركته",
@@ -43,6 +39,9 @@ export const DECKS = {
    "recovery.used": "تم استخدام رمز الاسترداد هذا من قبل.",
    "recovery.invalid": "هذا الرمز غير صالح. يُرجى التحقق من صحة الكلمات والمحاولة مجدداً.",
    "reask": "قد تساعد تلاوتك اليوم متعلماً آخر غداً. هل ترغب في مشاركتها؟",
+   "card.line": "قد تساعد تلاوتك اليوم متعلماً آخر غداً.",
+   "card.open": "تعرف كيف يساعد",
+   "card.not_now": "ليس الآن",
    "impact.minutes": {
     "zero": "شاركت {minutes} دقيقة من التلاوة. جزاك الله خيراً.",
     "one": "شاركت {minutes} دقيقة من التلاوة. جزاك الله خيراً.",
@@ -64,7 +63,7 @@ export const DECKS = {
  },
  "bn": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-13.1",
+  "version": "2026-11-19.1",
   "lang": "bn",
   "dir": "ltr",
   "consent_version": "share-2026-11-09",
@@ -81,10 +80,6 @@ export const DECKS = {
    "sheet.control": "আপনি যেকোনো সময় এটি বন্ধ করতে পারেন এবং যা শেয়ার করেছেন তা সেটিংস থেকে মুছে ফেলতে পারেন।",
    "sheet.share": "আমার তিলাওয়াত শেয়ার করুন",
    "sheet.not_now": "এখন নয়",
-   "sheet.guardian.title": "পিতামাতা বা অভিভাবকের জন্য একটি প্রশ্ন",
-   "sheet.guardian.body": "এই অ্যাপটি শিশুদের জন্য তৈরি। অনুগ্রহ করে আপনার সন্তানের সাথে এটি পড়ুন: শেয়ার চালু করলে তার তিলাওয়াতের অডিও Quran Lab-এ পাঠানো হবে, যা অন্যান্য শিক্ষার্থীদের সাহায্য করবে। কেবল পিতামাতা বা অভিভাবকই এটি চালু করতে পারবেন।",
-   "sheet.guardian.confirm": "আমি এই শিশুর পিতামাতা বা অভিভাবক, এবং তার তিলাওয়াত শেয়ার করতে সম্মত।",
-   "sheet.guardian.share": "অভিভাবক হিসেবে শেয়ার করুন",
    "thanks": "জাযাকাল্লাহু খাইরান। আপনার তিলাওয়াত এখন অন্যান্য শিক্ষার্থীদের সাহায্য করছে। আল্লাহ আপনার পক্ষ থেকে এটি কবুল করুন।",
    "settings.toggle": "আমার তিলাওয়াত শেয়ার করুন",
    "settings.what": "যা শেয়ার করা হয়",
@@ -105,6 +100,9 @@ export const DECKS = {
    "recovery.used": "এই রিকভারি কোডটি ইতিমধ্যে ব্যবহার করা হয়েছে।",
    "recovery.invalid": "এই কোডটি সঠিক নয়। শব্দগুলো মিলিয়ে দেখে আবার চেষ্টা করুন।",
    "reask": "আজকের আপনার তিলাওয়াত হয়তো আগামী দিনে অন্য কোনো শিক্ষার্থীকে সাহায্য করতে পারে। আপনি কি এটি শেয়ার করতে চান?",
+   "card.line": "আজকের আপনার তিলাওয়াত হয়তো আগামী দিনে অন্য কোনো শিক্ষার্থীকে সাহায্য করতে পারে।",
+   "card.open": "কীভাবে সাহায্য করে দেখুন",
+   "card.not_now": "এখন নয়",
    "impact.minutes": {
     "one": "আপনি {minutes} মিনিট তিলাওয়াত শেয়ার করেছেন। আল্লাহ আপনাকে উত্তম প্রতিদান দিন।",
     "other": "আপনি {minutes} মিনিট তিলাওয়াত শেয়ার করেছেন। আল্লাহ আপনাকে উত্তম প্রতিদান দিন।"
@@ -122,7 +120,7 @@ export const DECKS = {
  },
  "en": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-13.1",
+  "version": "2026-11-19.1",
   "lang": "en",
   "dir": "ltr",
   "consent_version": "share-2026-11-09",
@@ -139,10 +137,6 @@ export const DECKS = {
    "sheet.control": "You can stop at any time and delete what you shared from the settings.",
    "sheet.share": "Share my recitations",
    "sheet.not_now": "Not now",
-   "sheet.guardian.title": "A question for a parent or guardian",
-   "sheet.guardian.body": "This app is made for children. Please read this with your child: sharing sends the audio of their recitations to Quran Lab to help other learners. Only a parent or guardian can turn it on.",
-   "sheet.guardian.confirm": "I am this child's parent or guardian, and I agree to share their recitations.",
-   "sheet.guardian.share": "Share as parent or guardian",
    "thanks": "Jazak Allahu khayran. Your recitation is now helping other learners. May Allah accept it from you.",
    "settings.toggle": "Share my recitations",
    "settings.what": "What is shared",
@@ -163,6 +157,9 @@ export const DECKS = {
    "recovery.used": "This recovery code was already used.",
    "recovery.invalid": "This code is not valid. Check the words and try again.",
    "reask": "Your recitation today could help another learner tomorrow. Would you like to share it?",
+   "card.line": "Your recitation today could help another learner tomorrow.",
+   "card.open": "See how it helps",
+   "card.not_now": "Not now",
    "impact.minutes": {
     "one": "You have shared {minutes} minute of recitation. May Allah reward you.",
     "other": "You have shared {minutes} minutes of recitation. May Allah reward you."
@@ -180,7 +177,7 @@ export const DECKS = {
  },
  "fr": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-13.1",
+  "version": "2026-11-19.1",
   "lang": "fr",
   "dir": "ltr",
   "consent_version": "share-2026-11-09",
@@ -197,10 +194,6 @@ export const DECKS = {
    "sheet.control": "Vous pouvez arrêter à tout moment et supprimer ce que vous avez partagé depuis les paramètres.",
    "sheet.share": "Partager mes récitations",
    "sheet.not_now": "Pas maintenant",
-   "sheet.guardian.title": "Une question pour un parent ou tuteur",
-   "sheet.guardian.body": "Cette application est conçue pour les enfants. Merci de lire ceci avec votre enfant : le partage transmet l'audio de ses récitations à Quran Lab afin d'aider d'autres apprenants. Seul un parent ou un tuteur peut l'activer.",
-   "sheet.guardian.confirm": "Je suis le parent ou le tuteur de cet enfant, et j'accepte de partager ses récitations.",
-   "sheet.guardian.share": "Partager (parent ou tuteur)",
    "thanks": "Jazâk Allâhu khayran. Votre récitation aide désormais d'autres apprenants. Qu'Allah l'accepte de votre part.",
    "settings.toggle": "Partager mes récitations",
    "settings.what": "Ce qui est partagé",
@@ -221,6 +214,9 @@ export const DECKS = {
    "recovery.used": "Ce code de récupération a déjà été utilisé.",
    "recovery.invalid": "Ce code n'est pas valide. Vérifiez les mots et réessayez.",
    "reask": "Votre récitation d'aujourd'hui pourrait aider un autre apprenant demain. Souhaitez-vous la partager ?",
+   "card.line": "Votre récitation d'aujourd'hui pourrait aider un autre apprenant demain.",
+   "card.open": "Voir comment cela aide",
+   "card.not_now": "Pas maintenant",
    "impact.minutes": {
     "one": "Vous avez partagé {minutes} minute de récitation. Qu'Allah vous récompense.",
     "many": "Vous avez partagé {minutes} de minutes de récitation. Qu'Allah vous récompense.",
@@ -239,7 +235,7 @@ export const DECKS = {
  },
  "id": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-13.1",
+  "version": "2026-11-19.1",
   "lang": "id",
   "dir": "ltr",
   "consent_version": "share-2026-11-09",
@@ -256,10 +252,6 @@ export const DECKS = {
    "sheet.control": "Anda bisa berhenti kapan saja dan menghapus apa yang telah Anda bagikan melalui menu pengaturan.",
    "sheet.share": "Bagikan bacaan saya",
    "sheet.not_now": "Nanti saja",
-   "sheet.guardian.title": "Pertanyaan untuk orang tua atau wali",
-   "sheet.guardian.body": "Aplikasi ini ditujukan untuk anak-anak. Mohon baca ini bersama anak Anda: mengaktifkan fitur berbagi akan mengirimkan audio bacaan mereka ke Quran Lab untuk membantu pembelajar lain. Hanya orang tua atau wali yang dapat mengaktifkannya.",
-   "sheet.guardian.confirm": "Saya adalah orang tua atau wali anak ini, dan saya menyetujui untuk membagikan rekaman bacaannya.",
-   "sheet.guardian.share": "Bagikan sebagai orang tua/wali",
    "thanks": "Jazakallahu khairan. Bacaan Anda kini turut membantu pembelajar lain. Semoga Allah menerimanya dari Anda.",
    "settings.toggle": "Bagikan bacaan saya",
    "settings.what": "Data yang dibagikan",
@@ -280,6 +272,9 @@ export const DECKS = {
    "recovery.used": "Kode pemulihan ini sudah pernah digunakan.",
    "recovery.invalid": "Kode ini tidak valid. Periksa kembali kata-katanya dan coba lagi.",
    "reask": "Bacaan Anda hari ini bisa membantu pembelajar lain esok hari. Bersediakah Anda membagikannya?",
+   "card.line": "Bacaan Anda hari ini bisa membantu pembelajar lain esok hari.",
+   "card.open": "Lihat manfaatnya",
+   "card.not_now": "Nanti saja",
    "impact.minutes": {
     "other": "Anda telah membagikan {minutes} menit bacaan. Semoga Allah membalas kebaikan Anda."
    }
@@ -296,7 +291,7 @@ export const DECKS = {
  },
  "ms": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-13.1",
+  "version": "2026-11-19.1",
   "lang": "ms",
   "dir": "ltr",
   "consent_version": "share-2026-11-09",
@@ -313,10 +308,6 @@ export const DECKS = {
    "sheet.control": "Anda boleh berhenti pada bila-bila masa dan memadam apa yang telah dikongsi melalui tetapan.",
    "sheet.share": "Kongsi bacaan saya",
    "sheet.not_now": "Bukan sekarang",
-   "sheet.guardian.title": "Pertanyaan untuk ibu bapa atau penjaga",
-   "sheet.guardian.body": "Aplikasi ini direka untuk kanak-kanak. Sila baca ini bersama anak anda: perkongsian ini akan menghantar audio bacaan mereka kepada Quran Lab untuk membantu pembelajar lain. Hanya ibu bapa atau penjaga yang boleh mengaktifkannya.",
-   "sheet.guardian.confirm": "Saya ibu bapa atau penjaga kepada anak ini, dan saya bersetuju untuk berkongsi bacaan mereka.",
-   "sheet.guardian.share": "Kongsi sebagai penjaga",
    "thanks": "Jazakallahu khairan. Bacaan anda kini membantu pembelajar lain. Semoga Allah menerimanya daripada anda.",
    "settings.toggle": "Kongsi bacaan saya",
    "settings.what": "Maklumat yang dikongsi",
@@ -337,6 +328,9 @@ export const DECKS = {
    "recovery.used": "Kod pemulihan ini sudah digunakan.",
    "recovery.invalid": "Kod ini tidak sah. Semak perkataan dan cuba lagi.",
    "reask": "Bacaan anda hari ini mungkin dapat membantu pembelajar lain esok. Sudikah anda berkongsinya?",
+   "card.line": "Bacaan anda hari ini mungkin dapat membantu pembelajar lain esok.",
+   "card.open": "Cara ia membantu",
+   "card.not_now": "Bukan sekarang",
    "impact.minutes": {
     "other": "Anda telah berkongsi {minutes} minit bacaan. Semoga Allah membalas kebaikan anda."
    }
@@ -353,7 +347,7 @@ export const DECKS = {
  },
  "tr": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-13.1",
+  "version": "2026-11-19.1",
   "lang": "tr",
   "dir": "ltr",
   "consent_version": "share-2026-11-09",
@@ -370,10 +364,6 @@ export const DECKS = {
    "sheet.control": "Dilediğiniz an paylaşımı durdurabilir ve paylaştıklarınızı ayarlar bölümünden silebilirsiniz.",
    "sheet.share": "Tilavetlerimi paylaş",
    "sheet.not_now": "Şimdi değil",
-   "sheet.guardian.title": "Anne, baba veya vasiler için bir soru",
-   "sheet.guardian.body": "Bu uygulama çocuklar için hazırlanmıştır. Lütfen burayı çocuğunuzla birlikte okuyun: Paylaşım açıldığında, diğer öğrencilere yardımcı olmak amacıyla okuma ses kayıtları Quran Lab'e iletilir. Bunu yalnızca bir ebeveyn veya vasi açabilir.",
-   "sheet.guardian.confirm": "Bu çocuğun anne babası veya vasisiyim, okuma kayıtlarının paylaşılmasını onaylıyorum.",
-   "sheet.guardian.share": "Veli olarak paylaş",
    "thanks": "Allah razı olsun. Tilavetiniz artık diğer öğrencilere de yardımcı oluyor. Allah kabul etsin.",
    "settings.toggle": "Tilavetlerimi paylaş",
    "settings.what": "Neler paylaşılır",
@@ -394,6 +384,9 @@ export const DECKS = {
    "recovery.used": "Bu kurtarma kodu daha önce kullanıldı.",
    "recovery.invalid": "Bu kod geçerli değil. Kelimeleri kontrol edip tekrar deneyin.",
    "reask": "Bugünkü tilavetiniz yarın bir başka öğrenciye yardımcı olabilir. Paylaşmak ister misiniz?",
+   "card.line": "Bugünkü tilavetiniz yarın bir başka öğrenciye yardımcı olabilir.",
+   "card.open": "Nasıl yardımcı olur",
+   "card.not_now": "Şimdi değil",
    "impact.minutes": {
     "one": "{minutes} dakika tilavet paylaştınız. Allah razı olsun.",
     "other": "{minutes} dakika tilavet paylaştınız. Allah razı olsun."
@@ -411,7 +404,7 @@ export const DECKS = {
  },
  "ur": {
   "format": "quranlab.sharing-copy/1",
-  "version": "2026-11-13.1",
+  "version": "2026-11-19.1",
   "lang": "ur",
   "dir": "rtl",
   "consent_version": "share-2026-11-09",
@@ -428,10 +421,6 @@ export const DECKS = {
    "sheet.control": "آپ کسی بھی وقت اسے روک سکتے ہیں اور سیٹنگز سے اپنا شیئر کردہ ڈیٹا ڈیلیٹ کر سکتے ہیں۔",
    "sheet.share": "میری تلاوتیں شیئر کریں",
    "sheet.not_now": "ابھی نہیں",
-   "sheet.guardian.title": "والدین یا سرپرست کے لیے ایک سوال",
-   "sheet.guardian.body": "یہ ایپ بچوں کے لیے بنائی گئی ہے۔ براہِ کرم اپنے بچے کے ساتھ اسے پڑھیں: شیئر کرنے سے ان کی تلاوت کی آڈیو Quran Lab کو بھیجی جائے گی تاکہ دوسرے سیکھنے والوں کی مدد ہو سکے۔ اسے صرف والدین یا سرپرست ہی فعال کر سکتے ہیں۔",
-   "sheet.guardian.confirm": "میں اس بچے کا والد، والدہ یا سرپرست ہوں اور تلاوت شیئر کرنے پر رضامند ہوں۔",
-   "sheet.guardian.share": "بطور سرپرست شیئر کریں",
    "thanks": "جزاکم اللہ خیراً۔ آپ کی تلاوت سے اب دیگر سیکھنے والوں کو مدد مل رہی ہے۔ اللہ تعالیٰ آپ سے قبول فرمائے۔",
    "settings.toggle": "میری تلاوتیں شیئر کریں",
    "settings.what": "کیا شیئر کیا جاتا ہے",
@@ -452,6 +441,9 @@ export const DECKS = {
    "recovery.used": "یہ ریکوری کوڈ پہلے ہی استعمال ہو چکا ہے۔",
    "recovery.invalid": "یہ کوڈ درست نہیں ہے۔ الفاظ چیک کر کے دوبارہ کوشش کریں۔",
    "reask": "آج آپ کی تلاوت سے کل کسی اور سیکھنے والے کی مدد ہو سکتی ہے۔ کیا آپ اسے شیئر کرنا چاہیں گے؟",
+   "card.line": "آج آپ کی تلاوت سے کل کسی اور سیکھنے والے کی مدد ہو سکتی ہے۔",
+   "card.open": "دیکھیے کیسے مدد ہوگی",
+   "card.not_now": "ابھی نہیں",
    "impact.minutes": {
     "one": "آپ نے تلاوت کا {minutes} منٹ شیئر کیا ہے۔ اللہ تعالیٰ آپ کو جزائے خیر عطا فرمائے۔",
     "other": "آپ نے تلاوت کے {minutes} منٹ شیئر کیے ہیں۔ اللہ تعالیٰ آپ کو جزائے خیر عطا فرمائے۔"
@@ -472,34 +464,34 @@ export const DECKS = {
 export const DECK_SOURCES = {
  "ar": {
   "file": "ar.json",
-  "sha256": "03fc6aa2eed9134b5b5780ba2abcc5590c043024d0c6daf829c876742519f599"
+  "sha256": "1159dff6482b974798d46686855c0ff0b90293f4ee7bc9890b17c76596cfc474"
  },
  "bn": {
   "file": "bn.json",
-  "sha256": "e6b0a844386437838adcd0c3693ae39f93d40e5c3dba3b614c7f71574028a6b6"
+  "sha256": "ef6ebcac7798a5e3f2c6c6bc930518e1d7290b2a29821dc83865e7c3249ef949"
  },
  "en": {
   "file": "en.json",
-  "sha256": "3bac94a18f4691e7fb51021e9aa4f241d409a6dc4f8f89ec22a82761ebd75051"
+  "sha256": "4011ed13cb1683348cc2d26c8b5a6adf96ebeb4bc5143cb77eb72104d5992d21"
  },
  "fr": {
   "file": "fr.json",
-  "sha256": "9895b3eaf3e67afa250629b9ea3d93613d0298168d068fb6aba2e00450dda7ca"
+  "sha256": "03b2026cef95cc4707a841d53e08596fa18af343c9e33ee57feffd373b8411f7"
  },
  "id": {
   "file": "id.json",
-  "sha256": "f0621036f69d8f3754a0dfffea58b6c99e13a22c8356ba4cece0b20c3ba9abd0"
+  "sha256": "ddd02973988f286e007a9fc5e0a979b16766c43cb6d276a64ea7b59c7f17483f"
  },
  "ms": {
   "file": "ms.json",
-  "sha256": "2c15cf8515885ef1bebe59117c61926dfd93ce406100fe2434e4b10d6c8e3e9d"
+  "sha256": "502835016af3430f898b669cb986ac87cbec4aa89fc10849ea33fe1226d93bcb"
  },
  "tr": {
   "file": "tr.json",
-  "sha256": "227783a34b2fdf6870ebd5d32eafb9e3ebcf496bed44797de87b571744200099"
+  "sha256": "faabab1693a40f2f9c12a94808e0d7840e66094c3cf32db1bf1695fee48008f0"
  },
  "ur": {
   "file": "ur.json",
-  "sha256": "755e2b9873180336b7e06bb44c0a9910441d8ee59dced42142c8f420ae77875a"
+  "sha256": "9dec0fd78c867a08aac9a641849ab628b441f2dae88102392b1855f9931aee05"
  }
 };

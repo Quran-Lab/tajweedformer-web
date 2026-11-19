@@ -18,7 +18,8 @@ import {
 } from '../web/consent/index.js';
 import { memoryState } from '../web/platform/index.js';
 import { sessionJson, resetSharingForTests } from '../web/sharing/index.js';
-import { stubApi, client, clip16k, listen } from './sharing_stub_api.mjs';
+import { stubApi, client, clip16k, listen, NOW } from './sharing_stub_api.mjs';
+import { DECKS } from '../web/consent/decks.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const vector = JSON.parse(readFileSync(path.join(root, 'test', 'sharing', 'vectors', 'consent_text.json'), 'utf8'));
@@ -77,10 +78,10 @@ test('a wording change changes what a new grant records: an existing grant keeps
   const api = await stubApi({ contributions: true });
   const ql = await client(api);
   const asked = [];
-  const ctl = enableSharing(ql, { lang: 'en', ask: async (a) => { asked.push(a); return { yes: true }; } });
+  const ctl = enableSharing(ql, { lang: 'en', timers: NOW, ask: async (a) => { asked.push(a); return { yes: true }; } });
   assert.equal(ctl.consent.version, DECK);
   assert.equal(ctl.consent.textSha256, null);
-  ctl.answer(true);
+  ctl.setSharing(true); // (4.0: a yes with no ask in hand is no yes; the settings switch grants)
   assert.equal(ctl.state.sharing, true);
   assert.equal(ctl.state.grantTextSha256, null, 'the deck\'s wording: no hash');
   const c1 = ctl.setWording({ 'sheet.what': 'Your recitation audio and the app\'s version. Nothing else.' });
@@ -88,16 +89,16 @@ test('a wording change changes what a new grant records: an existing grant keeps
   assert.match(c1.version, /^custom-[0-9a-f]{24}$/);
   assert.equal(ctl.copy.t('sheet.what'), 'Your recitation audio and the app\'s version. Nothing else.');
   assert.equal(ctl.state.sharing, true, 'a grant to the deck keeps sharing under the app\'s wording');
-  assert.equal(await ctl.sessionCompleted(), null, 'and is not asked again');
+  assert.equal(await ctl.takeEnded({ end: 'normal', speechMs: 60000 }), null, 'and is not asked again');
   assert.equal(asked.length, 0);
   assert.equal(ctl.state.grantVersion, DECK, 'the version agreed to');
   assert.equal(ctl.state.grantTextSha256, null);
   // a new learner after the change: asked once, with the copy carrying the wording, and the grant records it
   const ql2 = await client(api);
   const asked2 = [];
-  const ctl2 = enableSharing(ql2, { lang: 'en', wording: { 'sheet.what': 'Your recitation audio and the app\'s version. Nothing else.' },
+  const ctl2 = enableSharing(ql2, { lang: 'en', timers: NOW, wording: { 'sheet.what': 'Your recitation audio and the app\'s version. Nothing else.' },
     ask: async (a) => { asked2.push(a); return { yes: true }; } });
-  assert.deepEqual((await ctl2.sessionCompleted()).yes, true);
+  assert.deepEqual((await ctl2.takeEnded({ end: 'normal', speechMs: 60000 })).yes, true);
   assert.equal(asked2.at(-1).variant, 'first');
   assert.equal(asked2.at(-1).consentVersion, c1.version);
   assert.equal(asked2.at(-1).copy.t('sheet.what'), c1.canonicalText.split('\t')[1].trim(), 'the own UI gets the copy with the wording');
@@ -106,7 +107,7 @@ test('a wording change changes what a new grant records: an existing grant keeps
   // a second change: still no ask, still the version agreed to
   const c2 = ctl2.setWording({ 'sheet.what': 'Recitation audio only.' });
   assert.equal(ctl2.state.sharing, true);
-  for (let i = 0; i < 30; i++) assert.equal(await ctl2.sessionCompleted(), null);
+  for (let i = 0; i < 30; i++) assert.equal(await ctl2.takeEnded({ end: 'normal', speechMs: 60000 }), null);
   assert.equal(asked2.length, 1);
   assert.equal(ctl2.state.s.consentVersion, c1.version);
   // refused wording: a TypeError and nothing changes
@@ -133,7 +134,7 @@ test('a session of a custom grant carries consent_text_sha256; the deck\'s wordi
     const ql = await client(api);
     // the app's own UI answers later, from the learner's tap
     let shown = null;
-    const ctl = enableSharing(ql, { lang: 'en', wording: { 'sheet.title': 'Help the next learner' }, ask: async (a) => { shown = a; } });
+    const ctl = enableSharing(ql, { lang: 'en', timers: NOW, wording: { 'sheet.title': 'Help the next learner' }, ask: async (a) => { shown = a; } });
     const pcm = clip16k(12);
     assert.equal(await listen(ctl, pcm), null, 'the own UI resolved without an answer');
     assert.equal(shown.copy.t('sheet.title'), 'Help the next learner');
@@ -150,15 +151,15 @@ test('a session of a custom grant carries consent_text_sha256; the deck\'s wordi
     assert.equal(s.consent_text_sha256, ctl.consent.textSha256);
     // back to the deck's wording: the grant still sends the custom version and hash it was given to
     ctl.setWording(null);
-    assert.equal(await ctl.sessionCompleted(), null, 'no ask');
+    assert.equal(await ctl.takeEnded({ end: 'normal', speechMs: 60000 }), null, 'no ask');
     await listen(ctl, pcm, { complete: false });
     for (let i = 0; i < 50 && api.state.starts.length < 2; i++) { await ctl.outbox.resume(); await new Promise((r) => setTimeout(r, 50)); }
     assert.equal(api.state.starts[1].consent_version, s.consent_version);
     assert.equal(api.state.starts[1].consent_text_sha256, s.consent_text_sha256);
     // a grant to the deck's wording (another install): no hash in the session JSON
     const ql2 = await client(api);
-    const ctl2 = enableSharing(ql2, { lang: 'en', ask: async () => ({ yes: true }) });
-    await ctl2.sessionCompleted();
+    const ctl2 = enableSharing(ql2, { lang: 'en', timers: NOW, ask: async () => ({ yes: true }) });
+    await ctl2.takeEnded({ end: 'normal', speechMs: 60000 });
     await listen(ctl2, pcm, { complete: false });
     for (let i = 0; i < 50 && api.state.starts.length < 3; i++) { await ctl2.outbox.resume(); await new Promise((r) => setTimeout(r, 50)); }
     assert.equal(api.state.starts[2].consent_version, DECK);
@@ -197,7 +198,7 @@ test('the default sheet path: nothing is captured before the learner answers it'
     QuranLabConsent.prototype.show = function (o) { opened.push(o); return new Promise((r) => { answer = r; }); };
     const api = await stubApi({ contributions: true });
     const ql = await client(api);
-    const ctl = enableSharing(ql, { lang: 'en', wording: { 'sheet.title': 'Help the next learner' }, theme: { accent: '#0b6e4f' } });
+    const ctl = enableSharing(ql, { lang: 'en', timers: NOW, wording: { 'sheet.title': 'Help the next learner' }, theme: { accent: '#0b6e4f' } });
     const pcm = clip16k(12);
     const asking = listen(ctl, pcm);
     await new Promise((r) => setTimeout(r, 400));
@@ -206,7 +207,7 @@ test('the default sheet path: nothing is captured before the learner answers it'
     assert.deepEqual(opened[0].theme, { accent: '#0b6e4f' });
     await listen(ctl, pcm, { complete: false });
     assert.equal(api.state.starts.length, 0, 'the sheet is open: nothing captured or sent');
-    answer({ yes: false, guardianConfirmed: false });
+    answer({ yes: false });
     await asking;
     assert.equal(ctl.state.sharing, false);
     await listen(ctl, pcm, { complete: false });
@@ -230,4 +231,30 @@ test('theme: the Swift SharingTheme keys as CSS custom properties; unknown keys 
   assert.throws(() => themeProperties({ accent: 'red; background: url(x)' }), TypeError);
   const st = new SharingState(memoryState(), { enabled: () => true, consentVersion: DECK });
   assert.equal(st.consentVersion, DECK, 'a theme does not touch the consent version');
+});
+
+// ONE_SHEET_40 26.1.5 and SCHEMA.md "Removed keys": deck 2026-11-19.1 has no sheet.guardian.* strings, and an app's own
+// wording that names one is refused as any unknown key is (a TypeError from the controller, invalid_argument from
+// client.sharing.setWording); nothing changes.
+test('an app\'s own wording that names a sheet.guardian.* key is refused as an unknown key, and nothing changes', async () => {
+  const GONE = ['sheet.guardian.title', 'sheet.guardian.body', 'sheet.guardian.confirm', 'sheet.guardian.share'];
+  for (const [l, d] of Object.entries(DECKS)) assert.deepEqual(Object.keys(d.strings).filter((k) => k.startsWith('sheet.guardian')), [], `${l}: no guardian string in the deck`);
+  for (const k of GONE) assert.throws(() => validateWording({ [k]: 'x' }), (e) => e instanceof TypeError && e.message === `wording: unknown key ${JSON.stringify(k)}`, k);
+  const api = await stubApi({ contributions: true });
+  const ql = await client(api);
+  assert.throws(() => enableSharing(ql, { lang: 'en', timers: NOW, wording: { [GONE[0]]: 'x' } }), TypeError, 'at the start too');
+  const ctl = enableSharing(ql, { lang: 'en', timers: NOW, wording: { 'sheet.title': 'Help the next learner' } });
+  const before = ctl.consent;
+  for (const k of GONE) {
+    assert.throws(() => ctl.setWording({ 'sheet.title': 'Mine', [k]: 'x' }), /unknown key/, k);
+    assert.equal(ctl.consent, before, `${k}: the consent in force is unchanged`);
+    assert.deepEqual(ctl.wording, { 'sheet.title': 'Help the next learner' }, `${k}: the wording in force is unchanged`);
+  }
+  // client.sharing.setWording (the loader's sharing chunk; it bundles the Opus glue, so only where that is built)
+  if (have) {
+    const { makeSharing } = await import('../sdk4/loader/sharing.js');
+    const sharing = makeSharing(ql, ctl);
+    for (const k of GONE) assert.throws(() => sharing.setWording({ [k]: 'x' }), (e) => e.code === 'invalid_argument' && /unknown key/.test(e.message), k);
+    assert.equal(ctl.consent, before);
+  }
 });

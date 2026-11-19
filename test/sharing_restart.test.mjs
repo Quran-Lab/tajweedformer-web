@@ -206,7 +206,7 @@ async function run(c) {
         `${threw ? 'the call reported the failure' : 'the call did not fail'}, isOn ${isOn()}, ${events.length} change events, the stored answer is ${JSON.stringify(mem.get('sharing.v1')) === answerBefore ? 'as before' : 'changed'}, ${left} of ${c.left} left`);
       // the device stores again: a later write of the answer stores the learner's own, not an off nobody gave
       disk.full = () => false;
-      ctl.state.sessionCompleted({ feedback: false });
+      ctl.state.decide({ type: 'take_end', end: 'normal', speech_ms: 1000, offered: false });
       check('extra_no_mark_left_behind', newPageReads() === 'granted' && isOn(), `after a later write a new page reads "${newPageReads()}", isOn ${isOn()}`);
       return failed;
     }
@@ -220,7 +220,7 @@ async function run(c) {
       check('extra_this_page_has_the_right_answer', !!threw && isOn() && events.length === 0, `${threw ? 'the call reported the failure' : 'the call did not fail'}, isOn ${isOn()}, ${events.length} change events`);
       // (until the device stores again a new page reads the off form: the window this SDK cannot close)
       disk.full = () => false;
-      ctl.state.sessionCompleted({ feedback: false });
+      ctl.state.decide({ type: 'take_end', end: 'normal', speech_ms: 1000, offered: false });
       const now = mem.get('sharing.v1') || {};
       check('extra_written_back_at_the_next_write', now.consent === 'granted' && (now.changes || 0) === (JSON.parse(answerBefore).changes || 0) && isOn(),
         `after the next write of the answer a new page reads "${newPageReads()}" with the count ${now.changes} (${JSON.parse(answerBefore).changes} before), isOn ${isOn()}`);
@@ -236,7 +236,7 @@ async function run(c) {
       // another write of the answer while the server is asked (a session ends and is counted): what is stored
       // keeps the off form, with the new count of sessions, and the page still sees sharing on
       const sessions = (consent.get('sharing.v1') || {}).sessions;
-      ctl.state.sessionCompleted({ feedback: false });
+      ctl.state.decide({ type: 'take_end', end: 'normal', speech_ms: 1000, offered: false });
       const now = consent.get('sharing.v1') || {};
       check('extra_other_writes_keep_the_stored_off', now.consent === 'final' && now.sessions === sessions + 1 && isOn() && events.join(' ') === 'granted',
         `stored "${now.consent}" with ${now.sessions} sessions (${sessions} before), isOn ${isOn()}, the page's listeners saw: ${events.join(' ')}`);
@@ -322,7 +322,7 @@ async function run(c) {
         `isOn ${isOn()}, the page's listeners saw: ${events.join(' ') || 'nothing'}, ${disk.refused} writes refused, the stored answer is ${JSON.stringify(mem.get('sharing.v1')) === answerBefore ? 'as before the off' : 'changed'}`);
       // the device stores again: the next write of the answer stores the one in force, with its count
       disk.full = () => false;
-      ctl.state.sessionCompleted({ feedback: false });
+      ctl.state.decide({ type: 'take_end', end: 'normal', speech_ms: 1000, offered: false });
       const now = mem.get('sharing.v1') || {};
       const was = JSON.parse(answerBefore).changes || 0;
       check('extra_stored_as_soon_as_the_device_can', now.consent === 'granted' && now.changes === was + 2, `stored "${now.consent}" with the count ${now.changes} (${was} before the off)`);
@@ -433,7 +433,7 @@ test('two pages: an off this page holds unsaved stays in force when another page
   page.setSharing(true);
   assert.equal(page.sharing, true);
   disk.full = false;
-  newPage().sessionCompleted({ feedback: false });
+  newPage().decide({ type: 'take_end', end: 'normal', speech_ms: 1000, offered: false });
   assert.equal(page.sharing, false, 'the other page wrote the stored answer: an on held here gives way to it');
   // an off the device did not take; another page (which still reads on) counts a session
   page.setSharing(true);
@@ -441,7 +441,7 @@ test('two pages: an off this page holds unsaved stays in force when another page
   disk.full = true;
   page.setSharing(false);
   disk.full = false;
-  newPage().sessionCompleted({ feedback: false });
+  newPage().decide({ type: 'take_end', end: 'normal', speech_ms: 1000, offered: false });
   assert.equal(page.sharing, false, 'the off held here stays in force: the learner\'s no is never lost');
   page.flush();
   assert.equal(newPage().s.consent, 'final', 'and it is stored');

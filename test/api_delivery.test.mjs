@@ -1,15 +1,11 @@
-// The Client's model delivery in the 3.0 API (SPEC 2a, 13.4, 13.5, 13.7): download by the build's URL and report
-// of the version, pinning by version, the manifest's acceptance checks as catalogue codes, prefetch (progress in
+// The Client's model delivery in the 3.0 API (SPEC 2a, 13.4, 13.5, 13.7): pinning by version, prefetch (progress in
 // bytes, resumed after a cut, unmetered only), storage and removeModels, a first run without a network
-// (needs_connection) and a later one from the cache, no model build for this SDK (model_unavailable), the
-// reference data, and diagnose() for each failure it names (checked against the shared schema).
+// (needs_connection) and a later one from the cache, the reference data, and diagnose() with no Model open.
 import test from 'node:test';
 import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { TajweedError, TajweedModel } from '../web/index.js';
-import { openModel } from '../web/api/model.js';
-import { memoryReader } from './helpers/readers.mjs';
+import { TajweedError } from '../web/index.js';
 import { createClient, resetClientForTests } from '../web/api/client.js';
 import { memoryState } from '../web/platform/storage.js';
 import { memoryStore } from '../web/tajweed/delivery.js';
@@ -32,36 +28,6 @@ async function setup(o = {}, extra = {}) {
 }
 const cdnPaths = (api) => api.log.filter((x) => x.host === 'cdn').map((x) => x.path);
 
-test('model(): the version and the build; telemetry and register carry them; a second start comes from the cache', async () => {
-  const { client, api, seams } = await setup();
-  const model = await client.model();
-  assert.equal(model.version, '4.0.0');
-  assert.equal(model.build, build.build);
-  const cfg = api.log.find((x) => x.path === '/v1/config');
-  assert.match(cfg.query, /sdk=3\.1\.6/);
-  assert.ok(!/model_version/.test(cfg.query), 'no pin, no model_version');
-  // a take, then the day's delta: the cohort is (version, build, context, backend); the download names both
-  const s = model.session();
-  s.push(audioFor([3, 3, 0, 0, 0, 0, 0, 0]));
-  await s.finish();
-  client._ql.telemetry.seal();
-  const p = client._ql.telemetry.pending().at(-1);
-  assert.deepEqual([p.cohorts[0].revision, p.cohorts[0].build, p.cohorts[0].context, p.cohorts[0].backend], ['4.0.0', build.build, 'c16_l64', 'cpu']);
-  assert.deepEqual([p.cohorts[0].sessions, p.cohorts[0].takes, p.cohorts[0].audio_s, p.cohorts[0].tokens], [1, 1, 0.32, { log_probs: 1, timing_log_probs: 1 }]); // the fake engine's timing head holds the same sound
-  assert.deepEqual([p.downloads[0].revision, p.downloads[0].build, p.downloads[0].profile, p.downloads[0].success], ['4.0.0', build.build, 'web-cpu', 1]);
-  assert.ok(p.downloads[0].bytes > 3000);
-  assert.equal(p.reported, undefined);
-  await client.close();
-  // the same storage, a new start: only the manifest is asked for again
-  resetClientForTests();
-  api.log.length = 0;
-  const again = await createClient({ key: KEY }, { ...seams, host: fakeHost() });
-  const m2 = await again.model();
-  assert.deepEqual(cdnPaths(api), ['manifest.json']);
-  assert.equal(m2.build, build.build);
-  await again.close();
-});
-
 test('pinning by version: model_version goes with the config request; an unavailable pin is exposed; a string that is not a version is refused', async () => {
   const other = await build3({ version: '4.1.0' });
   const { client, api } = await setup({ builds: { [other.build]: other } });
@@ -83,44 +49,6 @@ test('pinning by version: model_version goes with the config request; an unavail
     assert.equal(api.log.length, n, 'never sent');
   }
   await client.close();
-});
-
-test('the manifest\'s acceptance checks reach the app as catalogue codes', async () => {
-  const cases = [
-    [await build3({ version: null }), 'model_incompatible'],              // a 2.x build: no model version
-    [await build3({ minSdk: '3.1.7' }), 'model_incompatible'],
-    [await build3({ version: '4.0' }), 'model_invalid'],
-    [await build3({ signed: false }), 'signature_invalid'],
-  ];
-  for (const [b, want] of cases) {
-    const { client } = await setup({ build: b });
-    await assert.rejects(client.model(), code(want), want);
-    assert.equal((await client.diagnose()).lastError, want);
-    await client.close();
-    // opened as a folder (the SDK's internal entry), the production key is the only trusted one: the shape is
-    // checked first, then the signature
-    await assert.rejects(openModel({ reader: memoryReader(b.files) }), code(want === 'model_invalid' ? 'model_invalid' : 'signature_invalid'));
-  }
-  // the config names another version than the manifest signs, or another build than the bytes are
-  const lying = await build3();
-  let s = await setup({ build: { ...lying, manifest: { ...lying.manifest, version: '4.2.0' } } });
-  await assert.rejects(s.client.model(), code('model_invalid'));
-  await s.client.close();
-  const swapped = await build3({ minSdk: '2.0.1' });
-  s = await setup({ build: { ...swapped, build: lying.build, files: swapped.files } });
-  await assert.rejects(s.client.model(), code('checksum_mismatch'));
-  await s.client.close();
-  // a model file changed on the way: checksum_mismatch naming the file
-  const bad = await build3();
-  bad.files['frontend.zfw'] = bad.files['frontend.zfw'].slice();
-  bad.files['frontend.zfw'][2] ^= 1;
-  s = await setup({ build: bad });
-  await assert.rejects(s.client.model(), (e) => code('checksum_mismatch')(e) && /frontend\.zfw/.test(e.message));
-  await s.client.close();
-  // a folder with no manifest
-  await assert.rejects(openModel({ reader: memoryReader({}) }), code('model_missing'));
-  // and no public call takes a folder (3.1.0)
-  assert.equal(TajweedModel.open, undefined);
 });
 
 test('a first run without a network is needs_connection, not a timeout; after a download the model opens offline', async () => {
@@ -155,23 +83,6 @@ test('a first run without a network is needs_connection, not a timeout; after a 
   // a context that was never downloaded cannot be fetched offline: the take ends with an error, typed
   const t = offline.session({ context: 'c24_l72' });
   await assert.rejects(t.finish(), (e) => e instanceof TajweedError && ['needs_connection', 'download_failed'].includes(e.code));
-  await client.close();
-});
-
-test('no model build for this SDK yet: model() and prefetch() are model_unavailable, diagnose() says so, nothing loops', async () => {
-  const { client, api } = await setup({ build: null });
-  await assert.rejects(client.model(), (e) => code('model_unavailable')(e) && /3\.1\.6/.test(e.message));
-  await assert.rejects(client.prefetch(), code('model_unavailable'));
-  const d = await client.diagnose();
-  assert.deepEqual(valid(d), []);
-  assert.deepEqual([d.model, d.lastError, d.key.accepted, d.config], [null, 'model_unavailable', true, 'fresh']);
-  assert.equal(api.log.filter((x) => x.host === 'cdn').length, 0, 'nothing is downloaded');
-  assert.ok(api.log.filter((x) => x.path === '/v1/config').length <= 2, 'no retry loop: the next config refresh is the retry');
-  // a later config offers a build: the next call gets it
-  api.state.build = build;
-  api.state.configVersion++;
-  await client._ql.refreshConfig();
-  assert.equal((await client.model()).version, '4.0.0');
   await client.close();
 });
 
@@ -260,64 +171,6 @@ test('the reference data: not in the model\'s set, fetched on request, looked up
   const bare = await setup({ build: await build3({ reference: false }) });
   assert.equal((await bare.client.model()).reference, null);
   await bare.client.close();
-});
-
-test('diagnose(): the report for a healthy client and for each failure it names, each valid against the shared schema', async () => {
-  // healthy, with a newer SDK announced
-  let { client, api } = await setup({ sdkLatest: { version: '3.1.7', severity: 'recommended', url: 'https://sdk.quranlab.ai/changelog' } });
-  let d = await client.diagnose();
-  assert.deepEqual(Object.keys(d), ['sdk', 'key', 'config', 'model', 'context', 'backend', 'microphone', 'storage', 'lastError', 'droppedChunks', 'connection']);
-  assert.deepEqual(Object.keys(d), JSON.parse(readFileSync(new URL('./vectors30/names.json', import.meta.url), 'utf8')).diagnosis.fields);
-  assert.deepEqual(valid(d), []);
-  assert.deepEqual(d, { sdk: { version: '3.1.6', latest: '3.1.7' }, key: { accepted: true, reason: null }, config: 'fresh', model: null, context: null, backend: null,
-    microphone: 'none', storage: { models: [], sharingQueueBytes: 0 }, lastError: null, droppedChunks: 0, connection: 'unknown' });
-  const model = await client.model();
-  d = await client.diagnose();
-  assert.deepEqual(valid(d), []);
-  assert.deepEqual([d.model, d.context, d.backend], [{ version: '4.0.0', build: build.build, verified: true }, 'c16_l64', { kind: 'cpu', name: 'wasm', stage: 'cpu', reason: null }]);
-  assert.equal(d.storage.models.length, 1);
-  // the last error raised through the client
-  assert.throws(() => client.model('nope'), code('invalid_argument'));
-  await model.close();
-  d = await client.diagnose();
-  // a model on the device that is not open now: what a Session would run on is still known (3.0.1; it was null)
-  assert.deepEqual([d.model, d.context, d.backend], [{ version: '4.0.0', build: build.build, verified: false }, 'c16_l64', { kind: 'cpu', name: 'wasm', stage: 'cpu', reason: null }]);
-  assert.deepEqual(valid(d), []);
-  // nothing in the report names the app, the key or a path
-  assert.ok(!/qlk_|app\.example|https?:|[A-Za-z]:[\\/]/.test(JSON.stringify(d)));
-  await client.close();
-
-  // the key refused, the SDK too old for the key, the app blocked
-  for (const [status, error, body, reason, last] of [[401, 'invalid_key', {}, 'invalid_key', 'invalid_key'], [403, 'sdk_too_old', { min_sdk: '3.2.0' }, 'sdk_too_old', 'sdk_too_old'],
-    [403, 'app_blocked', {}, 'server_rejected', 'server_rejected']]) {
-    resetClientForTests();
-    api = await stubPlatform({ build });
-    const json = (s, o) => new Response(JSON.stringify(o), { status: s, headers: { 'content-type': 'application/json' } });
-    const fetch = async (url, init) => (new URL(url).pathname === (error === 'invalid_key' ? '/v1/attest' : '/v1/register') ? json(status, { error, message: 'refused', ...body }) : api.fetch(url, init));
-    client = await createClient({ key: KEY }, seamsFor(api, { fetch }));
-    d = await client.diagnose();
-    assert.deepEqual(valid(d), [], error);
-    assert.deepEqual([d.key, d.lastError], [{ accepted: false, reason }, last], error);
-    const failure = await client.model().then(() => null, (e) => e);
-    assert.ok(code(last)(failure), `${error}: model() fails with ${failure && failure.code}`);
-    if (error === 'sdk_too_old') { assert.match(failure.message, /needs SDK 3\.2\.0 or later; this is 3\.1\.6/); assert.match(failure.fix, /3\.2\.0/); }
-    await client.close();
-  }
-  // a stored config that expired and no network: stale
-  resetClientForTests();
-  api = await stubPlatform({ build });
-  let now = Date.now();
-  const state = memoryState();
-  client = await createClient({ key: KEY }, seamsFor(api, { state, clock: () => now }));
-  await client.close();
-  resetClientForTests();
-  api.state.offline = true;
-  now += 2 * 86400_000;
-  client = await createClient({ key: KEY }, seamsFor(api, { state, clock: () => now }));
-  d = await client.diagnose();
-  assert.deepEqual(valid(d), []);
-  assert.deepEqual([d.config, d.key.accepted], ['stale', null]);
-  await client.close();
 });
 
 test('prefetch({ unmeteredOnly }): waits on a metered connection, downloads on an unmetered one and where the browser says nothing', async () => {

@@ -13,6 +13,7 @@
 // (tab closed, network gone) continues from the ranges already stored.
 
 import { logicalPath, gunzip } from './manifest.js';
+import { tag } from '../platform/error-reports.js';
 
 /** Where the cache lives in a browser: the Cache API name and the IndexedDB name. */
 export const CACHE_NAME = 'quranlab-tajweedformer-v1';
@@ -128,6 +129,17 @@ export async function openDefaultStore(o = {}) {
   return idb ? indexedDbStore() : memoryStore();
 }
 
+// A store whose failures say they were the download's write or read (3.1.7, the error reports' stage `download`,
+// reason `quota` or `storage`); everything else about the store is the same object's.
+function marked(st) {
+  const wrap = (f) => async (...a) => {
+    try { return await f(...a); } catch (e) { throw tag(e, { stage: 'download', reason: e && e.name === 'QuotaExceededError' ? 'quota' : 'storage' }); }
+  };
+  const out = Object.create(st);
+  for (const k of ['get', 'put', 'delete', 'keys', 'has']) if (typeof st[k] === 'function') out[k] = wrap(st[k].bind(st));
+  return out;
+}
+
 // ---- the download profile ----
 
 const CONTEXT_RE = /^c\d+_l\d+$/;
@@ -200,7 +212,7 @@ export function profilePaths(manifest, { context, platform = 'web', optional = f
 export function cachedReader(o) {
   const base = o.baseUrl.endsWith('/') ? o.baseUrl : o.baseUrl + '/';
   const f = o.fetch || globalThis.fetch.bind(globalThis);
-  const store = o.store === false ? null : (o.store || defaultStore());
+  const store = o.store === false ? null : marked(o.store || defaultStore());
   const rangeSize = o.rangeSize || DEFAULT_RANGE_SIZE;
   const parallel = Math.max(1, o.parallel || 4);
   const stats = { requests: 0, bytesDownloaded: 0, filesFromCache: 0, filesDownloaded: 0, rangesResumed: 0 };
@@ -214,7 +226,7 @@ export function cachedReader(o) {
     try { headers = typeof o.headers === 'function' ? { ...(await o.headers()) } : { ...(o.headers || {}) }; } catch (e) {
       // no header can be made (no token: the server did not answer, or it refused): nothing is sent. `auth`
       // is the server's answer, raised where no stored copy can stand in.
-      const err = new DeliveryError('offline', `${path}: ${(e && e.message) || e}`);
+      const err = new DeliveryError('offline', `${path}: ${(e && e.message) || e}`, { path });
       if (e && e.name === 'PlatformError') err.auth = e;
       throw err;
     }
@@ -223,8 +235,8 @@ export function cachedReader(o) {
     stats.requests++;
     // a model request never leaves the CDN: a redirect is an error, not followed
     try { r = await f(base + path.split('/').map(encodeURIComponent).join('/'), { headers, signal: o.signal, cache: 'no-store', redirect: 'error' }); } catch (e) {
-      if (o.signal && o.signal.aborted) throw new DeliveryError('aborted', 'download aborted');
-      throw new DeliveryError('offline', `${path}: ${e.message || e}`);
+      if (o.signal && o.signal.aborted) throw new DeliveryError('aborted', 'download aborted', { path });
+      throw new DeliveryError('offline', `${path}: ${e.message || e}`, { path });
     }
     if (r.status >= 200 && r.status < 300 && typeof o.onServed === 'function') { try { o.onServed(); } catch (_) { /* the Client's own problem */ } }
     if (r.status === 401 || r.status === 403 || r.status === 429) {
@@ -246,7 +258,7 @@ export function cachedReader(o) {
   // an error answer as a DeliveryError that carries the answer's code; a refusal is told to the Client
   const httpError = (path, r) => {
     const a = answers.get(r) || { error: null, reason: null };
-    const e = new DeliveryError('http', `${path}: HTTP ${r.status}${a.error ? ' ' + a.error : ''}`, { status: r.status, error: a.error, reason: a.reason });
+    const e = new DeliveryError('http', `${path}: HTTP ${r.status}${a.error ? ' ' + a.error : ''}`, { status: r.status, error: a.error, reason: a.reason, path });
     if ((r.status === 401 || r.status === 403) && typeof o.onRefusal === 'function') { try { o.onRefusal(e); } catch (_) { /* the Client's own problem */ } }
     return e;
   };
@@ -261,7 +273,7 @@ export function cachedReader(o) {
   }
 
   // An answer that is not what was asked for: a failed attempt (a failed download for the app), never the file.
-  const wrongAnswer = (path, r, why) => new DeliveryError('http', `${path}: HTTP ${r.status}, ${why}`, { status: r.status, error: null, reason: null });
+  const wrongAnswer = (path, r, why) => new DeliveryError('http', `${path}: HTTP ${r.status}, ${why}`, { status: r.status, error: null, reason: null, path, wrong: true });
   // The body of an answer, which must have exactly `want` bytes: it is read with that cap, so a body that runs
   // past it is cut off (and the rest let go), and one that ends before it fails as a connection that dropped.
   async function bodyOf(path, r, want) {
@@ -269,7 +281,7 @@ export function cachedReader(o) {
     if (!stream) {
       const b = new Uint8Array(await r.arrayBuffer());
       if (b.length > want) throw wrongAnswer(path, r, `a body of ${b.length} bytes where ${want} were asked for`);
-      if (b.length < want) throw new DeliveryError('offline', `${path}: the body ended after ${b.length} of ${want} bytes`);
+      if (b.length < want) throw new DeliveryError('offline', `${path}: the body ended after ${b.length} of ${want} bytes`, { path });
       return b;
     }
     const out = new Uint8Array(want);
@@ -284,7 +296,7 @@ export function cachedReader(o) {
       out.set(value, at);
       at += value.length;
     }
-    if (at < want) throw new DeliveryError('offline', `${path}: the body ended after ${at} of ${want} bytes`);
+    if (at < want) throw new DeliveryError('offline', `${path}: the body ended after ${at} of ${want} bytes`, { path });
     return out;
   }
 

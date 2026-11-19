@@ -7,14 +7,20 @@
 //
 // Themable with a `theme` (theme.js) or the CSS custom properties it sets (--ql-bg, --ql-fg, --ql-muted,
 // --ql-accent, --ql-accent-fg, --ql-radius, --ql-font, --ql-title-font) and ::part(sheet|title|body|primary|
-// secondary|guardian). Everything else is set inside the shadow root: the page's styles do not reach the
+// secondary). Everything else is set inside the shadow root: the page's styles do not reach the
 // sheet's type (size, weight, line height), and the sizes follow the browser's text size. Right to left from the
 // deck's direction, keyboard and screen reader friendly (a modal <dialog>: focus moves in and stays in), two
 // buttons of equal weight, nothing pre-ticked. An app's own wording (wording.js) is shown in place of the deck's
-// strings it replaces.
+// strings it replaces. Every app shows this one sheet (ONE_SHEET_40 26.1): there is no other variant to select.
 //
 //   import { QuranLabConsent } from '@quran-lab/tajweedformer';   // defines the elements
-//   const yes = await QuranLabConsent.ask({ lang: 'ar', variant: 'first', guardian: false, theme: { accent: '#0b6e4f' } });
+//   const yes = await QuranLabConsent.ask({ lang: 'ar', variant: 'first', theme: { accent: '#0b6e4f' } });
+//
+// SDK 4.0: a re-ask is the card, QuranLabConsent.card(): not a dialog and not modal (no dim,
+// no focus taken), at the bottom of the window above the safe area, at most 480 px wide, the sheet's tokens; the
+// emblem, the deck's `card.line` and one row of two equal buttons, `card.open` (the accent) and `card.not_now` (the
+// tint). A screen reader hears it once (a polite live region). It has no timeout: it stays until the learner
+// answers or swipes it away, or the SDK takes it back (a take starts, the page is hidden).
 
 import { copyFor } from './copy.js';
 import { applyTheme } from './theme.js';
@@ -61,7 +67,7 @@ const WAVE = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke
 // text's parent is at the base. Line heights are ratios of the design's numbers.
 const em = (px) => `calc(${px}em / 16)`;
 
-// The switch of the guardian's confirmation and of the settings: a checkbox with role="switch", drawn here.
+// The switch of the settings: a checkbox with role="switch", drawn here.
 const SWITCH = `
 .switch { appearance: none; -webkit-appearance: none; flex: none; box-sizing: border-box; margin: 0; inline-size: 50px;
   block-size: 30px; border: 1px solid transparent; border-radius: 15px; cursor: pointer; vertical-align: middle;
@@ -135,17 +141,13 @@ h2 { font-family: var(--ql-title-font, var(--_font)); font-size: ${em(26)}; line
 .hadith .hq { font-size: ${em(15)}; line-height: calc(24 / 15); font-weight: 400; color: var(--_text); }
 .hadith .ref { font-size: ${em(12)}; line-height: calc(16 / 12); font-weight: 600; color: var(--_secondary); }
 .mistakes { font-size: ${em(15)}; line-height: calc(24 / 15); font-weight: 400; color: var(--_body); }
-.guardian { display: flex; align-items: center; gap: 12px; padding: 16px; background: var(--_card);
-  border-radius: calc(var(--_r) * 18 / 28); cursor: pointer; }
-.guardian span { flex: 1 1 auto; min-inline-size: 0; font-size: ${em(14.5)}; line-height: calc(22 / 14.5); font-weight: 400; color: var(--_text); }
-${SWITCH}
 
 dialog[data-script="latin"] h2 { letter-spacing: -0.02em; }
 dialog[data-script="latin"] .hadith .ref { text-transform: uppercase; letter-spacing: 0.06em; }
 dialog[data-script="arabic"] h2 { line-height: calc(36 / 26); }
 dialog[data-script="arabic"] .body { line-height: calc(27 / 15.5); }
 dialog[data-script="arabic"] .mistakes { line-height: calc(27 / 15); }
-dialog[data-script="arabic"] .card li, dialog[data-script="arabic"] .guardian span { line-height: calc(25 / 14.5); }
+dialog[data-script="arabic"] .card li { line-height: calc(25 / 14.5); }
 dialog[data-script="arabic"] .hadith .hq { line-height: calc(28 / 15); }
 
 .bar { flex: none; display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: 1fr; gap: 10px;
@@ -157,7 +159,6 @@ button { appearance: none; -webkit-appearance: none; display: block; inline-size
   letter-spacing: normal; text-transform: none; text-align: center; white-space: normal; overflow-wrap: anywhere; }
 button.primary { background-color: var(--_accent); color: var(--_on-accent); }
 button.secondary { background-color: var(--_tint); color: var(--_on-tint); }
-button:disabled { opacity: 0.45; cursor: not-allowed; }
 button:focus-visible { outline: 3px solid var(--_on-tint); outline-offset: 2px; }
 @media (hover: hover) { button:not(:disabled):hover { background-image: linear-gradient(rgb(0 0 0 / .06), rgb(0 0 0 / .06)); } }
 
@@ -179,6 +180,38 @@ button:focus-visible { outline: 3px solid var(--_on-tint); outline-offset: 2px; 
 @media (forced-colors: active) { .card li::before { background-color: CanvasText; } }
 `;
 
+const CARD_STYLE = `${RESET}
+section { ${tokens(LIGHT)}
+  --_r: var(--ql-radius, 28px); --_font: var(--ql-font, ${STACK});
+  position: fixed; inset-inline: 16px; inset-block-end: max(16px, env(safe-area-inset-bottom, 0px)); z-index: 2147483646;
+  box-sizing: border-box; max-inline-size: 480px; margin-inline: auto; padding: 16px;
+  display: flex; flex-direction: column; gap: 14px; border-radius: calc(var(--_r) * 18 / 28);
+  background: var(--_bg); color: var(--_text); box-shadow: 0 10px 34px rgb(0 0 0 / .2); outline: 1px solid transparent;
+  font: 400 medium/normal var(--_font); letter-spacing: normal; word-spacing: normal; text-transform: none;
+  text-align: start; text-indent: 0; text-shadow: none; white-space: normal; font-style: normal; visibility: visible;
+  color-scheme: light; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; touch-action: pan-x; }
+@media (prefers-color-scheme: dark) { section { ${tokens(DARK)} color-scheme: dark; box-shadow: 0 10px 34px rgb(0 0 0 / .5); } }
+.row1 { display: flex; align-items: center; gap: 12px; }
+.emblem { flex: none; display: flex; align-items: center; justify-content: center; inline-size: 40px; block-size: 40px;
+  border-radius: calc(var(--_r) * 12 / 28); background: var(--_tint); color: var(--_on-tint); }
+.emblem svg { display: block; inline-size: 22px; block-size: 22px; }
+.line { flex: 1 1 auto; min-inline-size: 0; font-size: ${em(15.5)}; line-height: calc(24 / 15.5); font-weight: 400; color: var(--_body); }
+.btns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+button { appearance: none; -webkit-appearance: none; display: block; inline-size: 100%; min-block-size: 52px; margin: 0;
+  padding: 15px 12px; border: 1px solid transparent; border-radius: calc(var(--_r) * 14 / 28); cursor: pointer;
+  font-family: var(--_font); font-size: 1em; line-height: calc(20 / 16); font-weight: 600; font-style: normal;
+  letter-spacing: normal; text-transform: none; text-align: center; white-space: normal; overflow-wrap: anywhere; }
+button.primary { background-color: var(--_accent); color: var(--_on-accent); }
+button.secondary { background-color: var(--_tint); color: var(--_on-tint); }
+button:focus-visible { outline: 3px solid var(--_on-tint); outline-offset: 2px; }
+@media (hover: hover) { button:hover { background-image: linear-gradient(rgb(0 0 0 / .06), rgb(0 0 0 / .06)); } }
+section[data-script="arabic"] .line { line-height: calc(27 / 15.5); }
+@media (prefers-reduced-motion: no-preference) {
+  section { animation: ql-card 0.24s cubic-bezier(0.2, 0.8, 0.2, 1); transition: transform 0.2s, opacity 0.2s; }
+}
+@keyframes ql-card { from { opacity: 0; transform: translateY(16px); } }
+`;
+
 const SETTINGS_STYLE = `${RESET}
 :host { display: block !important; }
 section { ${tokens(LIGHT)}
@@ -198,16 +231,13 @@ details p { margin-block-start: 8px; font-size: ${em(14.5)}; line-height: calc(2
 #msg:empty { display: none; }
 .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: ${em(14)}; line-height: 1.5;
   color: var(--_text); word-break: break-all; }
-label.guardian { display: flex; gap: 12px; align-items: flex-start; padding-block: 12px; font-size: ${em(14.5)};
-  line-height: calc(22 / 14.5); font-weight: 400; color: var(--_text); cursor: pointer; }
-label.guardian input { flex: none; inline-size: 20px; block-size: 20px; margin: 1px 0 0; accent-color: var(--_accent); }
 button { appearance: none; -webkit-appearance: none; min-block-size: 44px; margin: 0; padding: 11px 16px;
   border: 1px solid transparent; border-radius: calc(var(--_r) * 14 / 28); cursor: pointer; font-family: var(--_font);
   font-size: 1em; line-height: calc(20 / 16); font-weight: 600; letter-spacing: normal; text-transform: none;
   background-color: var(--_tint); color: var(--_on-tint); }
 button:focus-visible, input:focus-visible { outline: 3px solid var(--_on-tint); outline-offset: 2px; }
 section[data-script="arabic"] .row label, section[data-script="arabic"] summary { line-height: calc(27 / 15.5); }
-section[data-script="arabic"] details p, section[data-script="arabic"] .muted, section[data-script="arabic"] label.guardian { line-height: calc(25 / 14.5); }
+section[data-script="arabic"] details p, section[data-script="arabic"] .muted { line-height: calc(25 / 14.5); }
 ${SWITCH}
 `;
 
@@ -321,9 +351,9 @@ const Base = globalThis.HTMLElement || class {};
 export class QuranLabConsent extends Base {
   /**
    * Show the sheet and resolve with the learner's answer (true = share). Dismissing (Escape) is "Not now".
-   * @param {{ lang?: string, variant?: 'first'|'reask'|'version', guardian?: boolean, parent?: Element,
+   * @param {{ lang?: string, variant?: 'first'|'reask'|'version', parent?: Element,
    *           wording?: Record<string, string>|null, theme?: object|null }} o
-   * @returns {Promise<{ yes: boolean, guardianConfirmed: boolean }>}
+   * @returns {Promise<{ yes: boolean }>}
    */
   static ask(o = {}) {
     const el = document.createElement('quranlab-consent');
@@ -331,7 +361,66 @@ export class QuranLabConsent extends Base {
     return el.show(o).finally(() => el.remove());
   }
 
-  show({ lang = (globalThis.navigator && navigator.language) || 'en', variant = 'first', guardian = false, wording = null, theme = null } = {}) {
+  /**
+   * SDK 4.0's re-ask card: resolves 'open' ("See how it helps": the caller shows the full sheet),
+   * 'not_now' (the button, Escape, or swiped away), or 'withdrawn' (the SDK took it back through `signal`). Not modal:
+   * it takes no focus and nothing behind it is dimmed or blocked.
+   * @param {{ lang?: string, parent?: Element, wording?: Record<string, string>|null, theme?: object|null, signal?: AbortSignal }} o
+   * @returns {Promise<'open'|'not_now'|'withdrawn'>}
+   */
+  static card(o = {}) {
+    const el = document.createElement('quranlab-consent');
+    (o.parent || document.body).appendChild(el);
+    return el.showCard(o).finally(() => el.remove());
+  }
+
+  showCard({ lang = (globalThis.navigator && navigator.language) || 'en', wording = null, theme = null, signal = undefined } = {}) {
+    const c = copyFor(lang, wording);
+    applyTheme(this, theme);
+    const t = c.t;
+    const root = this.shadowRoot || this.attachShadow({ mode: 'open' });
+    root.innerHTML = `<style>${CARD_STYLE}</style>
+<section part="card" role="region" aria-label="${esc(SHEET_NAME)}" lang="${esc(c.lang)}" dir="${esc(c.dir)}" data-script="${scriptOf(c.lang)}">
+  <div class="row1"><span class="emblem" aria-hidden="true">${WAVE}</span><p class="line" part="body" id="l" aria-live="polite"></p></div>
+  <div class="btns">
+    <button type="button" class="primary" part="primary" id="open">${esc(t('card.open'))}</button>
+    <button type="button" class="secondary" part="secondary" id="no">${esc(t('card.not_now'))}</button>
+  </div>
+</section>`;
+    const sec = root.querySelector('section');
+    if (sec && this.ownerDocument && typeof sec.getBoundingClientRect === 'function') this._colors = paintColors(sec);
+    // the line is put in after the region is in the page, so a screen reader announces it (once, politely)
+    const line = root.querySelector('#l');
+    return new Promise((resolve) => {
+      let done = false;
+      const end = (v) => {
+        if (done) return;
+        done = true;
+        if (signal) signal.removeEventListener('abort', onAbort);
+        if (this.ownerDocument) this.ownerDocument.removeEventListener('keydown', onKey, true);
+        resolve(v);
+      };
+      const onAbort = () => end('withdrawn');
+      const onKey = (e) => { if (e.key === 'Escape' && this.matches && this.matches(':focus-within')) end('not_now'); };
+      if (signal) { if (signal.aborted) { end('withdrawn'); return; } signal.addEventListener('abort', onAbort); }
+      root.querySelector('#open').addEventListener('click', () => end('open'));
+      root.querySelector('#no').addEventListener('click', () => end('not_now'));
+      if (this.ownerDocument) this.ownerDocument.addEventListener('keydown', onKey, true);
+      // swiped away (down, or to either side): "Not now"
+      let x0 = null, y0 = null;
+      sec.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'mouse') { x0 = e.clientX; y0 = e.clientY; } });
+      sec.addEventListener('pointerup', (e) => {
+        if (x0 === null) return;
+        const dx = e.clientX - x0, dy = e.clientY - y0;
+        x0 = null;
+        if (dy > 48 || Math.abs(dx) > 96) end('not_now');
+      });
+      const put = () => { line.textContent = t('card.line'); };
+      if (typeof globalThis.requestAnimationFrame === 'function') requestAnimationFrame(put); else put();
+    });
+  }
+
+  show({ lang = (globalThis.navigator && navigator.language) || 'en', variant = 'first', wording = null, theme = null, signal = undefined } = {}) {
     const c = copyFor(lang, wording);
     applyTheme(this, theme);
     const t = c.t;
@@ -350,40 +439,41 @@ export class QuranLabConsent extends Base {
       <div class="col">
         <div class="top">
           <div class="head"><span class="emblem" aria-hidden="true">${WAVE}</span><span class="name" id="n" dir="ltr" tabindex="-1">${SHEET_NAME}</span></div>
-          <h2 id="t" part="title" tabindex="-1">${esc(t(guardian ? 'sheet.guardian.title' : 'sheet.title'))}</h2>
+          <h2 id="t" part="title" tabindex="-1">${esc(t('sheet.title'))}</h2>
         </div>
         <div id="b" part="body">
           ${variant === 'reask' ? `<p class="body">${esc(t('reask'))}</p>` : ''}
-          ${guardian ? `<p class="body" part="guardian">${esc(t('sheet.guardian.body'))}</p>` : `<p class="body">${esc(t('sheet.body'))}</p>`}
+          <p class="body">${esc(t('sheet.body'))}</p>
           <ul class="card">${lines}</ul>
           ${hadith}
-          ${guardian ? '' : `<p class="mistakes">${esc(t('sheet.mistakes'))}</p>`}
+          <p class="mistakes">${esc(t('sheet.mistakes'))}</p>
         </div>
-        ${guardian ? `<label class="guardian" for="g"><span>${esc(t('sheet.guardian.confirm'))}</span><input type="checkbox" role="switch" class="switch" id="g"></label>` : ''}
       </div>
     </div>
     <div class="fade t" aria-hidden="true"></div>
     <div class="fade b" aria-hidden="true"></div>
   </div>
   <div class="bar">
-    <button type="button" class="primary" part="primary" id="yes" ${guardian ? 'disabled' : ''}>${esc(t(guardian ? 'sheet.guardian.share' : 'sheet.share'))}</button>
+    <button type="button" class="primary" part="primary" id="yes">${esc(t('sheet.share'))}</button>
     <button type="button" class="secondary" part="secondary" id="no">${esc(t('sheet.not_now'))}</button>
   </div>
 </dialog>`;
     const d = root.querySelector('dialog');
-    const g = root.querySelector('#g');
     const yes = root.querySelector('#yes');
-    if (g) g.addEventListener('change', () => { yes.disabled = !g.checked; });
     const live = this._live(d);
     return new Promise((resolve) => {
       let answered = false;
-      const done = (v) => {
+      const done = (v, withdrawn = false) => {
         if (answered) return;
         answered = true;
         if (live) live.stop();
+        if (signal) signal.removeEventListener('abort', onAbort);
         try { d.close(); } catch (_) { /* closed */ }
-        resolve({ yes: v, guardianConfirmed: !!(g && g.checked) });
+        resolve({ yes: v, ...(withdrawn ? { withdrawn: true } : {}) });
       };
+      // the SDK took the sheet back (the page hidden, the switch): no answer is recorded
+      const onAbort = () => done(false, true);
+      if (signal) { if (signal.aborted) { done(false, true); return; } signal.addEventListener('abort', onAbort); }
       yes.addEventListener('click', () => done(true));
       root.querySelector('#no').addEventListener('click', () => done(false));
       d.addEventListener('close', () => done(false));
@@ -478,7 +568,6 @@ export class QuranLabSharingSettings extends Base {
 <section lang="${esc(c.lang)}" dir="${esc(c.dir)}" data-script="${scriptOf(c.lang)}">
   <div class="row"><label for="s">${esc(t('settings.toggle'))}</label>
     <input type="checkbox" role="switch" class="switch" id="s" ${on ? 'checked' : ''} aria-checked="${on}"></div>
-  ${this._c.state.guardianVariant ? `<label class="guardian"><input type="checkbox" id="g"> <span>${esc(t('sheet.guardian.confirm'))}</span></label>` : ''}
   <details><summary>${esc(t('settings.what'))}</summary><p>${esc(t('what.detail'))}</p></details>
   ${code ? `<details id="rc"><summary>${esc(t('recovery.reveal'))}</summary><p class="code" id="code"></p><p class="muted">${esc(t('recovery.keep'))}</p><p class="muted">${esc(t('recovery.hint'))}</p></details>` : ''}
   <div class="row"><button class="secondary" id="del">${esc(t('settings.delete'))}</button></div>
@@ -491,8 +580,7 @@ export class QuranLabSharingSettings extends Base {
     if (rc) rc.addEventListener('toggle', () => { root.querySelector('#code').textContent = rc.open ? this._c.recoveryCode() : ''; });
     const msg = root.querySelector('#msg');
     root.querySelector('#s').addEventListener('change', (e) => {
-      const g = root.querySelector('#g');
-      try { this._c.setSharing(e.target.checked, { guardianConfirmed: !!(g && g.checked) }); } catch (_) { e.target.checked = false; }
+      try { this._c.setSharing(e.target.checked); } catch (_) { e.target.checked = false; }
       this.render();
     });
     root.querySelector('#del').addEventListener('click', async () => {

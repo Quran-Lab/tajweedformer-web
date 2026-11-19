@@ -1,5 +1,5 @@
 // Recitation sharing for the web product: the SDK's own consent sheet and settings (web components),
-// the state machine (when to ask, re-ask limits, guardian variant), and the wiring that shares the
+// the state machine (when to ask, re-ask limits), and the wiring that shares the
 // WHOLE session while the SDK listens once the learner said yes (the 2.0.0 design; the upload itself is
 // web/sharing/, loaded lazily so it costs nothing until sharing is on).
 //
@@ -12,7 +12,8 @@
 // text, under the version `custom-<24 hex>` derived from it, and each session sends its hash.
 //
 // The sheet is shown at most three times per install; a yes is kept, with the version the learner agreed to, across
-// copy decks, wordings and SDK upgrades (also from 2.0.0), and is never asked about again.
+// copy decks, wordings and SDK upgrades (also from 2.0.0, and a yes given on a 3.x guardian sheet), and is never asked
+// about again. Every app shows the same sheet (ONE_SHEET_40 26.1): there is no variant for an app to select.
 //
 // Since 2.0.3 takes in a row share one recording (web/sharing/takes.js): each take the SDK listens to still starts
 // and ends a shared session here, and the sharing pipeline joins it to the recording the previous take left open.
@@ -25,7 +26,15 @@ import { themeProperties } from './theme.js';
 import { contributorKey, forgetContributorKey, deletionMessage, b64url, newRecoveryCode, recoveryHash } from '../platform/contributor-key.js';
 import { SDK_VERSION } from '../platform/client.js';
 
-export { SharingState, MAX_ASKS, REASK_GAP, LEGACY_CONSENT_VERSION, SHARING_STATE_KEY } from './state.js';
+export { SharingState, MAX_ASKS, LEGACY_CONSENT_VERSION, SHARING_STATE_KEY } from './state.js';
+export { decide as decideShareAsk, resolveConfig as resolveShareAsk, SHARE_ASK_DEFAULTS } from './ask40.js';
+
+/** 20.6: an ask is presented once the moment has settled: this long with no new take (and the app idle). */
+export const SHARE_ASK_SETTLE_MS = 3000;
+/** 20.2: a page shown again after at least this long hidden starts a new app session. */
+export const APP_SESSION_GAP_MS = 30 * 60_000;
+/** The deck keys of the re-ask card (20.7). A deck without them shows the re-ask sheet in the card's place. */
+export const CARD_KEYS = Object.freeze(['card.line', 'card.open', 'card.not_now']);
 export { copyFor, registerDeck, languages, EN } from './copy.js';
 export { validateWording, deriveConsent, canonicalConsentText, wordingKeys, sha256HexSync, CONSENT_TEXT_FORMAT, PLURAL_CATEGORIES } from './wording.js';
 export { THEME_PROPERTIES, themeProperties, applyTheme } from './theme.js';
@@ -38,10 +47,11 @@ export const FEED_WAIT_S = 2;
 
 /**
  * Turn on the sharing experience for a configured platform client.
- * @param {import('../platform/client.js').QuranLab} ql  a configured client (the signed config decides whether sharing is offered)
+ * @param {import('../platform/client.js').QuranLab} ql  a configured client (its signed config carries Quran Lab's global
+ *   incident switch over sharing; every learner is asked otherwise, and the choice is the learner's)
  * @param {object} [o]
  * @param {string} [o.lang]  the deck's language (default: the browser's)
- * @param {'auto'|((ask: object) => Promise<{yes: boolean, guardianConfirmed?: boolean}|null|undefined>)} [o.ask='auto']
+ * @param {'auto'|((ask: object) => Promise<{yes: boolean}|null|undefined>)} [o.ask='auto']
  *        auto: the SDK shows <quranlab-consent> when the app is idle after a session with feedback; a
  *        function: the app shows its own UI with the SDK's strings (`ask.copy`, the copy with any own wording)
  *        and resolves with the learner's answer, or resolves with nothing and calls `sharing.answer(yes)` from
@@ -57,10 +67,114 @@ export function enableSharing(ql, o = {}) {
   themeProperties(theme); // refuses a bad theme now, not when a sheet opens
   let deck = copyFor(lang, wording);
   let consent = deriveConsent(deck.consentVersion, wording);
+  // the decision of 20.5 (web/consent/ask40.js) on the signed config's share_ask and the device's clock
   const state = new SharingState(ql.state, { enabled: () => ql.sharingAllowed(), consentVersion: consent.version,
-    consentTextSha256: consent.textSha256, audience: ql.audience });
+    consentTextSha256: consent.textSha256, clock: () => ql.clock(),
+    shareAsk: () => (ql.config && ql.config.share_ask) || null });
   const count = (field) => { try { if (ql.telemetry && typeof ql.telemetry.count === 'function') ql.telemetry.count(field); } catch (_) { /* never in the way */ } };
+  const timers = o.timers || { setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t) };
+  const offered = () => { try { return !!ql.sharingAllowed(); } catch (_) { return false; } };
   let pending = null; // the ask an app's own UI has not answered yet
+  let ui = null; // what the SDK has on screen for the ask in hand: { kind, close() }
+  let gen = 0; // a settling ask is presented only while no take started or ended, and nothing withdrew it, since
+  let hiddenAt = null; // when the page was hidden (a new app session after APP_SESSION_GAP_MS)
+  const card = () => { const a = state.app.ask; return !!(a && a.shown && a.kind === 'card'); };
+  // the learner's answer through the decision, counted as share_yes or share_no when the decision took it
+  const finish = (yes) => {
+    const r = state.answer(yes ? 'yes' : 'not_now');
+    if (r.why === null) count(yes ? 'share_yes' : 'share_no');
+    return yes && r.why === null;
+  };
+  // the SDK's full sheet for the ask in hand (the first ask, a card opened, the fallback): its answer, or null when
+  // it was taken back before the learner answered
+  const sheet = async (variant) => {
+    const { QuranLabConsent } = await import('./element.js');
+    const ac = typeof AbortController === 'function' ? new AbortController() : null;
+    const mine = { kind: 'sheet', close: () => { if (ac) ac.abort(); } };
+    ui = mine;
+    const a = await QuranLabConsent.ask({ lang, variant, wording, theme, signal: ac ? ac.signal : undefined });
+    if (ui === mine) ui = null;
+    if (!a || a.withdrawn) return null;
+    finish(a.yes);
+    return { yes: !!a.yes };
+  };
+  // 20.6: the ask in hand goes on screen. `shown` first: an ask another page asked or answered meanwhile is stale
+  // and nothing appears. Resolves with the learner's answer ({ yes }) or null.
+  const present = async (kind) => {
+    const d = state.decide({ type: 'shown' });
+    if (d.action !== kind) return null;
+    count('share_asked');
+    if (typeof o.ask === 'function') return presentOwn(kind);
+    if (kind === 'sheet') return sheet('first');
+    // a deck without the card's strings (before 2026-11-15.1): the re-ask sheet in the card's place, the same ask
+    if (!CARD_KEYS.every((k) => deck.has(k))) {
+      if (state.decide({ type: 'answer', answer: 'open' }).action !== 'sheet') return null;
+      return sheet('reask');
+    }
+    const { QuranLabConsent } = await import('./element.js');
+    const ac = typeof AbortController === 'function' ? new AbortController() : null;
+    const mine = { kind: 'card', close: () => { if (ac) ac.abort(); } };
+    ui = mine;
+    const r = await QuranLabConsent.card({ lang, wording, theme, signal: ac ? ac.signal : undefined });
+    if (ui === mine) ui = null;
+    if (r === 'open') {
+      // the full sheet at once, without the reask line (the card has just said it); the same ask, not counted again
+      if (state.decide({ type: 'answer', answer: 'open' }).action !== 'sheet') return null;
+      return sheet('first');
+    }
+    if (r === 'not_now') { finish(false); return { yes: false }; }
+    return null; // taken back: the event that took it (a take, the page hidden) decided and counted it
+  };
+  // an app's own screen (SPEC 3.0 section 14): it is handed the ask with its kind and, for a card, the card's lines
+  // and open(); a yes on a card that was not opened is not a yes, and the SDK shows its own full sheet instead. It
+  // is handed nothing about a guardian, and its answer is read for `yes` alone (26.1.3)
+  const presentOwn = async (kind) => {
+    let opened = kind === 'sheet';
+    const full = {
+      kind, variant: kind === 'sheet' ? 'first' : 'reask', lang, copy: deck, consentVersion: consent.version,
+      ...(kind === 'card' ? { card: { line: deck.t('card.line'), open: deck.t('card.open'), notNow: deck.t('card.not_now') } } : {}),
+      /** "See how it helps": the card becomes the full sheet (the app shows the full lines, then takes one answer). */
+      open: () => {
+        if (!opened && state.decide({ type: 'answer', answer: 'open' }).action === 'sheet') opened = true;
+        return opened;
+      },
+    };
+    pending = full;
+    const a = await o.ask(full);
+    if (!a || typeof a.yes !== 'boolean') return null; // the app's own UI answers later with ctl.answer()
+    if (pending !== full) return null;
+    pending = null;
+    if (a.yes && !opened) {
+      if (state.decide({ type: 'answer', answer: 'open' }).action !== 'sheet') return null;
+      return sheet('first');
+    }
+    finish(a.yes);
+    return { yes: a.yes };
+  };
+  // 20.6 the moment: SHARE_ASK_SETTLE_MS with no new take, and the app idle where it says so
+  const settle = (kind) => {
+    const my = ++gen;
+    return new Promise((resolve) => {
+      const tick = () => {
+        const a = state.app.ask;
+        if (my !== gen || !a || a.shown) { resolve(null); return; }
+        if (o.idle && !o.idle()) { timers.setTimeout(tick, 1000); return; }
+        present(kind).then(resolve, () => resolve(null));
+      };
+      timers.setTimeout(tick, SHARE_ASK_SETTLE_MS);
+    });
+  };
+  // the ask in hand goes back: a card on screen is "Not now" (share_no), a sheet on screen is used with no answer,
+  // one not yet on screen counts nothing
+  const withdraw = () => {
+    gen++;
+    if (!state.app.ask) return;
+    const wasCard = card();
+    state.decide({ type: 'withdrawn' });
+    if (wasCard) count('share_no');
+    pending = null;
+    if (ui) ui.close();
+  };
   const ctl = {
     lang, state,
     /** The copy the sheets show and an app's own UI should show: the deck with the app's own wording applied. */
@@ -95,40 +209,52 @@ export function enableSharing(ql, o = {}) {
      * app's own UI). yes: share under the wording shown; no: not now. Counted as share_yes or share_no. After a yes
      * or the switch turned off it changes nothing (and counts nothing): the settings switch decides then.
      */
-    answer(yes, { guardianConfirmed = false } = {}) {
-      const was = state.s.consent;
-      const r = state.answer(!!yes, { guardianConfirmed: !!guardianConfirmed });
+    answer(yes) {
+      const a = state.app.ask;
       pending = null;
-      if (was !== 'granted' && was !== 'final') count(yes ? 'share_yes' : 'share_no');
-      return r;
+      // a yes on a card that was not opened is not a yes: the SDK's own full sheet for the same ask (20.6)
+      if (yes && a && a.kind === 'card') {
+        if (state.decide({ type: 'answer', answer: 'open' }).action === 'sheet') sheet('first').catch(() => {});
+        return state.s.consent;
+      }
+      finish(!!yes);
+      return state.s.consent;
     },
-    /** The ask to show after a session (null when none is due); auto mode shows it. */
-    async sessionCompleted({ feedback = true, now = false } = {}) {
-      const ask = now ? state.askNow() : state.sessionCompleted({ feedback });
-      if (!ask) return null;
-      const own = typeof o.ask === 'function';
-      const show = own ? o.ask : async (a) => {
-        const { QuranLabConsent } = await import('./element.js');
-        return QuranLabConsent.ask({ lang, variant: a.variant, guardian: a.guardian, wording, theme });
-      };
-      const wait = () => new Promise((r) => { const tick = () => (!o.idle || o.idle() ? r() : setTimeout(tick, 1000)); tick(); });
-      await wait();
-      const full = { ...ask, lang, copy: deck, consentVersion: consent.version };
-      pending = full;
-      count('share_asked');
-      const a = await show(full);
-      if (!a || typeof a.yes !== 'boolean') return null; // the app's own UI answers later with ctl.answer()
-      if (pending === full) ctl.answer(a.yes, { guardianConfirmed: !!a.guardianConfirmed });
-      return a;
+    /** A new app session (20.2): the page started, or was shown again after APP_SESSION_GAP_MS hidden. */
+    launch() { gen++; state.decide({ type: 'launch' }); },
+    /** A take starts (20.5 take_start): an ask waiting for its moment is dropped, a card on screen goes ("Not now"),
+     * a sheet on screen stays. */
+    takeStarted() {
+      gen++;
+      const wasCard = card();
+      state.decide({ type: 'take_start' });
+      if (wasCard && !state.app.ask) { count('share_no'); if (ui && ui.kind === 'card') ui.close(); }
     },
-    /** Ask now, at the app's own moment, if an ask is still allowed (three at most; never after a yes). Resolves
-     * with the learner's answer, or null when no ask is allowed or an app's own UI answers later. */
-    askNow() { return ctl.sessionCompleted({ now: true }); },
+    /** A take ended ({ end: normal | interrupted | error | cancelled, speechMs }): a completed session counts, and
+     * at a good moment an ask due is presented once the moment settles. Resolves with the answer or null. */
+    takeEnded({ end = 'normal', speechMs = 0 } = {}) {
+      const d = state.decide({ type: 'take_end', end, speech_ms: Math.max(0, Math.round(speechMs) || 0), offered: offered() });
+      return d.action === 'none' ? Promise.resolve(null) : settle(d.action);
+    },
+    /** The app's own moment (sharing.ask()): an ask only when one is due by the same rules (without the 60 s), never
+     * before a completed take of this app session nor during a take. Resolves with the learner's answer, or null
+     * when no ask is due (nothing is shown) or an app's own UI answers later. */
+    async askNow() {
+      const d = state.decide({ type: 'ask_now', offered: offered() });
+      if (d.action === 'none') return null;
+      gen++;
+      return present(d.action);
+    },
+    /** The ask the SDK has in hand (null when none): { kind: 'sheet' | 'card', number, shown }. */
+    get askInHand() { return state.app.ask ? { ...state.app.ask } : null; },
     /** The settings switch: off starts no upload request from the call on, aborts the one in flight and deletes
      * the unsent queue (the open recording with it).
      * Returns a promise: resolved when that is done (off), or at once (on). */
-    setSharing(on, opts) {
-      state.setSharing(on, opts);
+    setSharing(on) {
+      state.setSharing(on);
+      // 20.5 setting: any ask in hand goes
+      gen++; pending = null;
+      if (ui) ui.close();
       // off: a promise that resolves when the uploads in flight are aborted and the unsent queue is gone. In a
       // page that has not loaded the sharing module yet, the queue an earlier page left is deleted by the sweep
       // (the answer is written once more when the queue is gone, in case the device did not take it before)
@@ -140,9 +266,18 @@ export function enableSharing(ql, o = {}) {
     },
     /** The app went to the background (2.0.3): the shared recording that takes in a row keep open closes now.
      * The platform client calls it when the page is hidden; call it yourself where the app knows better. */
-    async background() { if (ctl.outbox && ctl.outbox.background) await ctl.outbox.background(); },
-    /** The app is in the foreground again. */
-    async foreground() { if (ctl.outbox && ctl.outbox.foreground) await ctl.outbox.foreground(); },
+    async background() {
+      // the app leaving the foreground takes back the ask in hand (20.6)
+      if (hiddenAt === null) hiddenAt = ql.clock();
+      withdraw();
+      if (ctl.outbox && ctl.outbox.background) await ctl.outbox.background();
+    },
+    /** The app is in the foreground again: after APP_SESSION_GAP_MS or more hidden, a new app session (20.2). */
+    async foreground() {
+      if (hiddenAt !== null && ql.clock() - hiddenAt >= APP_SESSION_GAP_MS) ctl.launch();
+      hiddenAt = null;
+      if (ctl.outbox && ctl.outbox.foreground) await ctl.outbox.foreground();
+    },
     /** No take follows (the learner left the recitation screen): the open recording closes now instead of at
      * the end of its join window. */
     async closeRecording() { if (ctl.outbox && ctl.outbox.closeRecording) await ctl.outbox.closeRecording(); },
@@ -253,6 +388,7 @@ export function enableSharing(ql, o = {}) {
     }).catch(() => {}).then(() => { feedWaiting -= copy.length; });
   };
   ctl.streamStarted = (tf, s) => {
+    ctl.takeStarted();
     // the count first, the consent second: a stop between the two is either seen below or leaves this take's
     // recording with an old stamp, which is never uploaded
     const begun = state.changes;
@@ -330,8 +466,9 @@ export function enableSharing(ql, o = {}) {
       return free();
     };
   };
-  // the moment to ask: after a finished take in which the model heard speech (the platform client's
-  // takeFinished calls ctl.sessionCompleted), or when the app calls sharing.ask()
+  // the moment to ask (SDK 4.0, contract section 20): at the end of a good session (the platform client's
+  // takeFinished calls ctl.takeEnded for every take), or when the app calls sharing.ask(); a new app session now
+  ctl.launch();
   return ctl;
 }
 
