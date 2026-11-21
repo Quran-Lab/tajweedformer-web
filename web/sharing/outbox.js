@@ -293,6 +293,51 @@ export async function recover(s, id) {
 /** Session ids being captured in this page or process (never taken for crashed). */
 export const activeCaptures = new Set();
 
+// 4.0.1 (hosted): activeCaptures is this copy of the module's, while the queue is the origin's (one IndexedDB for every
+// page of the site). Another tab of the site, or the sharing module of an earlier Client in the same page (the loader
+// imports its sharing chunk anew at every create()), saw a recording being captured as a folder of files, the same as
+// one a closed page left: its pass deleted the folder (no capture.json yet) or closed the recording where it was
+// (recover), uploaded that part and called it uploaded, and the rest of the take never went up. Now a page that
+// captures holds a Web Lock named for the recording, from before its first file to after its last. A browser releases
+// the locks of a page that is gone, so a folder whose lock is free and that has no end.json is one a closed page left.
+// A browser without Web Locks (or one that refuses them) works as before.
+export const CAPTURE_LOCK = 'quranlab-sharing-capture:';
+/** How long a capture waits for its lock before it writes without it (ms): the lock never holds a recording up. */
+export const CAPTURE_LOCK_WAIT_MS = 2000;
+
+/**
+ * The origin's locks for the recordings being captured, over `locks` (a LockManager; default navigator.locks), or
+ * null where there are none: { hold(id) -> { ready, release() }, held() -> Set of ids, or null when not known }.
+ */
+export function captureLocks(locks = globalThis.navigator ? globalThis.navigator.locks : undefined) {
+  if (!locks || typeof locks.request !== 'function' || typeof locks.query !== 'function') return null;
+  return {
+    hold(id) {
+      let release = () => {};
+      const held = new Promise((r) => { release = r; });
+      let timer = null;
+      // resolves true once the lock is held, false when it cannot be (refused, or not given in time)
+      const ready = new Promise((r) => {
+        timer = setTimeout(() => r(false), CAPTURE_LOCK_WAIT_MS);
+        try {
+          Promise.resolve(locks.request(CAPTURE_LOCK + id, { mode: 'exclusive' }, () => { r(true); return held; })).catch(() => r(false));
+        } catch (_) { r(false); }
+      }).finally(() => clearTimeout(timer));
+      return { ready, release: () => release() };
+    },
+    async held() {
+      try {
+        const q = await locks.query();
+        const out = new Set();
+        for (const l of (q && q.held) || []) {
+          if (l && typeof l.name === 'string' && l.name.startsWith(CAPTURE_LOCK)) out.add(l.name.slice(CAPTURE_LOCK.length));
+        }
+        return out;
+      } catch (_) { return null; }
+    },
+  };
+}
+
 /**
  * The outbox.
  * @param {object} o
@@ -310,13 +355,17 @@ export const activeCaptures = new Set();
  * @param {(kind: string, code: string) => void} [o.onIssue]  a take list refused as a bad request ('other', 'takes:<code>')
  * @param {() => Promise<void>|void} [o.onStop]  sharing went off: the recorder ends the recording being captured
  * @param {(message: string) => void} [o.log]  one line for the developer (a server without the take list route)
+ * @param {object|null} [o.locks]  captureLocks(): the recordings other pages of the origin are capturing (default
+ *        the browser's; null: none known)
  */
 export class Outbox {
   constructor({ storage, client, tokenProvider, flags = () => null, enabled = () => true, turnstile = null, platform = 'web',
     contributor, clock = () => Date.now(), onChange = null, onError = null, random = Math.random, ladder = null,
-    onIssue = null, onStop = null, log = null, epoch = null }) {
+    onIssue = null, onStop = null, log = null, epoch = null, locks }) {
     Object.assign(this, { storage, client, tokenProvider, flags, enabled, turnstile, platform, contributor, clock, onChange, onError, random, ladder,
       onIssue, onStop, log, epoch });
+    this.locks = locks === undefined ? captureLocks() : locks;
+    this._elsewhere = new Set(); // recordings another page was capturing at the last scan
     this._epochSeen = null; // the count of consent changes at the last scan
     this._undeletable = new Set(); // recordings whose delete failed (logged once each)
     this.takesLogged = false; // the dropped take list line, once per pipeline
@@ -471,7 +520,9 @@ export class Outbox {
       if (r.state === 'active' && !activeCaptures.has(r.id)) await this._remove(r.id, until);
       else if (r.takeList === 'pending') await this._takesDone(r, 'dropped', 'sharing_off');
     }
-    // a second look at the disk itself: nothing unsent may be left, whatever the records say
+    // a second look at the disk itself: nothing unsent may be left, whatever the records say. A recording another
+    // page of the site is capturing goes too (the queue is the origin's); a page under the same `storage` name reads
+    // the same stored answer, so its capture stops at its next audio and deletes what it wrote since
     for (const id of await this.storage.sessions()) {
       if (activeCaptures.has(id)) continue;
       if (this._undeletable.has(id)) continue; // tried above, and at every pass from now on
@@ -943,7 +994,7 @@ export class Outbox {
   async _expire() {
     const now = this.clock();
     for (const r of [...this.records.values()]) {
-      if (r.state === 'active' && !activeCaptures.has(r.id) && now - (r.createdAt || now) > MAX_AGE_MS) await this._drop(r.id, 'expired');
+      if (r.state === 'active' && !activeCaptures.has(r.id) && !this._elsewhere.has(r.id) && now - (r.createdAt || now) > MAX_AGE_MS) await this._drop(r.id, 'expired');
       else if (r.takeList === 'pending' && now - (r.createdAt || now) > MAX_AGE_MS) await this._takesDone(r, 'dropped', 'expired');
     }
   }
@@ -961,9 +1012,22 @@ export class Outbox {
 
   // ---- storage ----
 
+  // the recordings another page of the origin is capturing now (their locks), not this page's own
+  async _capturedElsewhere() {
+    const held = this.locks ? await this.locks.held() : null;
+    if (!held) return new Set();
+    for (const id of activeCaptures) held.delete(id);
+    return held;
+  }
+
   // Picks up sessions the captures made and recovers the ones a closed page left.
   async _scan(until = 0) {
     const s = this.storage;
+    // the folders first, the locks second: a recording holds its lock from before its first file to after its last,
+    // so a folder listed here whose lock is free now was ended by its page, or its page is gone
+    const ids = await s.sessions();
+    const elsewhere = await this._capturedElsewhere();
+    this._elsewhere = elsewhere;
     // A recording is stamped at its creation with the count of the learner's consent changes. One whose stamp is
     // not the current count was made before the learner's last "off" (the stop did not get to it: the page
     // died, or its delete failed): it is never read into the queue, and it is deleted here, at every pass and
@@ -971,11 +1035,13 @@ export class Outbox {
     const epoch = this.paused ? this._pausedEpoch : this._epoch();
     if (this._epochSeen !== epoch) {
       this._epochSeen = epoch;
-      for (const r of [...this.records.values()]) if (!activeCaptures.has(r.id) && (r.epoch || 0) !== epoch) await this._outdated(r, until);
+      for (const r of [...this.records.values()]) if (!activeCaptures.has(r.id) && !elsewhere.has(r.id) && (r.epoch || 0) !== epoch) await this._outdated(r, until);
     }
-    for (const id of await s.sessions()) {
+    for (const id of ids) {
       // (the stop's own scan: one it has just tried till its deadline is not tried again in the same call)
       if (this.removed.has(id)) { if (!until || !this._undeletable.has(id)) await this._remove(id, until); continue; }
+      // being captured in another page of the site: that page uploads it as it records; read here once it has ended
+      if (elsewhere.has(id)) continue;
       if (this.records.has(id)) continue;
       const capturing = activeCaptures.has(id);
       const rec = await readJson(s, id, FILES.item);
@@ -997,7 +1063,7 @@ export class Outbox {
       await this._countWaiting(fresh);
     }
     for (const r of [...this.records.values()]) {
-      if (r.state !== 'active' || activeCaptures.has(r.id)) continue;
+      if (r.state !== 'active' || activeCaptures.has(r.id) || elsewhere.has(r.id)) continue;
       if (!(await readJson(s, r.id, FILES.end)) && !(await recover(s, r.id))) { this.records.delete(r.id); this.waiting.delete(r.id); }
     }
   }

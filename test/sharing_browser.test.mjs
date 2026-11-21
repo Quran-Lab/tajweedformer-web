@@ -21,6 +21,7 @@ try { puppeteer = (await import('puppeteer-core')).default; } catch (_) { puppet
 const skip = !existsSync(path.join(root, 'dist', 'tajweedformer-opus.mjs')) ? 'opus module not built'
   : !puppeteer ? 'no puppeteer-core' : !existsSync(CHROME) ? `no Chrome at ${CHROME}` : false;
 
+const S_LOCK = 'quranlab-sharing-capture:';
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm' };
 const PAGE = `<!doctype html><meta charset="utf-8"><title>sharing</title><script type="module">
 import * as S from '/web/sharing/index.js';
@@ -223,6 +224,79 @@ test('R5 in headless Chrome: nine recordings a page left in the IndexedDB queue 
     assert.equal(r.theirs, 0, 'no audio of the nine reached the storage');
     assert.deepEqual([r.starts, r.fresh, r.item.status], [1, 1, 'uploaded'], 'the recording made in the new page is the only one uploaded');
     t.diagnostic('IndexedDB: nine recordings of an earlier consent deleted by the next page, none uploaded; the new recording uploaded');
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test('two tabs in headless Chrome: a pass in one tab never takes the recording the other is capturing; a closed tab\'s is recovered', { skip, timeout: 300000 }, async (t) => {
+  const server = createServer(async (req, res) => {
+    const p = new URL(req.url, 'http://x').pathname;
+    if (p === '/') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(PAGE); return; }
+    const f = path.join(root, path.normalize(decodeURIComponent(p)).replace(/^([\\/])+/, ''));
+    if (!f.startsWith(root)) { res.writeHead(403); res.end(); return; }
+    try { const b = await readFile(f); res.writeHead(200, { 'content-type': TYPES[path.extname(f)] || 'application/octet-stream' }); res.end(b); } catch (_) { res.writeHead(404); res.end(); }
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
+  try {
+    const [a, b] = [await browser.newPage(), await browser.newPage()];
+    for (const p of [a, b]) { await p.goto(origin + '/'); await p.waitForFunction('window.ready === true'); }
+    // tab A records 4 s of a take (one IndexedDB queue for the origin, as the SDK's)
+    const id = await a.evaluate(async () => {
+      window.sh = await window.mkWith({ db: 'qls-pages', epoch: 0 });
+      window.take = await window.sh.startSession({ inputSampleRate: 48000, inputRoute: 'built_in', decode: { backend: 'exact' } });
+      const x = window.noise(48000 * 4, 31);
+      for (let at = 0; at < x.length; at += 480) window.take.push(x.subarray(at, at + 480));
+      await window.take.io;
+      return window.take.id;
+    });
+    // tab B runs its upload passes meanwhile
+    const inB = await b.evaluate(async (id) => {
+      window.sh = await window.mkWith({ db: 'qls-pages', epoch: 0 });
+      const listed = (await window.sh.outbox.items()).map((i) => i.id);
+      await window.sh.outbox.drain({ ignoringBackoff: true });
+      const held = ((await navigator.locks.query()).held || []).map((l) => l.name);
+      return { listed, held, files: (await window.sh.storage.list(id)).sort() };
+    }, id);
+    assert.ok(inB.held.includes(S_LOCK + id), `tab B sees tab A's lock (${inB.held.join()})`);
+    assert.ok(!inB.listed.includes(id), 'tab B leaves the recording tab A is capturing out of its queue');
+    assert.ok(!inB.files.includes('end.json'), 'tab B did not end tab A\'s recording');
+    // tab A records 8 s more and ends the take; both tabs run passes
+    const r = await a.evaluate(async () => {
+      const x = window.noise(48000 * 8, 32);
+      for (let at = 0; at < x.length; at += 480) window.take.push(x.subarray(at, at + 480));
+      await window.take.finish();
+      await window.sh.closeRecording();
+      for (let i = 0; i < 50 && (await window.sh.outbox.pending()).length; i++) await window.sh.outbox.drain({ ignoringBackoff: true });
+      const objs = JSON.parse(localStorage.getItem('objs') || '{}');
+      const mine = Object.entries(objs).filter(([k]) => k.includes(window.take.id));
+      return { item: await window.sh.outbox.item(window.take.id), objects: mine.length, bytes: mine.reduce((k, [, n]) => k + n, 0) };
+    });
+    assert.deepEqual([r.item.status, r.item.durationMs, r.item.completed, r.item.segments], ['uploaded', 12000, true, 2]);
+    assert.deepEqual([r.objects, r.bytes], [2, r.item.bytes], 'R2 holds the whole take');
+    // tab A records 13 s of a new take and is closed mid-recording: its lock goes with it, tab B recovers the take
+    const open = await a.evaluate(async () => {
+      const s = await window.sh.startSession({ inputSampleRate: 48000, inputRoute: 'built_in', decode: { backend: 'exact' } });
+      const x = window.noise(48000 * 13, 33);
+      for (let at = 0; at < x.length; at += 480) s.push(x.subarray(at, at + 480));
+      await s.io;
+      return s.id;
+    });
+    await a.close();
+    const r2 = await b.evaluate(async (id) => {
+      for (let i = 0; i < 50; i++) {
+        await window.sh.outbox.drain({ ignoringBackoff: true });
+        const it = await window.sh.outbox.item(id);
+        if (it && it.status !== 'queued') break;
+      }
+      const objs = Object.keys(JSON.parse(localStorage.getItem('objs') || '{}')).filter((k) => k.includes(id));
+      return { item: await window.sh.outbox.item(id), objects: objs.length };
+    }, open);
+    assert.deepEqual([r2.item.status, r2.item.completed, r2.item.segments, r2.objects], ['uploaded', false, 2, 2]);
+    t.diagnostic(`two tabs: tab B left tab A's live recording alone (lock seen), the 12 s take reached R2 whole (${r.bytes} bytes); tab A closed at 13 s: tab B recovered and uploaded ${r2.item.durationMs} ms`);
   } finally {
     await browser.close();
     server.close();

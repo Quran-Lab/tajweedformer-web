@@ -2,6 +2,16 @@
 
 ## 4.0.1
 
+**Hosted fix** (app `64e00d3777a0`, served by the hosted loader; the npm package needs no update):
+
+- **Fixed: a shared recording could lose its end when the site was open in another tab.** That tab, or a client
+  closed earlier in the same page, could take a recording that was still being made for one a closed page had left,
+  and send only the part recorded so far. A recording being made now holds a browser lock that every page of the site
+  sees, so the take goes up whole; a recording a closed page left is still sent. A browser without Web Locks works as
+  before.
+
+**In 4.0.1:**
+
 - **Backup servers.** The SDK uses backup servers for Quran Lab's API, the model files and the frame if the main ones
   can't be reached. A site with a Content-Security-Policy adds the hosts the README lists. Everything is signed and
   checked as before, whatever server it came from.
