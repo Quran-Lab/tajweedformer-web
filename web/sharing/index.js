@@ -21,7 +21,7 @@ import { OggOpusWriter, SEGMENT_PLAN, OPUS_SETTINGS, segmentName, CODED_RATE } f
 import { OpusEncoder, loadOpus, opusVersion } from './encoder.js';
 import { ShareResampler } from './resampler.js';
 import { ContributionClient, sessionJson, utcDay, b64url, SDK_VERSION } from './uploader.js';
-import { Outbox, FILES, defaultStorage, writeJson, mark, recover, activeCaptures } from './outbox.js';
+import { Outbox, FILES, defaultStorage, writeJson, mark, recover, activeCaptures, captureLocks } from './outbox.js';
 import { BitrateLadder } from './bitrate.js';
 import { ShareRecorder } from './recorder.js';
 import { takesBody } from './takes.js';
@@ -31,7 +31,7 @@ export { OpusEncoder, loadOpus, opusVersion, decodeOggOpus, OPUS_REQUEST } from 
 export { ShareResampler } from './resampler.js';
 export { ContributionClient, SharingError, sessionJson, parseUrls, requestCounts, utcDay, b64url, deletionMessage, INPUT_ROUTES, SDK_VERSION } from './uploader.js';
 export { Outbox, MemoryStorage, dirStorage, indexedDbStorage, defaultStorage, recover, markers, markerSeconds, activeCaptures, sha256Hex, MAX_AGE_MS, FILES,
-  lastFailedOnNetwork, networkFailedIn } from './outbox.js';
+  lastFailedOnNetwork, networkFailedIn, captureLocks, CAPTURE_LOCK, CAPTURE_LOCK_WAIT_MS } from './outbox.js';
 export { BitrateLadder, BITRATE_RUNGS, UP_STREAK, UP_MAX_BACKLOG_S, DOWN_BACKLOG_S, isNetworkFailure } from './bitrate.js';
 export { joinWindowMs, takeStartMs, roundGap, takeList, takesBody, DEFAULT_JOIN_MS, MAX_JOIN_MS, RECORDING_CAP_MS, MAX_TAKES, HOLD_MS } from './takes.js';
 export { ShareRecorder, ShareTake } from './recorder.js';
@@ -90,9 +90,12 @@ export function webDevice() {
  * @param {(kind: string, code: string) => void} [o.onIssue]  an issue for the platform client's issue reports (a
  *        take list the server refused as a bad request: 'other', 'takes:<code>')
  * @param {(message: string) => void} [o.log]  one line for the developer (default console.warn)
+ * @param {object|null} [o.locks]  the origin's Web Locks (default navigator.locks; null: none): a recording being
+ *        captured holds a lock, so another page of the site never takes it for one a closed page left
  */
 export async function createSharing(o) {
   const storage = o.storage || await defaultStorage();
+  const locks = captureLocks(o.locks);
   const client = new ContributionClient({ api: o.api, fetch: o.fetch, headers: o.headers || {} });
   const opts = { ...o };
   // one ladder per pipeline (page or process), in memory, from the top rung
@@ -119,7 +122,7 @@ export async function createSharing(o) {
   // the count of the learner's consent changes (the controller's `state.changes`): a recording is stamped with it
   // at its creation, and one whose stamp is no longer the count is never uploaded (outbox.js, _scan)
   const epoch = () => { const n = typeof opts.epoch === 'function' ? opts.epoch() : 0; return Number.isInteger(n) ? n : 0; };
-  const recorder = new ShareRecorder({ make: (c) => new ShareCapture({ ...c, epoch: Number.isInteger(c.epoch) ? c.epoch : epoch() }), flags, clock, timers: o.timers, onInstall: (v) => install.set(v) });
+  const recorder = new ShareRecorder({ make: (c) => new ShareCapture({ ...c, locks, epoch: Number.isInteger(c.epoch) ? c.epoch : epoch() }), flags, clock, timers: o.timers, onInstall: (v) => install.set(v) });
   try {
     const was = (await install.get()) || {};
     if (Number.isInteger(was.seq) && was.seq > 0) recorder.seq = was.seq;
@@ -128,7 +131,7 @@ export async function createSharing(o) {
   const outbox = new Outbox({ storage, client, tokenProvider, flags, enabled,
     turnstile: async () => (opts.turnstile ? opts.turnstile() : null), platform: o.platform || 'web', contributor, clock: o.clock,
     onChange: (x) => opts.onChange && opts.onChange(x), onError: (e) => opts.onError && opts.onError(e), random: o.random, ladder,
-    onIssue: (kind, code) => opts.onIssue && opts.onIssue(kind, code), log: (m) => (opts.log ? opts.log(m) : console.warn(m)), epoch,
+    onIssue: (kind, code) => opts.onIssue && opts.onIssue(kind, code), log: (m) => (opts.log ? opts.log(m) : console.warn(m)), epoch, locks,
     // sharing went off: the recording being captured ends at once (its files go with the queue)
     onStop: () => recorder.stop() });
   let opus = null;
@@ -298,7 +301,7 @@ export function resetSharingForTests() {
 export class ShareCapture {
   constructor({ storage, outbox, opus, enabled, consentVersion, consentTextSha256 = null, contributor, contributorKey = null, recoveryHash = null, device, day, inputSampleRate,
     inputRoute = 'unknown',
-    decode = {}, serial, plan = SEGMENT_PLAN, settings = OPUS_SETTINGS, ladder = null, takeSeq = null, gapMsPrev = null, epoch = 0 }) {
+    decode = {}, serial, plan = SEGMENT_PLAN, settings = OPUS_SETTINGS, ladder = null, takeSeq = null, gapMsPrev = null, epoch = 0, locks = null }) {
     Object.assign(this, { storage, outbox, opus, enabled, plan, settings, serial, ladder, epoch });
     // segment 1 opens at the rung in force when the capture starts
     if (ladder) this.settings = { ...settings, bitrate: ladder.bitrate };
@@ -320,6 +323,11 @@ export class ShareCapture {
     /** The recording's takes once a second one joined ([{start_ms, gap_ms}]); null for one take. */
     this.takes = null;
     activeCaptures.add(this.id);
+    // the origin's lock for this recording (outbox.js, captureLocks): held from before its first file to after its
+    // last, so every other page of the site knows it is being captured. Its files wait for the lock, at most
+    // CAPTURE_LOCK_WAIT_MS; without one they are written as before.
+    this._lock = locks ? locks.hold(this.id) : null;
+    if (this._lock) this.io = this._lock.ready.then(() => {});
   }
 
   _queue(fn) { this.io = this.io.then(fn).catch((e) => { this.error = this.error || e; this.failed = true; }); }
@@ -427,6 +435,7 @@ export class ShareCapture {
 
   _release() {
     activeCaptures.delete(this.id);
+    if (this._lock) { this._lock.release(); this._lock = null; }
     if (this.encoder && this.writer && this.writer.ended) { this.encoder.free(); this.encoder = null; }
   }
 }
