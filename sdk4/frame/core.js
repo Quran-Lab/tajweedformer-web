@@ -143,6 +143,7 @@ export class Core {
     this.notice = this.cstr(M._qlc_notice());
     this.model = 0;
     this.stream = 0;
+    this.referenceLoaded = false; // the open model's reference table is in the Core's memory (no file read for it again)
   }
 
   // ---- memory helpers ----
@@ -233,7 +234,7 @@ export class Core {
     return this.M._qlc_lease_attempt(this.ptr, outcome === 'refused' || outcome === 2 ? 2 : 1);
   }
 
-  /** { inGrace, until (exp + 86400 while a lease is held, else 0; the Core's clock) } (18.4.7.1); a Core before c3:
+  /** { inGrace, until (the end of the grace while a lease is held, else 0; the Core's clock) } (18.4.7.1); a Core before c3:
    * never in grace. */
   leaseGrace() {
     if (typeof this.M._qlc_lease_grace !== 'function') return { inGrace: false, until: 0 };
@@ -285,6 +286,7 @@ export class Core {
       if (!h) this._check(this._i32(st) || QLC.E_ENGINE, 'qlc_model_open');
       this.model = h;
       this.modelRate = sampleRate;
+      this.referenceLoaded = false;
       return h;
     });
   }
@@ -292,6 +294,7 @@ export class Core {
   closeModel() {
     this.endStream();
     if (this.model) { this.M._qlc_model_close(this.model); this.model = 0; }
+    this.referenceLoaded = false;
   }
 
   chunkMs() { return this.model ? this.M._qlc_model_chunk_ms(this.model) : 0; }
@@ -408,15 +411,17 @@ export class Core {
   }
 
   /** One ayah's expected units (R3): { units, words (each unit's word index), wordCount }, or null when the table does
-   * not have the ayah. The first call reads the reference data (a lease is needed then). */
+   * not have the ayah. The first call after a model open reads the reference data (a lease is needed then) and keeps
+   * the table with that model; referenceLoaded says so, and later calls read no file. */
   referenceExpected(surah, ayah) {
     if (!this.model || typeof this.M._qlc_reference_expected !== 'function') throw new CoreError(QLC.E_FILE, 0, 'qlc_reference_expected');
     const MAXU = 4096, MAXW = 512;
     const u = this._alloc(4 * MAXU), w = this._alloc(4 * MAXW), nw = this._alloc(4);
     return this._with([u, w, nw], () => {
       const n = this.M._qlc_reference_expected(this.model, surah, ayah, u, MAXU, w, MAXW, nw);
-      if (n === QLC.E_ARG) return null;
+      if (n === QLC.E_ARG) { this.referenceLoaded = true; return null; }
       this._check(n, 'qlc_reference_expected');
+      this.referenceLoaded = true;
       const units = Array.from(new Int32Array(this.M.HEAPU8.buffer.slice(u, u + 4 * Math.min(n, MAXU))));
       const wc = Math.min(this._i32(nw), MAXW);
       const starts = Array.from(new Int32Array(this.M.HEAPU8.buffer.slice(w, w + 4 * wc)));

@@ -28,13 +28,22 @@ const OPUS_SHA256 = typeof __QL_OPUS_SHA256__ !== 'undefined' ? __QL_OPUS_SHA256
 /** The 3.x platform client as the sharing controller's link: no register, no telemetry of its own. */
 export class SharingLink extends QuranLab {
   /**
-   * @param {object} o  { key, rpc (the loader's port to the engine Worker), appVersion, storage, apiUrl, fetch, state,
-   *   clock, trustedKeys }
+   * @param {object} o  { key, rpc (the loader's port to the engine Worker), appVersion, appBuild, storage, apiUrl, fetch,
+   *   state, clock, trustedKeys }
    */
   constructor(o) {
-    super({ key: o.key, platform: 'web', appVersion: o.appVersion, apiUrl: o.apiUrl, fetch: o.fetch,
+    // appVersion and appBuild: this page's config requests carry them too (27.1)
+    super({ key: o.key, platform: 'web', appVersion: o.appVersion, appBuild: o.appBuild, apiUrl: o.apiUrl, fetch: o.fetch,
       clock: o.clock, trustedKeys: o.trustedKeys, autoSend: false, bundleId: o.bundleId, origin: o.origin,
       state: o.state || localState(o.storage ? `quranlab.${o.storage}.` : 'quranlab.') });
+    // one sticky host per role for the page (28.3): this link's api P starts where the frame's is, and follows it
+    // (o.endpoints: { state(), subscribe(fn), tell(state) }, the loader's link to the frame)
+    const share = o.endpoints && typeof o.endpoints === 'object' ? o.endpoints : null;
+    if (share) {
+      try { this.ep.adopt(share.state()); } catch (_) { /* its own state, as before */ }
+      try { share.subscribe((s) => { this.ep.adopt(s); }); } catch (_) { /* none */ }
+      this.ep.onChange = () => { try { share.tell(this.ep.share()); } catch (_) { /* never in the way */ } };
+    }
     const rpc = o.rpc;
     const device = this.telemetry.device;
     // the day's delta is the Worker's: only the sheet's counts cross, as calls

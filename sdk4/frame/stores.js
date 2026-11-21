@@ -73,6 +73,13 @@ export class MemoryFiles {
   async close() {}
 }
 
+// Another page of the same site (its own frame and Worker, the same storage) holds every committed file's handle for
+// the length of its Core call, and a sync access handle is exclusive: createSyncAccessHandle refuses the file meanwhile
+// (NoModificationAllowedError; InvalidStateError in some engines). open() asks such a file again every BUSY_STEP_MS, up
+// to BUSY_MS for the whole open, and names any it still could not take in `busy`.
+const BUSY_MS = 5000, BUSY_STEP_MS = 50;
+const lockedOut = (e) => !!e && (e.name === 'NoModificationAllowedError' || e.name === 'InvalidStateError');
+
 /**
  * Files in the origin private file system (a dedicated Worker only: createSyncAccessHandle). A file counts once its
  * name is in the committed index (`index.json`, rewritten after each commit), so a write cut by a kill never counts.
@@ -98,10 +105,21 @@ export class OpfsFiles {
     this.handles.set(n, h);
     return h;
   }
-  /** Open sync handles for every committed file, and for `writes` ([form, path]) to be written. Before a Core call. */
+  /** Open sync handles for every committed file, and for `writes` ([form, path]) to be written. Before a Core call.
+   * A file another page of the site holds is waited for (BUSY_MS); one still held after that is named in `busy`. */
   async open(writes = []) {
-    for (const k of this.index.keys()) { const i = k.indexOf('\n'); await this._handle(Number(k.slice(0, i)), k.slice(i + 1), false).catch(() => {}); }
-    for (const [form, path] of writes) await this._handle(form, path, true);
+    this.busy = [];
+    const until = Date.now() + BUSY_MS;
+    const take = async (form, path, write) => {
+      for (;;) {
+        try { return await this._handle(form, path, write); } catch (e) {
+          if (!lockedOut(e) || Date.now() >= until) { if (lockedOut(e)) this.busy.push(this._name(form, path)); throw e; }
+          await new Promise((r) => setTimeout(r, BUSY_STEP_MS));
+        }
+      }
+    };
+    for (const k of this.index.keys()) { const i = k.indexOf('\n'); await take(Number(k.slice(0, i)), k.slice(i + 1), false).catch(() => {}); }
+    for (const [form, path] of writes) await take(form, path, true);
   }
   /** Close every handle and write the index. After a Core call. */
   async close() {

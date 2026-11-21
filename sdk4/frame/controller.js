@@ -1,9 +1,11 @@
 // The engine Worker's controller: everything of SDK 4.0 that runs on Quran Lab's origin, behind the frame.
 //
 //   init      the install keys and the lease kept from an earlier page load (lease-store.js) or new ones, the Core,
-//             the platform client (register, signed config, telemetry)
-//   model     config -> signed manifest -> lease (attest, challenge, Turnstile at the first lease, POST /v1/model-key)
-//             -> ciphertext downloads -> qlc_install per file -> qlc_model_open; the model's public facts out
+//             the platform client (register, signed config, telemetry); with no kept lease, the first lease's
+//             challenge and invisible Turnstile start at once (4.0.1), so they run while the engine loads
+//   model     config -> lease (attest, challenge, Turnstile at the first lease, POST /v1/model-key), and at the same
+//             time the signed manifest and the ciphertext from the build's model folder (4.0.1, _preStart) ->
+//             qlc_install per file once the Core holds the lease -> qlc_model_open; the model's public facts out
 //   takes     start / push / finish / cancel: audio in, the engine's heads out; the recited detector fed per chunk
 //   counts    the take's source (measured or app), the app's judgement, telemetry, all in one KV transaction
 //
@@ -15,9 +17,10 @@ import { createCore, QLC, CoreError, headMask, HEADS } from './core.js';
 import { DayMath } from './learner.js';
 import { InstallKeys } from './keys.js';
 import { LeaseStore } from './lease-store.js';
-import { QuranLab4, SDK_VERSION_4 } from './api4.js';
+import { QuranLab4, SDK_VERSION_4, API_TIMEOUT_MS } from './api4.js';
+import { Endpoints, HEAD_MS } from '../shared/endpoints.js';
 import { StateStore, WithCoreFiles } from './stores.js';
-import { PlatformError } from '../../web/platform/client.js';
+import { PlatformError, MODELS_URL } from '../../web/platform/client.js';
 import { tokenAnswer, integrityCode, integrityDetail } from '../../web/platform/error-reports.js';
 import { MODEL_VERSION_RE } from '../../web/tajweed/manifest.js';
 
@@ -55,6 +58,7 @@ export class Controller {
    * @param {object} o.kv  the KV backend (stores.js: IndexedDbKV or MemoryKV)
    * @param {Function} o.coreFactory  the verified Core module's factory; o.coreWasm its verified bytes
    * @param {(q: {action: string, cdata: string}) => Promise<string|null>} [o.turnstile]  a Turnstile token (frame.js)
+   * @param {() => void} [o.turnstilePrepare]  the frame loads Turnstile's script now (frame.js), before a token is asked
    */
   constructor(o) {
     this.o = o;
@@ -70,7 +74,20 @@ export class Controller {
     this.leaseInfo = null;
     this.turnstilePassed = false;
     this.lastError = null;
+    // the endpoint set of this process (ENDPOINTS_40.md 28.1): the api and models hosts, their sticky hosts, the last
+    // failover. o.endpoints: one made by the caller (the Node worker, which also asks the web_frame hosts for the
+    // engine), or a test's { hosts, origins }; else the built-in lists, a test build's apiUrl and modelsUrl replacing them
+    const head = Number.isFinite(o.apiTimeoutMs) && o.apiTimeoutMs > 0 ? Math.min(HEAD_MS, o.apiTimeoutMs) : HEAD_MS;
+    this.ep = o.endpoints instanceof Endpoints ? o.endpoints
+      : o.endpoints && typeof o.endpoints === 'object' ? new Endpoints({ headMs: head, ...o.endpoints, clock: () => this.clock() })
+        : Endpoints.fromSeams({ apiUrl: o.apiUrl || null, modelsUrl: o.modelsUrl || null, clock: () => this.clock(), headMs: head });
+    // one sticky host per role for the page (28.3): when an answer moves this Worker's api or models P, the page's
+    // other endpoint set (the host page's sharing link) is told, and it tells this one (adoptEndpoints)
+    this.ep.onChange = () => { try { this.emit({ ev: 'endpoints', state: this.ep.share() }); } catch (_) { /* never in the way */ } };
   }
+
+  /** The page's other endpoint set moved its api or models P (Endpoints.share): taken here too. */
+  adoptEndpoints(state) { return this.ep.adopt(state); }
 
   /**
    * The page session: install keys, the platform client's launch (attest with the keys, register, the signed
@@ -90,17 +107,28 @@ export class Controller {
     const kept = this.store ? await this.store.load() : null;
     this.kept = kept ? kept.why : 'off';
     this.keys = o.keys || (kept && kept.keys) || await InstallKeys.create();
-    this.ql = new QuranLab4({ key: o.key, site: o.site, apiUrl: o.apiUrl, modelsUrl: o.modelsUrl, fetch: o.fetch, clock: this.clock, state: this.state,
-      trustedKeys: o.trustedKeys, appVersion: o.appVersion, autoSend: o.autoSend,
+    this.ql = new QuranLab4({ key: o.key, site: o.site, apiUrl: o.apiUrl, modelsUrl: o.modelsUrl, endpoints: this.ep, fetch: o.fetch, clock: this.clock, state: this.state,
+      trustedKeys: o.trustedKeys, appVersion: o.appVersion, appBuild: o.appBuild, autoSend: o.autoSend, apiTimeoutMs: Number.isFinite(o.apiTimeoutMs) ? o.apiTimeoutMs : API_TIMEOUT_MS,
       debug: o.debug, keys: this.keys, local: o.local, cert: kept ? kept.cert : null, desktop: o.desktop || null });
     // a certificate of a Turnstile pass still holds: the leases of this page ride on it with no new token (18.4.9)
     this.turnstilePassed = !!(kept && kept.cert && certField(kept.cert, 'att') === 'turnstile' && this.ql.certHolds());
+    // 4.0.1: a page with no kept lease and no pass asks for a lease, and Turnstile is the slow part of that (5.4 s of a
+    // fresh open in Stage B, with nothing else running). Its script loads from the frame now, during the launch
+    const leaseAhead = !o.desktop && typeof o.turnstile === 'function' && !this.turnstilePassed && !(kept && kept.lease);
+    if (leaseAhead && typeof o.turnstilePrepare === 'function') { try { o.turnstilePrepare(); } catch (_) { /* never in the way */ } }
     // a stop the API answers on any route (15.3, 18.4.10: "works as in 3.x") removes the model's files and the kept
     // lease, here as in the lease route's signed stop
     this.ql.onModelStop = () => { this._purge({ stop: true }).catch(() => {}); };
     // an analytics session a killed page left open is closed first, into its own day (17.8 session_s)
     this.ql.telemetry.closeSession();
     await this.ql.launch();
+    // 4.0.1: and the first lease's challenge and invisible Turnstile start now, while the engine loads and the page
+    // gets to its model call; that lease uses them (_leaseOnce) while they are fresh (EARLY_MAX_MS)
+    this._early = null;
+    if (leaseAhead && !this.ql.modelRefusal && !this.ql.stopped && this.ql.config && this.ql.config.recommended) {
+      this._early = this._earlyTurnstile();
+      this._early.catch(() => {});
+    }
     let engine;
     try { engine = o.engine || await o.loadEngine(this.ql.config); } catch (e) {
       // every engine build failed: reported (the server's rollback reads these), sent now, then the failure
@@ -146,7 +174,9 @@ export class Controller {
     if (!restored) await this._persist();
     this.initMs = this.clock() - t0;
     return { sdk: SDK_VERSION_4, core: this.core.version, notice: this.core.notice, engine: this.engine,
-      config: this.ql.config ? 'fresh' : 'none', stopped: this.ql.stopped || null, initMs: this.initMs, lease: this.kept };
+      config: this.ql.config ? 'fresh' : 'none', stopped: this.ql.stopped || null, initMs: this.initMs, lease: this.kept,
+      // the api and models P this start found (28.3): the page's sharing link starts from them
+      endpoints: this.ep.share() };
   }
 
   /**
@@ -194,14 +224,30 @@ export class Controller {
 
   /**
    * What the signed config names for this SDK (the order decided 11-14: config, attest, lease, then the files from
-   * the lease answer's base): `recommended` = { revision (the build, 40 hex), version, model_id, key_id (the build's
-   * encryption key id, 32 hex) }. The config gives no base URL. A pinned version is asked of the server.
+   * the lease answer's base; from 4.0.1 a fresh install fetches the files beside the lease, _preStart):
+   * `recommended` = { revision (the build, 40 hex), version, model_id, key_id (the build's encryption key id, 32 hex),
+   * model and folder }. The config gives no base URL. A pinned version is asked of the server.
    */
   async _source(version) {
     const ql = this.ql;
     ql.modelVersionPin = version;
     const stored = this.state.get('config');
     const usable = ql.config && (!stored || (stored.pin || null) === (version || null));
+    // no config in this page (its start could not fetch one) and a lease held for the build the app asks for (valid,
+    // or past its exp within its grace): the open does not wait for the config (18.4.7.1: an open waits at most 10 s,
+    // for the lease attempt). It is asked in the background, from the sticky host on (28.3), and a refusal or a stop it
+    // brings is handled when it comes; the open goes on with the held build now
+    if (!usable && !ql.config) {
+      const held = this._heldSource(version);
+      if (held) {
+        if (!this._configAhead) {
+          this._configAhead = ql.refreshConfig().catch((e) => { this.lastError = e; return null; }).finally(() => { this._configAhead = null; });
+        }
+        ql.modelRevision = held.version;
+        ql.modelBuild = held.build;
+        return held;
+      }
+    }
     const cfg = usable ? ql.config : await ql.refreshConfig().catch((e) => { this.lastError = e; return null; });
     this._refused();
     // a runtime that cannot check the config's signature at all is runtime_unsupported, never offline (3.1.6)
@@ -214,16 +260,11 @@ export class Controller {
       // the build of a lease this page holds (one kept from an earlier page load), while the server cannot be asked:
       // no answer, a 5xx or a 429, never a refusal or a config that did not verify (as the native SDKs open the build
       // already on the device when offline)
-      const held = this.leaseInfo && this.leaseInfo.src;
-      if (held && (version === null || version === undefined || held.version === version) && (!last || last.status >= 500 || last.status === 429)) {
-        // valid, or past its exp within the 24 hours of a possible grace (the open decides: _leaseFor, the Core)
-        let usable = false;
-        try { const st = this.core.tick(); usable = st.hasLease && !st.stopped && (st.valid || st.now < st.exp + GRACE_S); } catch (_) { usable = false; }
-        if (usable) {
-          ql.modelRevision = held.version;
-          ql.modelBuild = held.build;
-          return { ...held, pin: null };
-        }
+      const held = !last || last.status >= 500 || last.status === 429 ? this._heldSource(version) : null;
+      if (held) {
+        ql.modelRevision = held.version;
+        ql.modelBuild = held.build;
+        return held;
       }
       // the report names the request that failed, as 3.1.7 does: the token gates the config (24.4 rule 3a), so a token
       // request that failed is stage attest; a 401 invalid_token that names no stop reason is the token's own answer,
@@ -255,6 +296,16 @@ export class Controller {
     return { build: rec.revision, version: rec.version, modelId: rec.model_id, keyId: rec.key_id, pin };
   }
 
+  // the source of the lease this page holds, when the app asks for its version (or none) and the lease is valid or
+  // past its exp within a possible grace (the open decides: _leaseFor, the Core); else null
+  _heldSource(version) {
+    const held = this.leaseInfo && this.leaseInfo.src;
+    if (!held || !(version === null || version === undefined || held.version === version)) return null;
+    let usable = false;
+    try { const st = this.core.tick(); usable = st.hasLease && !st.stopped && (st.valid || st.now < st.exp + GRACE_S); } catch (_) { usable = false; }
+    return usable ? { ...held, pin: null } : null;
+  }
+
   // the signed manifest of the build, from the lease answer's base (or this site's storage): its SHA-256 starts with
   // the build the config named, and it names the config's key id, version and model id
   async _manifest(src, base) {
@@ -262,7 +313,16 @@ export class Controller {
     let bytes = this.state.get(key) ? utf8(this.state.get(key)) : null;
     if (!bytes) {
       if (!base) throw new SdkError('needs_connection', 'no lease answer named where the files are', { stage: 'lease', why: 'network' });
-      bytes = await this._get(base + 'manifest.json', { stage: 'manifest' });
+      // one request per build and base at a time: the early fetch (_preStart) and the lease's ask for the same file
+      const k = `${src.build} ${base}`;
+      const inflight = this._manifests || (this._manifests = new Map());
+      let p = inflight.get(k);
+      if (!p) {
+        p = this._get(base + 'manifest.json', { stage: 'manifest' });
+        inflight.set(k, p);
+        p.then(() => inflight.delete(k), () => inflight.delete(k));
+      }
+      bytes = await p;
     }
     // the build is the first 40 hex of the signed manifest's SHA-256 (SPEC 2a): the bytes are the config's build
     if ((await sha256Hex(bytes)).slice(0, 40) !== src.build) throw new SdkError('signature_invalid', 'the manifest is not the build the config names', { stage: 'manifest', why: 'signature' });
@@ -291,85 +351,146 @@ export class Controller {
    *   - `keep` (a file's decoded path, with `size`): the bytes are also kept, in blocks of 4 MiB as they complete, as
    *     ciphertext in the frame's file store (`<path>.part.<n>`, CDN form), so a call that fails, or a page closed
    *     mid-download, goes on at the next call from the blocks kept. The blocks are dropped once the file is whole.
-   * A server that answers a Range request with the whole file (200) is read from the start.
+   * A server that answers a Range request with the whole file (200) is read beside the bytes held, which it replaces
+   * once complete.
+   * From 4.0.1 (ENDPOINTS_40.md 28.3, 28.4) the request goes to the models hosts with the URL's path: P first (a host
+   * of the URL that is not one of the role's before it), each host 10 s to its status; a failure that is unreachable
+   * (no answer, a stall, a 5xx, a redirect, a 4xx that is not the CDN's, a 2xx that is not what was asked) resumes on
+   * the next host, cycling, from the bytes held, with Range and no If-Range; a refusal (a 4xx with a JSON error) and a
+   * 429 end the call on the host that gave them. The host that ends it is P.
+   * `cancel` ({ on, hooks: Set of functions }, 4.0.1: an early fetch whose lease did not come): once `on`, the request
+   * in flight is aborted, a pause ends, and the call fails at once and is never asked again.
    */
-  async _get(url, { onProgress = null, stage = 'download', size = null, keep = null } = {}) {
+  async _get(url, { onProgress = null, stage = 'download', size = null, keep = null, cancel = null } = {}) {
     const dl = this.dl || (this.dl = { resumes: 0, keptBlocks: 0 });
     const opt = this.o.download || {};
     const pauses = Array.isArray(opt.pausesMs) ? opt.pausesMs : PAUSES_MS;
     const stallMs = Number.isFinite(opt.stallMs) ? opt.stallMs : STALL_MS;
+    // 28.3 item 6: a host has 10 s without a byte before the answer's status (the stall time, when that is shorter)
+    const headMs = Math.min(this.ep.headMs, stallMs);
     const block = Number.isInteger(opt.blockBytes) && opt.blockBytes > 0 ? opt.blockBytes : BLOCK_BYTES;
-    let chunks = [], have = 0, validator = null, resumes = 0, renewed = false;
+    // 28.4: the folder's path through the models order (P first; a base's own host that is not one of the role's
+    // before it); after a failure that is unreachable the resume goes to the next host, cycling (28.4)
+    const target = this.ep.modelTarget(url);
+    if (!target) throw new SdkError('download_failed', 'a model request to a host that is not Quran Lab\'s', { stage, why: 'invalid_answer' });
+    const ro = this.ep.roles.models, t0 = this.clock();
+    const { order: roleOrder, probe } = ro.order(t0);
+    const order = target.first ? [target.first, ...roleOrder] : roleOrder;
+    let chunks = [], have = 0, validator = null, resumes = 0, renewed = false, k = 0, firstFail = null;
+    const asked = new Set();
     // the blocks a call before this one kept
     if (keep && Number.isInteger(size)) {
-      const k = await this._keptBlocks(keep, size, block);
-      if (k) { chunks = k.blocks; have = k.bytes; validator = k.validator; dl.keptBlocks += k.blocks.length; }
+      const kb = await this._keptBlocks(keep, size, block);
+      if (kb) { chunks = kb.blocks; have = kb.bytes; validator = kb.validator; dl.keptBlocks += kb.blocks.length; }
     }
     let saved = Math.floor(have / block); // blocks kept so far
-    const fail = (why, msg, extra = {}) => Object.assign(new SdkError('download_failed', msg, { stage, why, ...extra }), { again: true });
+    // a failure that is unreachable (28.3): asked again, on the next host; `reason` is 24.3's for the failover report
+    const fail = (why, msg, extra = {}, reason = why) => Object.assign(new SdkError('download_failed', msg, { stage, why, ...extra }), { again: true, hostReason: reason });
+    const cancelled = () => new SdkError('download_failed', 'the download was cancelled', { stage, why: 'cancelled' });
+    // the request ended on this host (taken, a refusal, a slow down): it is P; a failover when the first host failed
+    const ended = (host) => {
+      ro.settle(host, t0, probe);
+      if (firstFail && host !== firstFail.host) this.ep.noteFailover('models', firstFail, host, stage);
+    };
     for (;;) {
+      const host = order[k % order.length];
+      asked.add(host);
       let err = null;
+      let ac = null, unhook = null;
       try {
+        if (cancel && cancel.on) throw cancelled();
         const headers = await this.ql.modelHeaders();
         if (have > 0) headers.range = `bytes=${have}-`;
-        const ac = typeof AbortController === 'function' ? new AbortController() : null;
+        ac = typeof AbortController === 'function' ? new AbortController() : null;
+        if (cancel && ac) { const h = () => ac.abort(); cancel.hooks.add(h); unhook = () => cancel.hooks.delete(h); }
         let r;
         try {
-          r = await this._stalls(this.ql.fetch(url, { headers, redirect: 'error', ...(ac ? { signal: ac.signal } : {}) }), stallMs, () => ac && ac.abort());
-        } catch (e) { throw fail(e && e.stall ? 'stall' : 'network', e && e.stall ? 'no answer for 30 s' : String((e && e.message) || e)); }
-        if (r.status === 401 || r.status === 403) {
-          let b = {};
-          try { b = await r.json(); } catch (_) { /* no body */ }
-          if (r.status === 401 && b.error === 'invalid_token' && !b.reason && !renewed) { renewed = true; this.ql._token = null; continue; }
-          this.ql.noteModelRefusal({ status: r.status, error: b.error, reason: b.reason });
-          this._refused();
-          throw new SdkError('download_failed', `the CDN answered ${r.status}`, { stage, why: 'refused', http_status: r.status, ...(typeof b.error === 'string' ? { error_code: b.error } : {}) });
+          r = await this._stalls(this.ql.rawFetch(this.ep.origin(host) + target.path, { headers, redirect: 'error', ...(ac ? { signal: ac.signal } : {}) }), headMs, () => ac && ac.abort());
+        } catch (e) {
+          // no status in time is no answer (24.3: a timeout before any answer is network)
+          throw fail(e && e.stall ? 'stall' : 'network', e && e.stall ? `no answer for ${headMs} ms` : String((e && e.message) || e), {},
+            !(e && e.stall) && /redirect/i.test(String((e && e.cause && e.cause.message) || '') + String((e && e.message) || '')) ? 'redirect' : 'network');
         }
+        if (r.status === 429) { ended(host); throw new SdkError('download_failed', 'the CDN answered 429', { stage, why: 'rate_limited', http_status: 429 }); }
         if (r.status >= 500) throw fail('http', `the CDN answered ${r.status}`, { http_status: r.status });
-        if (r.status === 429) throw new SdkError('download_failed', 'the CDN answered 429', { stage, why: 'rate_limited', http_status: 429 });
-        if (r.status !== 200 && r.status !== 206) {
-          if (r.status > 200 && r.status < 300) throw fail('http', `the CDN answered ${r.status}, not the file`, { http_status: r.status });
-          throw new SdkError('download_failed', `the CDN answered ${r.status}`, { stage, why: 'http', http_status: r.status });
+        if (r.status >= 400) {
+          // 28.3: a refusal is a 4xx with a JSON error string; any other 4xx (a proxy's or a firewall's page) is not the
+          // CDN's answer, and the next host is asked
+          let b = null;
+          try { b = JSON.parse(await r.text()); } catch (_) { b = null; }
+          if (!b || typeof b !== 'object' || typeof b.error !== 'string' || !b.error) throw fail('http', `the CDN answered ${r.status} with no error of its own`, { http_status: r.status });
+          if (r.status === 401 && b.error === 'invalid_token' && !b.reason && !renewed) { renewed = true; this.ql._token = null; continue; }
+          ended(host);
+          if (r.status === 401 || r.status === 403) {
+            this.ql.noteModelRefusal({ status: r.status, error: b.error, reason: b.reason });
+            this._refused();
+            throw new SdkError('download_failed', `the CDN answered ${r.status}`, { stage, why: 'refused', http_status: r.status, error_code: b.error });
+          }
+          throw new SdkError('download_failed', `the CDN answered ${r.status}`, { stage, why: 'http', http_status: r.status, error_code: b.error });
         }
-        if (r.status === 200 && have > 0) { chunks = []; have = 0; saved = 0; } // the Range was not taken: the whole file
+        if (r.status >= 300) throw fail('redirect', `the CDN answered ${r.status}`, { http_status: r.status });
+        if (r.status !== 200 && r.status !== 206) throw fail('http', `the CDN answered ${r.status}, not the file`, { http_status: r.status }, 'invalid_answer');
         if (r.status === 206) {
           const cr = String(r.headers.get('content-range') || '');
           const m = /^bytes (\d+)-(\d+)\/(\d+|\*)$/.exec(cr.trim());
           if (have === 0 || !m || Number(m[1]) !== have || (Number.isInteger(size) && m[3] !== '*' && Number(m[3]) !== size)) {
-            throw fail('http', `the CDN answered bytes ${JSON.stringify(cr)} where bytes ${have}- were asked for`, { http_status: 206 });
+            throw fail('http', `the CDN answered bytes ${JSON.stringify(cr)} where bytes ${have}- were asked for`, { http_status: 206 }, 'invalid_answer');
           }
         }
         this.ql.noteModelServed();
         validator = r.headers.get('etag') || r.headers.get('last-modified') || validator;
+        // a 200 to a range request brings the whole file: read beside the bytes held, which it replaces only once it is
+        // complete (16.1, 28.4); the bytes held stay for the next resume when it is not
+        const beside = r.status === 200 && have > 0;
+        const buf = beside ? [] : chunks;
+        let n = beside ? 0 : have;
         if (!r.body || typeof r.body.getReader !== 'function') {
           const b = new Uint8Array(await r.arrayBuffer());
-          chunks.push(b); have += b.length;
+          buf.push(b); n += b.length;
+          if (!beside) have = n;
         } else {
           const rd = r.body.getReader();
           for (;;) {
             let x;
             try { x = await this._stalls(rd.read(), stallMs, () => { if (ac) ac.abort(); rd.cancel().catch(() => {}); }); } catch (e) {
-              throw fail(e && e.stall ? 'stall' : 'network', e && e.stall ? 'no byte for 30 s' : `the connection ended (${(e && e.message) || e})`);
+              throw fail(e && e.stall ? 'stall' : 'network', e && e.stall ? 'no byte for 30 s' : `the connection ended (${(e && e.message) || e})`, {}, e && e.stall ? 'timeout' : 'network');
             }
             if (x.done) break;
-            chunks.push(x.value); have += x.value.length;
-            if (Number.isInteger(size) && have > size) throw fail('http', 'the answer is longer than the file');
-            if (onProgress) onProgress(have);
+            buf.push(x.value); n += x.value.length;
+            if (!beside) have = n;
+            if (Number.isInteger(size) && n > size) throw fail('http', 'the answer is longer than the file', {}, 'invalid_answer');
+            if (onProgress) onProgress(Math.max(n, have));
             // whole blocks kept as they complete (ciphertext, the CDN form)
-            if (keep && Number.isInteger(size)) {
+            if (keep && !beside && Number.isInteger(size)) {
               while ((saved + 1) * block <= have) { await this._keepBlock(keep, size, block, saved, chunks, validator); saved++; }
             }
           }
         }
-        if (Number.isInteger(size) && have !== size) throw fail('network', `the connection ended at ${have} of ${size} bytes`);
-        const out = join(chunks, have);
-        return out;
-      } catch (e) { err = e; }
+        if (Number.isInteger(size) && n !== size) throw fail('network', `the connection ended at ${n} of ${size} bytes`);
+        if (beside) { chunks = buf; have = n; }
+        ended(host);
+        return join(chunks, have);
+      } catch (e) { err = e; } finally { if (unhook) unhook(); }
+      if (cancel && cancel.on) throw cancelled();
+      if (err.again && !firstFail) firstFail = { host, reason: err.hostReason || 'network', status: Number.isInteger(err.http_status) ? err.http_status : null };
       if (!err.again || resumes >= pauses.length) {
-        if (err.again) err.message = `${err.message} (asked ${resumes + 1} times)`;
+        if (err.again) {
+          err.message = `${err.message} (asked ${resumes + 1} times)`;
+          this.ep.noteFailover('models', firstFail, null, stage); // every host asked failed (diagnose's lastFailover)
+        }
+        // 28.7: the role of the request and whether it was asked of more than one host
+        if (err instanceof SdkError && err.stage === stage && !err.host_role) { err.host_role = 'models'; err.fallback = asked.size > 1; }
         throw err;
       }
-      await new Promise((res) => this.timers.setTimeout(res, pauses[resumes]));
+      k++; // 28.4: the resume goes to the next host of the order
+      await new Promise((res) => {
+        let t = null;
+        const done = () => { if (cancel) cancel.hooks.delete(stop); res(); };
+        const stop = () => { this.timers.clearTimeout(t); done(); };
+        t = this.timers.setTimeout(done, pauses[resumes]);
+        if (cancel) cancel.hooks.add(stop);
+      });
+      if (cancel && cancel.on) throw cancelled();
       resumes++;
       dl.resumes++;
     }
@@ -386,7 +507,7 @@ export class Controller {
   // the n-th block of a file being downloaded, kept as ciphertext beside its validator (one KV record per file)
   async _keepBlock(path, size, block, n, chunks, validator) {
     try {
-      await this.o.files.put(QLC.FORM_CDN, `${path}.part.${n}`, sliceOf(chunks, n * block, (n + 1) * block));
+      await this._serial(() => this.o.files.put(QLC.FORM_CDN, `${path}.part.${n}`, sliceOf(chunks, n * block, (n + 1) * block)));
       this.state.set(`part:${path}`, { size, block, n: n + 1, validator: validator || null });
     } catch (_) { /* a store that is full or blocked: the download goes on, nothing kept */ }
   }
@@ -408,7 +529,7 @@ export class Controller {
   async _dropBlocks(path) {
     const rec = this.state.get(`part:${path}`);
     const n = rec && Number.isInteger(rec.n) ? rec.n : 0;
-    for (let i = 0; i < n; i++) await this.o.files.drop(QLC.FORM_CDN, `${path}.part.${i}`).catch(() => {});
+    for (let i = 0; i < n; i++) await this._serial(() => this.o.files.drop(QLC.FORM_CDN, `${path}.part.${i}`)).catch(() => {});
     this.state.set(`part:${path}`, null);
   }
 
@@ -446,7 +567,7 @@ export class Controller {
    * A model open (or prefetch) past the held lease's exp (18.4.7.1): one attempt first (none when one ended less than
    * 60 s ago; the one running is waited for), at most 10 s. No outcome by then: unreachable, told now, and the open goes
    * on; the late answer is used as usual (a lease is taken, a refusal told). Then the Core decides: a new lease, or the
-   * held one in its grace (until exp + 24 h, an attempt since the lease unreachable and none refused), else the
+   * held one in its grace (an attempt since the lease unreachable and none refused), else the
    * attempt's error. Each open in grace is a silent error report (lease, grace).
    */
   async _expiredLease(src) {
@@ -502,43 +623,79 @@ export class Controller {
     } catch (_) { /* never in the way */ }
   }
 
+  /**
+   * 4.0.1: the first lease's challenge and its invisible Turnstile token, asked at the page's start (init) instead of at
+   * its first lease: { challenge, token (as the frame gives it: a token, false or null), at (when the challenge came) }.
+   * The cdata binds the token to that challenge (18.4.9), so the two are only ever used together.
+   */
+  async _earlyTurnstile() {
+    await this.ql.token();
+    const challenge = await this.ql.challenge();
+    const at = this.clock();
+    const cdata = await turnstileCdata(this.keys.installHex, challenge);
+    const token = await this.o.turnstile({ action: 'lease', cdata }).catch(() => false);
+    return { challenge, token, at };
+  }
+
+  // the early pair, once, when it is still fresh (EARLY_MAX_MS: a challenge lives 5 minutes, a token 300 s); else null
+  async _takeEarly() {
+    const p = this._early;
+    if (!p) return null;
+    this._early = null;
+    const e = await p.catch(() => null);
+    return e && this.clock() - e.at < EARLY_MAX_MS ? e : null;
+  }
+
   async _leaseOnce(src) {
     const ql = this.ql, keys = this.keys;
     let renewedCert = false, renewedChallenge = false, freshTurnstile = false, renewedToken = false, proofAgain = false;
+    const early = await this._takeEarly();
     for (let attempt = 0; attempt < 5; attempt++) {
+      const pair = attempt === 0 ? early : null;
       await ql.token();
-      const challenge = await ql.challenge();
+      const challenge = pair ? pair.challenge : await ql.challenge();
       const { core, installSig } = await this.core.leaseAsk(challenge, src.build);
       const askedUnder = !!core && Number(core.piece) > 0; // the proof is made under a piece (core.piece, 0 without one)
       const body = { v: 1, platform: ql.platform, install_cert: ql.installCert, install_key: b64u(keys.spki), install_sign_key: b64u(keys.signSpki),
         challenge, install_sig: installSig, model: src.modelId, version: src.version, build: src.build, key_id: src.keyId, core };
       if (!this.turnstilePassed && this.o.turnstile) {
-        const cdata = await turnstileCdata(keys.installHex, challenge);
         // null: no widget (no site key: no gate); false: the invisible check gave no token: the lease is asked without
-        // one and the server gives the 24-hour class (18.4.9; owner, 11-18: never a refusal, never a box)
-        const token = await this.o.turnstile({ action: 'lease', cdata }).catch(() => false);
+        // one and the server gives the unattested class (18.4.9; owner, 11-18: never a refusal, never a box). The early
+        // pair's token was made for its challenge, the one this ask carries
+        let token;
+        if (pair) token = pair.token;
+        else {
+          const cdata = await turnstileCdata(keys.installHex, challenge);
+          token = await this.o.turnstile({ action: 'lease', cdata }).catch(() => false);
+        }
         if (token) body.turnstile = token;
       }
-      const r = await ql.modelKey(body);
+      const r = await ql.modelKey(body, (res, status) => this._leaseAnswer(res, status, src));
       const a = r.body || {};
+      // 28.7: the lease request's role and whether more than one api host was asked
+      const hf = { host_role: 'api', fallback: !!r.fallback };
       // 18.4.7.1: the API's refusal is a 4xx other than 429 whose body is JSON with an error string; any other answer
       // that brings no lease is unreachable
       const refusal = r.status >= 400 && r.status < 500 && r.status !== 429 && r.body !== null && typeof a.error === 'string' && a.error !== '' ? 'refused' : 'unreachable';
       if (r.status === 200 && typeof a.lease === 'string') {
         if (typeof a.install_cert === 'string') ql.installCert = a.install_cert;
-        // the server gave the 24-hour class without a Turnstile pass (no token, a doubtful one, or Turnstile down):
+        // the server gave the unattested class without a Turnstile pass (no token, a doubtful one, or Turnstile down):
         // no page session certificate, so the next lease asks again; reported, silently (ERRORS_40 24.1)
         if (a.turnstile === 'unverified') this._turnstileUnverified(a);
         else if (body.turnstile) this.turnstilePassed = true;
-        const base = safeBase(a.base);
-        if (!base) throw new SdkError('server_rejected', 'the lease answer names no base for the files', { stage: 'lease', why: 'invalid' });
-        // the manifest (from this base, or stored) before the Core takes the lease: it checks the lease against it
-        const man = await this._manifest(src, base);
-        let got;
+        // the host's answer as taken (28.3): its base, manifest and the lease the Core accepted (_leaseAnswer); else every
+        // host gave an answer that is not one (the first host's is read here, and fails as before 4.0.1)
+        let { base, man, got } = r.value || {};
         const leaseBytes = unb64u(a.lease);
-        try { got = await this.core.leaseAccept(leaseBytes, man.bytes, src.build); } catch (e) {
-          const err = this._coreError(e, 'the lease was refused by the Core');
-          throw Object.assign(err, { leaseCause: err.leaseCause || (e.status === QLC.E_NEEDS_CONNECTION ? 'expired' : 'other') });
+        if (!got) {
+          base = this.ep.baseOf(a.base) ? a.base : null;
+          if (!base) throw new SdkError('server_rejected', 'the lease answer names no base on a host of Quran Lab for the files', { stage: 'lease', ...hf, why: 'invalid' });
+          // the manifest (from this base, or stored) before the Core takes the lease: it checks the lease against it
+          man = await this._manifest(src, base);
+          try { got = await this.core.leaseAccept(leaseBytes, man.bytes, src.build); } catch (e) {
+            const err = this._coreError(e, 'the lease was refused by the Core');
+            throw Object.assign(err, { leaseCause: err.leaseCause || (e.status === QLC.E_NEEDS_CONNECTION ? 'expired' : 'other') });
+          }
         }
         // the answer's data piece right after the accept, always (spec fix 16, quranlab-core f006676): the Core keeps it
         // pending in its saved state and puts it in force at the next model open; one that does not verify changes
@@ -561,7 +718,7 @@ export class Controller {
       // refresh asks again after Retry-After (_scheduleRefresh), and a kept lease or the offline grace goes on
       if (r.status >= 500 || r.status === 429) {
         throw new SdkError('download_failed', `Quran Lab's server answered ${r.status}${a.error ? ` ${a.error}` : ''} for the lease; the SDK tries again`,
-          { stage: 'lease', why: r.status === 429 ? 'rate_limited' : a.error === 'lease_unavailable' ? 'lease_unavailable' : 'http', http_status: r.status, ...(typeof a.error === 'string' ? { error_code: a.error } : {}),
+          { stage: 'lease', ...hf, why: r.status === 429 ? 'rate_limited' : a.error === 'lease_unavailable' ? 'lease_unavailable' : 'http', http_status: r.status, ...(typeof a.error === 'string' ? { error_code: a.error } : {}),
             retryAfter: retryAfterS(r.retryAfter, a.error) });
       }
       // every refusal body goes to the Core: a signed stop it verifies clears its lease and the device-form files
@@ -576,7 +733,7 @@ export class Controller {
         const err = new PlatformError(r.status, a.error || 'invalid_key', a.message || '');
         err.reason = a.reason;
         if (stopped) { ql._refusal(err); await this._purge({ stop: true }); throw Object.assign(this._stopError(err), { attempt: 'stop' }); }
-        throw Object.assign(new SdkError('server_rejected', `the lease route refused: ${a.error} (an unsigned or unverified stop changes nothing)`, { stage: 'lease', why: 'refused', http_status: r.status, error_code: a.error }), { attempt: refusal });
+        throw Object.assign(new SdkError('server_rejected', `the lease route refused: ${a.error} (an unsigned or unverified stop changes nothing)`, { stage: 'lease', ...hf, why: 'refused', http_status: r.status, error_code: a.error }), { attempt: refusal });
       }
       if (r.status === 401 && a.error === 'install_cert_invalid' && !renewedCert) { renewedCert = true; await ql.reattest(); continue; }
       if (r.status === 401 && a.error === 'challenge_invalid' && !renewedChallenge) { renewedChallenge = true; continue; }
@@ -585,20 +742,33 @@ export class Controller {
       if (r.status === 403 && (a.error === 'turnstile_required' || a.error === 'turnstile_failed') && !freshTurnstile && this.o.turnstile) { freshTurnstile = true; this.turnstilePassed = false; continue; }
       // a proof refused (the Core's digest under the piece in force): one more ask, under the piece the Core falls back to
       if (r.status === 403 && a.error === 'lease_integrity_failed' && a.why === 'core' && askedUnder && !proofAgain) { proofAgain = true; continue; }
-      if (r.status === 403 && a.error === 'sdk_too_old') throw Object.assign(new SdkError('sdk_too_old', a.min_sdk ? `this key needs SDK ${a.min_sdk}` : 'the Core release is not served', { stage: 'lease', why: 'refused', http_status: 403, error_code: 'sdk_too_old' }), { attempt: 'refused' });
-      if (r.status === 404 && a.error === 'build_unknown') { await ql.refreshConfig().catch(() => {}); throw Object.assign(new SdkError('model_unavailable', 'the build is not leased; the config is refreshed', { stage: 'lease', why: 'http', http_status: 404, error_code: 'build_unknown' }), { attempt: 'refused' }); }
+      if (r.status === 403 && a.error === 'sdk_too_old') throw Object.assign(new SdkError('sdk_too_old', a.min_sdk ? `this key needs SDK ${a.min_sdk}` : 'the Core release is not served', { stage: 'lease', ...hf, why: 'refused', http_status: 403, error_code: 'sdk_too_old' }), { attempt: 'refused' });
+      if (r.status === 404 && a.error === 'build_unknown') { await ql.refreshConfig().catch(() => {}); throw Object.assign(new SdkError('model_unavailable', 'the build is not leased; the config is refreshed', { stage: 'lease', ...hf, why: 'http', http_status: 404, error_code: 'build_unknown' }), { attempt: 'refused' }); }
       // 18.4.10: a 403 lease_integrity_failed names the failed check; the developer's message says it, the report's
       // error_code is why:check (ERRORS_40.md 24.3, contract 69326fb); the code stays server_rejected
       if (r.status === 403 && a.error === 'lease_integrity_failed') {
         throw Object.assign(new SdkError('server_rejected', integrityDetail(a.why, a.check),
-          { stage: 'lease', why: 'integrity_failed', http_status: 403, error_code: integrityCode(a.why, a.check) || 'lease_integrity_failed' }), { leaseCause: 'refused', attempt: refusal });
+          { stage: 'lease', ...hf, why: 'integrity_failed', http_status: 403, error_code: integrityCode(a.why, a.check) || 'lease_integrity_failed' }), { leaseCause: 'refused', attempt: refusal });
       }
       // ERRORS_40.md 24.4: no answer is needs_connection; a server's 5xx or 429 is download_failed, naming it
-      if (r.status === 0) throw Object.assign(new SdkError('needs_connection', 'no lease now (no answer); the SDK tries again', { stage: 'lease', why: 'network' }), { attempt: 'unreachable' });
-      throw Object.assign(new SdkError('server_rejected', `the lease route answered ${r.status} ${a.error || ''}`.trim(), { stage: 'lease', why: refusal === 'refused' ? 'refused' : 'invalid', http_status: r.status, ...(a.error ? { error_code: String(a.error) } : {}) }),
+      if (r.status === 0) throw Object.assign(new SdkError('needs_connection', 'no lease now (no answer); the SDK tries again', { stage: 'lease', ...hf, why: 'network' }), { attempt: 'unreachable' });
+      throw Object.assign(new SdkError('server_rejected', `the lease route answered ${r.status} ${a.error || ''}`.trim(), { stage: 'lease', ...hf, why: refusal === 'refused' ? 'refused' : 'invalid', http_status: r.status, ...(a.error ? { error_code: String(a.error) } : {}) }),
         { leaseCause: /turnstile|install_cert|attestation/.test(String(a.error)) ? 'attestation' : 'refused', attempt: refusal });
     }
     throw Object.assign(new SdkError('server_rejected', 'no lease after the repeats the contract allows', { stage: 'lease', why: 'invalid' }), { attempt: 'refused' });
+  }
+
+  // 28.3 and 28.5: a host's lease answer is taken only when it is one of 18.4.5 (a base on a host of the allow-list,
+  // 28.4) and the Core accepts its lease; else that host is unreachable and the next api host is asked the same
+  // request. The manifest is read from the base first (the Core checks the lease against it); a manifest that cannot
+  // be had ends the attempt with that failure.
+  async _leaseAnswer(res, status, src) {
+    if (status !== 200) return null;
+    let a;
+    try { a = JSON.parse(await res.text()); } catch (_) { return null; }
+    if (!a || typeof a !== 'object' || typeof a.lease !== 'string' || !this.ep.baseOf(a.base)) return null;
+    const man = await this._manifest(src, a.base);
+    try { return { base: a.base, man, got: await this.core.leaseAccept(unb64u(a.lease), man.bytes, src.build) }; } catch (_) { return null; }
   }
 
   // the device's wall clock as the Core reads it (ms)
@@ -644,6 +814,10 @@ export class Controller {
     if (e.status === QLC.E_FILE || e.status === QLC.E_MANIFEST) return new SdkError('model_invalid', `${what} (${e.message})`, at('model_open', 'invalid'));
     if (e.status === QLC.E_STORAGE) return new SdkError('storage_failed', `${what} (${e.message})`, at('storage', 'write'));
     if (e.status === QLC.E_KEYSTORE) return new SdkError('engine_failed', `${what}: the key store (${e.message})`, at('storage', 'read'));
+    // a status the model open fails with, as errors_40.json core_open names it (24.3): busy, no memory, the engine or an
+    // argument told apart in the report's reason and error_code (Gate C, 11-20: Android's engine_failed hid which)
+    const co = CORE_OPEN[e.status];
+    if (co) return new SdkError('engine_failed', `${what} (${e.message})`, { stage: 'model_open', why: co[0], error_code: co[1] });
     return new SdkError('engine_failed', `${what} (${e.message})`, at('model_open', /memory|alloc/i.test(String(e.message)) ? 'memory' : 'engine'));
   }
 
@@ -685,32 +859,178 @@ export class Controller {
     return this.ql.telemetry.enabled && flags.analytics !== false && flags.recited !== false;
   }
 
-  async _ensureFiles(base, man, context, onProgress) {
-    const need = this._needed(man.m, context, { recited: this._recitedOn() });
-    const stats = { bytesDownloaded: 0, installMs: 0, files: 0 };
+  // the entries of `context` not stored yet: an encrypted entry's device form, a plain entry's file
+  async _missing(man, context) {
     const todo = [];
-    for (const f of need) {
+    for (const f of this._needed(man.m, context, { recited: this._recitedOn() })) {
       const dec = f.encoding === 'qle1' ? f.decoded.path : f.path;
       const form = f.encoding === 'qle1' ? QLC.FORM_DEVICE : QLC.FORM_PLAIN;
       if (await this.o.files.has(form, dec)) continue;
       todo.push(f);
     }
+    return todo;
+  }
+
+  /**
+   * 4.0.1: a build's files FILE_LANES at a time on the models host the order chose, the largest first, so the small
+   * files come while the weights do instead of before them. Each file is one request as before (SPEC 16.2, its
+   * resumes and pauses its own; one stream per file: 16.3, ranges in parallel are not faster). After a failure no
+   * other file is started; the ones in flight end, then the first failure is the call's.
+   */
+  async _lanes(files, one) {
+    const queue = [...files].sort((a, b) => b.size - a.size);
+    let failed = null;
+    const lane = async () => {
+      while (queue.length && !failed) {
+        const f = queue.shift();
+        try { await one(f); } catch (e) { if (!failed) failed = e; }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(FILE_LANES, queue.length) }, lane));
+    if (failed) throw failed;
+  }
+
+  // the progress of files fetched side by side: the bytes of the files done and of each file in flight (never back)
+  _progress(todo, done0, onProgress) {
     const total = todo.reduce((n, f) => n + f.size, 0);
-    let done = 0;
-    const dl0 = this.dl ? { ...this.dl } : { resumes: 0, keptBlocks: 0 };
-    for (const f of todo) {
-      const bytes = await this._get(base + f.path.split('/').map(encodeURIComponent).join('/'),
-        { onProgress: onProgress ? (n) => onProgress({ bytesDone: done + n, bytesTotal: total }) : null, size: f.size, keep: f.path });
-      // the container as the signed manifest names it (16.1): its size and SHA-256. Kept blocks that made a file that
-      // is not the signed bytes are dropped, so the next call downloads it whole
-      const good = bytes.length === f.size && (await sha256Hex(bytes)) === String(f.sha256).toLowerCase();
-      await this._dropBlocks(f.path);
-      if (!good) throw new SdkError('checksum_mismatch', `${f.path}: not the signed bytes`, { stage: 'download', why: 'hash' });
-      stats.bytesDownloaded += bytes.length;
-      done += f.size;
-      if (f.encoding === 'qle1') await this.o.files.put(QLC.FORM_CDN, f.decoded.path, bytes);
-      else await this.o.files.put(QLC.FORM_PLAIN, f.path, bytes);
+    const inflight = new Map();
+    let done = done0, last = 0;
+    const tell = () => {
+      if (!onProgress) return;
+      let n = done;
+      for (const v of inflight.values()) n += v;
+      if (n < last) return;
+      last = n;
+      onProgress({ bytesDone: n, bytesTotal: total });
+    };
+    return {
+      of: (f) => (onProgress ? (n) => { inflight.set(f.path, n); tell(); } : null),
+      done: (f) => { inflight.delete(f.path); done += f.size; tell(); },
+    };
+  }
+
+  // One entry downloaded and stored as it came: an encrypted entry's CDN form (ciphertext, installed later by the
+  // Core), a plain entry as the file. The bytes stored, or an error. The stores' puts go one at a time (files fetched
+  // side by side, _lanes: a store writes its index after each put)
+  async _fetchEntry(base, f, { onBytes = null, cancel = null } = {}) {
+    const bytes = await this._get(base + f.path.split('/').map(encodeURIComponent).join('/'), { onProgress: onBytes, size: f.size, keep: f.path, cancel });
+    // the container as the signed manifest names it (16.1): its size and SHA-256. Kept blocks that made a file that
+    // is not the signed bytes are dropped, so the next call downloads it whole
+    const good = bytes.length === f.size && (await sha256Hex(bytes)) === String(f.sha256).toLowerCase();
+    await this._dropBlocks(f.path);
+    if (!good) throw new SdkError('checksum_mismatch', `${f.path}: not the signed bytes`, { stage: 'download', why: 'hash' });
+    await this._serial(() => (f.encoding === 'qle1' ? this.o.files.put(QLC.FORM_CDN, f.decoded.path, bytes) : this.o.files.put(QLC.FORM_PLAIN, f.path, bytes)));
+    return bytes.length;
+  }
+
+  // the download's writes to the file store one at a time (files fetched side by side, _lanes): a store writes its
+  // index after each put or drop, and two at once could leave one out of the index kept for the next page load
+  _serial(op) {
+    const p = (this._writes || Promise.resolve()).then(op, op);
+    this._writes = p.catch(() => {});
+    return p;
+  }
+
+  /**
+   * The build's model folder, made from the signed config as every lease answer makes it (18.4.5: MODEL_BASE's path
+   * /models, then the config's model, the build and its folder), on the first models host (a test build's stand-in),
+   * or null when the config does not name them. Its requests go through the models order like every model request
+   * (28.4, endpoints_40.json first_manifest). Used only by the early fetch below; the lease answer's base stays the one
+   * that counts.
+   */
+  _predictedBase(src) {
+    const rec = this.ql.config && this.ql.config.recommended;
+    if (!rec || rec.revision !== src.build) return null;
+    const model = String(rec.model || ''), folder = String(rec.folder || '').replace(/^\/+|\/+$/g, '');
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]*\/[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(model)) return null;
+    if (!folder || folder.split('/').some((s) => !/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(s))) return null;
+    const base = `${(this.ql.modelsUrl || MODELS_URL).replace(/\/+$/, '')}/${model}/${src.build}/${folder}/`;
+    return this.ep.modelTarget(base) ? base : null;
+  }
+
+  /**
+   * 4.0.1: a fresh install (no lease of this build held) fetches the signed manifest and the ciphertext while its
+   * lease is asked and Turnstile runs, instead of after: the lease is needed to install, not to fetch. From the
+   * build's model folder (_predictedBase), each file checked against the signed manifest and stored as it came (the
+   * CDN form of an encrypted entry); nothing is installed here: the Core turns a CDN form into its device form only
+   * once it holds the lease (18.2.1). The bytes are used only when the lease answer names this same base (_preJoin);
+   * a lease that names another, that is refused, that stops the model or that does not come drops everything this
+   * fetched (_preDrop). Returns null when nothing is fetched early.
+   */
+  _preStart(src, onProgress = null) {
+    if (this.leaseInfo && this.leaseInfo.build === src.build) return null;
+    const base = this._predictedBase(src);
+    if (!base) return null;
+    const pre = { base, build: src.build, entries: [], inflight: new Set(), bytes: 0, manStored: false, cancel: { on: false, hooks: new Set() },
+      dl0: this.dl ? { ...this.dl } : { resumes: 0, keptBlocks: 0 } };
+    pre.done = (async () => {
+      const had = this.state.get(`manifest:${src.build}`) !== null;
+      const man = await this._manifest(src, base);
+      pre.manStored = !had;
+      const todo = await this._missing(man, this._context(man.m, null));
+      const progress = this._progress(todo, 0, onProgress);
+      await this._lanes(todo, async (f) => {
+        if (pre.cancel.on) return;
+        pre.inflight.add(f);
+        try {
+          pre.bytes += await this._fetchEntry(base, f, { onBytes: progress.of(f), cancel: pre.cancel });
+        } catch (e) {
+          // a file that failed (after its resumes, SPEC 16): the call's error once the lease is in (_preJoin), as if
+          // it had been asked after the lease; its kept blocks stay for the next call
+          if (!pre.error) pre.error = e;
+          throw e;
+        } finally { pre.inflight.delete(f); }
+        pre.entries.push(f);
+        progress.done(f);
+      });
+    })();
+    pre.done.catch(() => {});
+    return pre;
+  }
+
+  // the early fetch for the lease's base, once it has ended: what it stored is used, and a file it could not get is
+  // the call's error (one call asks a file at most six times, SPEC 16, early or not). Another base: nothing of it is
+  // kept (null). A manifest it could not get is no error: the lease's own ask for it decided.
+  async _preJoin(pre, base) {
+    if (!pre) return null;
+    // the same folder on any models host is the same files (28.4: the folder is the base's path; every file is held
+    // to the signed manifest): a lease from a backup host's API naming its own model host keeps the early bytes
+    const folder = (u) => { const t = this.ep.modelTarget(u); return t ? t.path : null; };
+    if (folder(pre.base) === null || folder(pre.base) !== folder(base)) { await this._preDrop(pre); return null; }
+    await pre.done.catch(() => {});
+    if (pre.error) throw pre.error;
+    return pre;
+  }
+
+  // the early fetch stopped and everything it stored dropped: its files (CDN forms, plain files), the blocks of the
+  // file it was fetching, and the manifest when it was the one that stored it
+  async _preDrop(pre) {
+    if (!pre) return;
+    pre.cancel.on = true;
+    for (const h of [...pre.cancel.hooks]) { try { h(); } catch (_) { /* gone */ } }
+    await pre.done.catch(() => {});
+    for (const f of pre.entries) {
+      await this.o.files.drop(f.encoding === 'qle1' ? QLC.FORM_CDN : QLC.FORM_PLAIN, f.encoding === 'qle1' ? f.decoded.path : f.path).catch(() => {});
     }
+    for (const f of pre.inflight) await this._dropBlocks(f.path).catch(() => {});
+    pre.inflight.clear();
+    if (pre.manStored) this.state.set(`manifest:${pre.build}`, null);
+    pre.entries = [];
+    await this.state.flush().catch(() => {});
+  }
+
+  async _ensureFiles(base, man, context, onProgress, pre = null) {
+    const todo = await this._missing(man, context);
+    const stats = { bytesDownloaded: 0, installMs: 0, files: 0 };
+    // what the early fetch stored (from this lease's base, already checked) is not asked again
+    const ready = new Set(pre ? pre.entries.map((f) => f.path) : []);
+    const progress = this._progress(todo, todo.filter((f) => ready.has(f.path)).reduce((n, f) => n + f.size, 0), onProgress);
+    if (pre) stats.bytesDownloaded += pre.bytes;
+    const dl0 = pre ? pre.dl0 : this.dl ? { ...this.dl } : { resumes: 0, keptBlocks: 0 };
+    await this._lanes(todo.filter((f) => !ready.has(f.path)), async (f) => {
+      stats.bytesDownloaded += await this._fetchEntry(base, f, { onBytes: progress.of(f) });
+      progress.done(f);
+    });
     // CDN form to device form, the plaintext SHA-256 checked once (18.2.4); the CDN form is dropped after
     const t0 = this.clock();
     for (const f of todo.filter((x) => x.encoding === 'qle1')) {
@@ -742,10 +1062,10 @@ export class Controller {
     this._refused();
     const src = await this._source(version);
     if (this.model) this.closeModel();
-    const li = await this._leaseFor(src);
+    const { li, pre } = await this._leaseWithFiles(src, null);
     const man = li.man, base = li.base;
     const context = this._context(man.m, null);
-    const stats = await this._ensureFiles(base, man, context, null);
+    const stats = await this._ensureFiles(base, man, context, null, pre);
     const recited = this._recitedOn() && man.m.files.some((f) => f.role === 'recited');
     this.recitedReady = false;
     if (recited) {
@@ -812,14 +1132,32 @@ export class Controller {
     } catch (_) { return []; }
   }
 
-  /** One ayah's expected units (R3, SPEC 13.7): { units, words, wordCount }, or null for an ayah the table does not have. */
-  reference({ surah, ayah }) {
+  /**
+   * One ayah's expected units (R3, SPEC 13.7): { units, words, wordCount }, or null for an ayah the table does not have.
+   * The Core reads the build's reference file at the first call after each open of its model, so the files are open
+   * around the call as around the install and the model open: with them closed OPFS reads nothing, and the Core marks
+   * the reference failed for the life of that model (web 4.0.0: reference_missing in every browser with OPFS; Gate C, 11-20).
+   * Once the table is in the Core's memory (core.referenceLoaded) a call reads no file, so the files stay closed: in
+   * OPFS each open takes every committed file's handle, which costs 30 to 55 ms a call and locks the files against
+   * another page of the site. A file another page holds past the store's wait is never handed to the Core: the call
+   * fails now (reference_missing, the files busy) and the next one reads the table, where the Core would have kept
+   * the failed read for the life of the model.
+   */
+  async reference({ surah, ayah }) {
     if (!this.model) throw new SdkError('model_missing', 'no model is open');
     if (!Number.isInteger(surah) || surah < 1 || surah > 114 || !Number.isInteger(ayah) || ayah < 1) throw new SdkError('invalid_argument', 'surah and ayah are positive whole numbers');
+    const read = !this.core.referenceLoaded;
+    if (read) {
+      await this.o.files.open();
+      if (this.o.files.busy && this.o.files.busy.length) {
+        await this.o.files.close();
+        throw new SdkError('reference_missing', 'the reference data is in use by another page of this site; ask again');
+      }
+    }
     try { return this.core.referenceExpected(surah, ayah); } catch (e) {
       if (e instanceof CoreError && e.status === QLC.E_FILE) throw new SdkError('reference_missing', e.message);
       throw this._coreError(e, 'the reference data');
-    }
+    } finally { if (read) await this.o.files.close(); }
   }
 
   /** A sample clip's samples (a plain self-test file, public data). */
@@ -1045,9 +1383,23 @@ export class Controller {
   async prefetch({ version = null } = {}, onProgress = null) {
     this._refused();
     const src = await this._source(version);
-    const li = await this._leaseFor(src);
-    const stats = await this._ensureFiles(li.base, li.man, this._context(li.man.m, null), onProgress);
+    const progress = monotonic(onProgress);
+    const { li, pre } = await this._leaseWithFiles(src, progress);
+    const stats = await this._ensureFiles(li.base, li.man, this._context(li.man.m, null), progress, pre);
     return { bytesDone: stats.bytesDownloaded, complete: true };
+  }
+
+  // the lease of an open or a prefetch, and on a fresh install the early fetch of its files beside it (_preStart):
+  // { li, pre } with pre the early fetch to use (null: none, or none usable). A lease that does not come (refused, a
+  // stop, no answer) drops what the early fetch stored before its error goes on.
+  async _leaseWithFiles(src, onProgress) {
+    const pre = this._preStart(src, onProgress);
+    let li;
+    try { li = await this._leaseFor(src); } catch (e) {
+      await this._preDrop(pre);
+      throw e;
+    }
+    return { li, pre: await this._preJoin(pre, li.base) };
   }
 
   diagnose() {
@@ -1056,7 +1408,9 @@ export class Controller {
     return { key: { accepted: ql.stopped ? false : ql.keyAccepted ? true : null, stopped: ql.stopped || null }, config: ql.config ? 'fresh' : 'none',
       model: this.model ? { version: this.model.man.m.version, build: this.model.src.build, verified: true } : null,
       context: this.model ? this.model.context : null, lease: { valid: st.valid, refreshDue: st.refreshDue, kept: this.kept }, engine: this.core.version,
-      storage: this.o.files.kind };
+      storage: this.o.files.kind,
+      // 28.7: the host each role asks first and the last failover (the page adds the frame's host; Node, the engine's P)
+      endpoints: this.ep.diagnose(this.o.desktop ? this.ep.roles.web_frame.p : undefined) };
   }
 
   /** The background timer of the Core (18.6.3 checks, the journal of the units fed, the day's audio). */
@@ -1093,22 +1447,22 @@ export class Controller {
   }
 }
 
-// a base for the files: https, or http on this machine (the local browser test)
-function safeBase(b) {
-  if (typeof b !== 'string' || !b.endsWith('/')) return null;
-  try {
-    const u = new URL(b);
-    if (u.protocol === 'https:' || (u.protocol === 'http:' && (u.hostname === '127.0.0.1' || u.hostname === 'localhost'))) return b;
-  } catch (_) { /* not a URL */ }
-  return null;
-}
-
 const contextChunk = (c) => { const m = /^c(\d+)_l(\d+)$/.exec(String(c)); return m ? Number(m[1]) * 20 : 0; };
 
 /** How long a model open past exp waits for a lease attempt before it counts as unreachable (18.4.7.1). */
 export const ATTEMPT_WAIT_MS = 10_000;
 /** The grace after a lease's exp while Quran Lab cannot be reached (18.4.7.1), seconds of the Core's clock. */
 export const GRACE_S = 86_400;
+/** 4.0.1: how long the first lease's early challenge and Turnstile token are used after the challenge came (a
+ * challenge lives 5 minutes, 18.4.1; a Turnstile token 300 s); older, the lease asks for both again. */
+export const EARLY_MAX_MS = 240_000;
+
+// a progress callback that never goes back (the early fetch and the files after the lease report the same total)
+function monotonic(f) {
+  if (!f) return null;
+  let best = -1;
+  return (p) => { if (p.bytesDone > best) { best = p.bytesDone; f(p); } };
+}
 
 /**
  * 18.4.7.1: how a lease attempt that brought no lease ended, from the error that ended it. 'stop': a stop the Core
@@ -1190,7 +1544,12 @@ export function retryAfterS(header, error = null, nowMs = Date.now()) {
 // SPEC 16 as the native SDKs have it (Android Downloader.kt RetryPlan): no byte for 30 s ends a request; five resumes
 // per file and call, after 1, 2, 4, 8 and 16 s. Blocks of 4 MiB are kept for the next call.
 const STALL_MS = 30_000;
-const PAUSES_MS = Object.freeze([1000, 2000, 4000, 8000, 16000]);
+export const PAUSES_MS = Object.freeze([1000, 2000, 4000, 8000, 16000]);
+/** A build's files fetched at the same time on the chosen models host (_lanes). */
+export const FILE_LANES = 2;
+/** errors_40.json core_open (ERRORS_40.md 24.3): a Core status the model open fails with, to the report's reason and
+ * error_code where the SDK answers engine_failed. */
+export const CORE_OPEN = Object.freeze({ [QLC.E_ARG]: ['engine', 'arg'], [QLC.E_NOMEM]: ['memory', 'nomem'], [QLC.E_ENGINE]: ['engine', 'engine'], [QLC.E_BUSY]: ['engine', 'busy'] });
 const BLOCK_BYTES = 4 * 1024 * 1024;
 
 // the chunks as one array of `n` bytes

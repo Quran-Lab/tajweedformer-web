@@ -119,7 +119,7 @@ const json = (status, body, headers = {}) => new Response(typeof body === 'strin
  * certificate and `turnstile: unverified`, `turnstile_why`; a token for another cdata is 403 turnstile_failed (forgery).
  */
 export async function fakeServer({ cdnDir, site = 'https://app.example', apiKey = 'qlk_v1_apps-one_aaaaaaaaaaaaaaaaaaaaaa', keyId = 'apps-one',
-  turnstile = 'required', now = () => Math.floor(Date.now() / 1000), cdnBase = 'https://cdn.test/models', allowed = null, engineId = '20261114.000000000000', contributions = false, configPatch = null, leaseVersion = 2, dates = true } = {}) {
+  turnstile = 'required', now = () => Math.floor(Date.now() / 1000), cdnBase = 'https://cdn.test/models', allowed = null, engineId = '20261114.000000000000', contributions = false, configPatch = null, leaseVersion = 2, dates = true, leaseDays = null } = {}) {
   // st.pieces: the pieces served in lease answers, one per answer in order (base64url), and the piece ids whose
   // proofs this server refuses (no digest for this target), as qlab-api's piece rules
   const manifestBytes = new Uint8Array(readFileSync(join(cdnDir, 'manifest.json')));
@@ -132,8 +132,10 @@ export async function fakeServer({ cdnDir, site = 'https://app.example', apiKey 
   const pub = signerPub();
   const config = () => {
     const cfgObj = ({ v: 1, expires_at: now() + 86400, flags: { analytics: true, issues: true, contributions },
-      // the 4.0 config (decided 11-14): the build and its key id, no base URL
-      recommended: { revision: build, version: manifest.version, model_id: manifest.model_id, key_id: manifest.encryption.key_id },
+      // the 4.0 config (decided 11-14): the build and its key id, no base URL; the model and its folder as production
+      // names them (the lease answer's base below is made from them, as qlab-api makes it)
+      recommended: { model: 'Quran-Lab/v4-test', folder: `sdk/${manifest.model_id}`, revision: build, version: manifest.version, model_id: manifest.model_id,
+        key_id: manifest.encryption.key_id },
       web: { api: 4, engine: { current: st.engineId || engineId } } });
     const body = u8(JSON.stringify(configPatch ? configPatch(cfgObj) : cfgObj));
     // the server's time in Date, as every HTTP answer carries it (the SDK judges expires_at by it when the device
@@ -146,7 +148,7 @@ export async function fakeServer({ cdnDir, site = 'https://app.example', apiKey 
     const h = Object.fromEntries(Object.entries(init.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
     const body = init.body ? JSON.parse(init.body) : null;
     st.calls.push(`${init.method || 'GET'} ${u.pathname}`);
-    st.requests.push({ path: `${init.method || 'GET'} ${u.pathname}`, host: u.host, headers: h, body });
+    st.requests.push({ path: `${init.method || 'GET'} ${u.pathname}`, search: u.search, host: u.host, headers: h, body });
     if (h['x-qlab-site']) st.sawSite.add(h['x-qlab-site']);
     if (h['x-qlab-site'] && h['x-qlab-site'] !== site) return json(401, { error: 'invalid_key', reason: 'origin_not_allowed' });
     const tokenOk = () => st.tokens.has(String(h.authorization || '').replace(/^Bearer /, ''));
@@ -250,11 +252,13 @@ export async function fakeServer({ cdnDir, site = 'https://app.example', apiKey 
         }
         st.leaseCerts.push(cert.att);
         const t = now(), ihb = new Uint8Array(Buffer.from(ih, 'hex'));
-        // a web lease: 24 hours, never past the certificate (cap_to_cert, 18.4.7)
+        // a web lease: 24 hours, never past the certificate (cap_to_cert, 18.4.7, until 11-19). With leaseDays (qlab-api
+        // lease_days, 11-19): that many days, and only refresh_after held to the certificate
         const certExp = Number(parseCert(answerCert).exp);
+        const leaseExp = leaseDays ? t + leaseDays * 86400 - 1 : Math.min(t + 86400 - 1, certExp);
         // a web lease (flags bit 1, the site), or a desktop one: no web flag and no site (18.4.6)
         const webLease = !body.platform || body.platform === 'web';
-        const f = { flags: webLease ? 2 : 0, lease_id: stream('lease' + st.leases, 16), iat: t - 1, exp: Math.min(t + 86400 - 1, certExp), refresh_after: Math.min(t + 43200, certExp), key_id: Buffer.from(manifest.encryption.key_id, 'hex'),
+        const f = { flags: webLease ? 2 : 0, lease_id: stream('lease' + st.leases, 16), iat: t - 1, exp: leaseExp, refresh_after: Math.min(t + 43200, certExp), key_id: Buffer.from(manifest.encryption.key_id, 'hex'),
           build, install_hash: ihb, mark: await mark(await kMark(), keyId, ihb), model: manifest.model_id, version: manifest.version, release: body.core.release,
           // a web lease names the site the request named in x-qlab-site (qlab-api web-lease-v2); st.leaseSite overrides it
           ...((st.leaseVersion || leaseVersion) === 2 ? { site: !webLease ? '' : st.leaseSite !== null ? st.leaseSite : (h['x-qlab-site'] || '') } : {}) };
@@ -263,7 +267,8 @@ export async function fakeServer({ cdnDir, site = 'https://app.example', apiKey 
         st.leases++;
         const piece = st.pieces.length ? st.pieces.shift() : null;
         return json(200, { v: 1, lease: b64u(lease), iat: f.iat, exp: f.exp, refresh_after: f.refresh_after,
-          base: `${cdnBase}/Quran-Lab/v4-test/${build}/sdk/${manifest.model_id}/`, install_cert: answerCert, ...(piece ? { piece } : {}),
+          // st.leaseBase: a lease answer that names another model folder than the config's (a server that moved it)
+          base: st.leaseBase || `${cdnBase}/Quran-Lab/v4-test/${build}/sdk/${manifest.model_id}/`, install_cert: answerCert, ...(piece ? { piece } : {}),
           ...(unverified ? { turnstile: 'unverified', turnstile_why: unverified } : {}) }, { 'cache-control': 'no-store' });
       }
       default: return json(404, { error: 'not_found' });

@@ -9,6 +9,7 @@ import { microphonePermission } from '../../web/api/microphone.js';
 import { RULE_RE } from '../shared/recited.js';
 import { MODEL_VERSION_RE } from '../../web/tajweed/manifest.js';
 import { refuseRemovedOptions } from '../shared/options.js';
+import { ROLES, Endpoints } from '../shared/endpoints.js';
 
 /* global __QL_FRAME_BASE__, __QL_FRAME_FALLBACK__, __QL_API__, __QL_TEST__, __QL_APP__, __QL_SHARING_SHA384__, __QL_PINS__ */
 const APP = typeof __QL_APP__ !== 'undefined' ? __QL_APP__ : null;
@@ -16,11 +17,14 @@ const SHARING_SHA384 = typeof __QL_SHARING_SHA384__ !== 'undefined' ? __QL_SHARI
 const PINS = typeof __QL_PINS__ !== 'undefined' ? __QL_PINS__ : undefined;
 // test bundles only (scripts/build_web4.py --test): the frame bases, API and timeouts of a test page
 const SEAMS = typeof __QL_TEST__ !== 'undefined' && __QL_TEST__ === true;
-export const FRAME_BASE = typeof __QL_FRAME_BASE__ !== 'undefined' ? __QL_FRAME_BASE__ : 'https://web.quranlab.ai';
+export const FRAME_BASE = typeof __QL_FRAME_BASE__ !== 'undefined' ? __QL_FRAME_BASE__ : `https://${ROLES.web_frame[0]}`;
 /** The same frame on a second hostname and a route of its own, opened when the first gives no hello in 4 s (link.js). */
-export const FRAME_FALLBACK = typeof __QL_FRAME_FALLBACK__ !== 'undefined' ? __QL_FRAME_FALLBACK__ : 'https://web2.quranlab.ai';
+export const FRAME_FALLBACK = typeof __QL_FRAME_FALLBACK__ !== 'undefined' ? __QL_FRAME_FALLBACK__ : `https://${ROLES.web_frame[1]}`;
+/** The frame's hosts in order (ENDPOINTS_40.md 28.6): web, web2, then the backup hosts; a test bundle's two stand-ins. The
+ * loader carries this list itself: it is never taken from a config (28.2). */
+export const FRAME_BASES = Object.freeze(typeof __QL_FRAME_BASE__ !== 'undefined' ? [FRAME_BASE, FRAME_FALLBACK] : ROLES.web_frame.map((h) => `https://${h}`));
 export const API_URL = typeof __QL_API__ !== 'undefined' ? __QL_API__ : 'https://api.quranlab.ai';
-export const SDK_VERSION = '4.0.0';
+export const SDK_VERSION = '4.0.1';
 export const API = 4;
 const MADE = Symbol('TajweedClient.create');
 const MAX_CHECKS = 100_000;
@@ -70,7 +74,9 @@ export class TajweedClient {
    * Make the page's Client: opens Quran Lab's frame on this page (the origin must be one of the key's), which
    * registers, reads the signed config and loads the engine this site is on. A second Client while one is open is
    * client_exists.
-   * @param {{key: string, appVersion?: string, storage?: string, threads?: 'auto'|'off'}} options
+   * @param {{key: string, appVersion?: string, appBuild?: string, storage?: string, threads?: 'auto'|'off'}} options
+   *   appVersion and appBuild (27.1, from 4.0.1): the app's version and build, strings; the frame's config requests
+   *   carry them, cleaned.
    *   There is no analytics option in 4.0 (owner, 11-16): the anonymous daily counts and durations are always kept;
    *   only Quran Lab's signed config (flags.analytics) turns them off. There is no audience option either (owner,
    *   11-19): every app shows the same sharing sheet. An `analytics` or `audience` key, whatever its value, is
@@ -81,7 +87,7 @@ export class TajweedClient {
     if (current) throw new TajweedError('client_exists');
     const o = options || {};
     if (typeof o.key !== 'string' || !/^qlk_v1_[A-Za-z0-9_-]+$/.test(o.key)) throw invalid('a web key qlk_v1_... is needed (from sdk.quranlab.ai)');
-    for (const k of ['appVersion', 'storage']) if (o[k] !== undefined && o[k] !== null && typeof o[k] !== 'string') throw invalid(`${k} must be a string`);
+    for (const k of ['appVersion', 'appBuild', 'storage']) if (o[k] !== undefined && o[k] !== null && typeof o[k] !== 'string') throw invalid(`${k} must be a string`);
     if (o.storage && !/^[A-Za-z0-9._-]{1,40}$/.test(o.storage)) throw invalid('storage must be 1 to 40 letters, digits, dots, dashes or underscores');
     refuseRemovedOptions(o);
     if (o.threads !== undefined && o.threads !== 'auto' && o.threads !== 'off') throw invalid(`threads must be 'off' (the default) or 'auto'`);
@@ -91,11 +97,15 @@ export class TajweedClient {
     let link = null;
     try {
       const t = SEAMS ? o : {};
-      const frameBases = [t._frameBase || FRAME_BASE, t._frameFallback !== undefined ? t._frameFallback : FRAME_FALLBACK].filter(Boolean);
+      // the web_frame hosts in order (28.6); a test page may name its own (_frameBases, or the first two)
+      const frameBases = Array.isArray(t._frameBases) && t._frameBases.length ? t._frameBases
+        : t._frameBase || t._frameFallback !== undefined ? [t._frameBase || FRAME_BASE, t._frameFallback !== undefined ? t._frameFallback : FRAME_FALLBACK].filter(Boolean)
+          : [...FRAME_BASES];
       const apiUrl = t._apiUrl || API_URL;
       const chunk = loadSharingChunk(frameBases[0]).catch(() => null);
-      link = await openFrame({ key: o.key, frameBases, apiUrl, storage: o.storage || null, timeoutMs: t._timeoutMs, switchMs: t._switchMs, threads: o.threads || 'off',
-        opts: { appVersion: o.appVersion, threads: o.threads || 'off' } });
+      // the origin check, when no frame answers, goes through the api order (28.3)
+      link = await openFrame({ key: o.key, frameBases, apiUrl, endpoints: Endpoints.fromSeams({ apiUrl }), storage: o.storage || null, timeoutMs: t._timeoutMs, switchMs: t._switchMs,
+        threads: o.threads || 'off', opts: { appVersion: o.appVersion, appBuild: o.appBuild, threads: o.threads || 'off' } });
       // the frame of the fallback host answered: said in the error reports (silent: the page gets no error)
       const pending = [...takePending(), ...(link.fallback ? [{ reason: 'frame_fallback', code: 'none' }] : [])];
       const init = await link.rpc.call('init', { pending });
@@ -103,10 +113,15 @@ export class TajweedClient {
       // no frame)
       const mod = link.fallback ? await loadSharingChunk(link.base).catch(() => null) : await chunk;
       const frameBase = link.base;
+      // one sticky host per role for the page (28.3): the sharing link starts from the api P the frame found, and the
+      // two tell each other when an answer moves it (Endpoints.share and adopt; the frame's 'endpoints' event and call)
+      const hub = { state: init && init.endpoints ? init.endpoints : null, listeners: new Set() };
+      link.rpc.onEvent((d) => { if (d.ev === 'endpoints' && d.state) { hub.state = d.state; for (const f of hub.listeners) { try { f(d.state); } catch (_) { /* never in the way */ } } } });
+      const endpoints = { state: () => hub.state, subscribe: (f) => { hub.listeners.add(f); }, tell: (s) => { link.rpc.call('endpoints', s).catch(() => {}); } };
       let sharing = null;
       if (mod) {
         try {
-          sharing = await mod.startSharing({ key: o.key, rpc: link.rpc, appVersion: o.appVersion, storage: o.storage || null, apiUrl, trustedKeys: PINS, opusUrl: `${frameBase.replace(/\/$/, '')}/4/app/${APP}/tajweedformer-opus.wasm` });
+          sharing = await mod.startSharing({ key: o.key, rpc: link.rpc, appVersion: o.appVersion, appBuild: o.appBuild, storage: o.storage || null, apiUrl, trustedKeys: PINS, opusUrl: `${frameBase.replace(/\/$/, '')}/4/app/${APP}/tajweedformer-opus.wasm`, endpoints });
         } catch (_) { sharing = null; }
       }
       const client = new TajweedClient({ rpc: link.rpc, link, init, sharing }, MADE);
@@ -216,6 +231,9 @@ export class TajweedClient {
       droppedChunks: this._droppedChunks,
       connection: connection(),
       lease: w ? w.lease : null,
+      // 28.7: the host each role asks first, the frame's host the page took, and the last failover of the frame
+      ...(w && w.endpoints ? { endpoints: { api: w.endpoints.api, models: w.endpoints.models, webFrame: new URL(this._x.link.base).host,
+        lastFailover: w.endpoints.lastFailover || null } } : {}),
     };
   }
 

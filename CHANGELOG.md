@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.0.1
+
+- **Backup servers.** The SDK uses backup servers for Quran Lab's API, the model files and the frame if the main ones
+  can't be reached. A site with a Content-Security-Policy adds the hosts the README lists. Everything is signed and
+  checked as before, whatever server it came from.
+- **`diagnose()` gains `endpoints`**, the servers in use, and error reports say which kind of server a failed request
+  went to.
+- **`model.reference.units()` works in every browser** (the hosted frame of 4.0.0 has had this fix since 2026-11-20),
+  and its later calls are faster.
+- **A faster first open:** the model starts downloading while its permission is asked, and its files come two at a time.
+- **New option `appBuild`:** with `appVersion`, it lets Quran Lab give an app's older releases the model they were
+  built for.
+- **A model that fails to open says why:** busy, no memory, the engine, or an argument.
+- **Node:** when Quran Lab refuses the key, `model()` says so at once (`invalid_key`), without downloading the engine;
+  `close()` no longer waits for slow servers, and what it could not send goes at the next run.
+- **Fixed:** a page could lose its kept permission to open the model and ask Quran Lab again; shared recordings that
+  could not be uploaded are now tried again at the next page load; a resumed download could lose the bytes it already
+  had.
+
 ## 4.0.0
 
 The model is protected. A loader hosted by Quran Lab opens Quran Lab's frame on your page, and the engine, the model
@@ -10,13 +29,12 @@ Moving from 3.x: [docs/migrating-to-4.md](docs/migrating-to-4.md).
   loader. If your site sends a Content-Security-Policy, add the README's lines.
 - **Two hosts.** When `web.quranlab.ai` gives no answer within 4 seconds, the loader opens the same frame from
   `web2.quranlab.ai`.
-- **The lease, kept across page loads.** The model opens under a 24-hour lease for this browser and your site; a page
-  loaded within it opens the model with no connection. When it has ended and Quran Lab cannot be reached, the model
-  keeps opening for 24 hours more; a refusal ends that at once.
+- **Works offline after the first visit.** The model opens under a lease for this browser and your site, kept across
+  page loads: after the first visit a page opens the model with no connection.
 - **An invisible check.** The first lease passes Cloudflare Turnstile inside the frame, and a learner never sees a box.
   A check that fails or cannot run still gives a lease.
-- **Node, for desktop apps.** The package's Node entry runs the same API with a desktop key and its app id, with
-  24-hour leases kept in its storage folder.
+- **Node, for desktop apps.** The package's Node entry runs the same API with a desktop key and its app id, with its
+  lease kept in its storage folder.
 - **Removed: the `analytics` option.** The anonymous analytics (daily counts and durations, never audio, text, names
   or device identifiers) are always on. Passing `analytics`, whatever its value, is refused with `invalid_argument`:
   delete it.
@@ -30,7 +48,7 @@ Moving from 3.x: [docs/migrating-to-4.md](docs/migrating-to-4.md).
   failed is `download_failed`, with what answered in the message.
 - **Recited ayahs.** The SDK counts the ayahs of each take itself; `reportRecited` is the fallback, and its new
   `outcome` and `perAyah` carry your app's own judgement.
-- **Sharing.** Asked later and less often (never in the first 24 hours, at most three times), and a recording stays
+- **Sharing.** Asked later and less often (never right after the install, at most three times), and a recording stays
   open up to 60 seconds between takes. There is still no developer switch.
 - **Every learner is asked** and the choice is theirs: Not now, stop, or delete at any time. No app is exempt.
 - **Model versions.** From V4.1 on, new model versions are published only encrypted, for SDK 4.0. SDK 3.x stops
@@ -84,7 +102,7 @@ device clock that is days off. No call changed.
   context) raised `needs_connection`; it is now `runtime_unsupported` with the minimum runtime in the fix, and
   no `signature_invalid` issue is reported for it.
 - **Fixed: a device clock that is days off refused every config (`config:config_expired`).** The config lives
-  24 hours and was judged by the device clock alone. The SDK now reads the server's time from the config
+  for a set time and was judged by the device clock alone. The SDK now reads the server's time from the config
   answer's `Date` header. When it differs from the device clock by more than five minutes, `expires_at` is
   judged by the later of the two, and by the server's time alone when the device clock is ahead of it by more
   than the config's validity. A config the server's clock calls expired is never accepted, whatever the device

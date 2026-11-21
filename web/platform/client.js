@@ -13,15 +13,44 @@ import { QURANLAB_PUBLIC_KEY_HEX, hexToBytes, bytesToHex } from '../tajweed/mani
 import { noticeSdkLatest } from './update-notice.js';
 import { ErrorReports, classify, webSnapshot, refreshStorageEstimate, tag, telemetryReason, SEND_AFTER_MS } from './error-reports.js';
 import { MODEL_STOP_REASONS, stopReasonOf } from '../api/errors.js';
+import { Endpoints, ROLES, API_BODY_MS, HEAD_MS } from '../../sdk4/shared/endpoints.js';
 
-export const SDK_VERSION = '4.0.0';
-export const API_URL = 'https://api.quranlab.ai';
-export const CDN_URL = 'https://cdn.quranlab.ai';
+export const SDK_VERSION = '4.0.1';
+// the first host of each role (ENDPOINTS_40.md 28.1): every request to the API goes through the api order of the
+// endpoint set (sdk4/shared/endpoints.js), the first host first, the others when it cannot be reached (28.3)
+export const API_URL = `https://${ROLES.api[0]}`;
+export const CDN_URL = `https://${ROLES.models[0]}`;
 /** Where model files are served: {base}/{owner}/{repo}/{revision}/{path}. The signed config's `base`
- * replaces it when present; a cdnUrl given without modelsUrl keeps the old {cdn}/hf/ path. */
-export const MODELS_URL = 'https://cdn.quranlab.ai/models';
-const SAFE_BASE = /^(https:\/\/[A-Za-z0-9.-]+(:\d+)?|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)(\/[A-Za-z0-9._~\/-]*)?$/;
+ * replaces it when present (a host of the allow-list, 28.4); a cdnUrl given without modelsUrl keeps the old
+ * {cdn}/hf/ path. */
+export const MODELS_URL = `${CDN_URL}/models`;
 const REGIONAL_CDN = /^https:\/\/((weur|eeur|enam|wnam|apac|oc)\.)?cdn\.quranlab\.ai$/;
+/**
+ * 27.1: an app version or build as the config request and register carry it, cleaned in this order: only the ASCII
+ * characters 0-9 A-Z a-z . + - kept; the . + - before the first letter or digit dropped; the first 32 kept. null when
+ * unknown: not a string, nothing left, or "0" (register then sends its placeholder "0").
+ */
+export function appValue(v) {
+  if (typeof v !== 'string') return null;
+  const c = v.replace(/[^0-9A-Za-z.+-]/g, '').replace(/^[.+-]+/, '').slice(0, 32);
+  return c && c !== '0' ? c : null;
+}
+
+/**
+ * 28.3: a config answer is the route's only when it verifies (PLATFORM_CLIENT 3): { bytes, dated, cfg }, else null,
+ * so that host is unreachable and the next is asked. A runtime that cannot verify at all ends the request with that
+ * failure (runtime_unsupported).
+ */
+export function configAccept(trustedKeys, clock) {
+  return async (res) => {
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    const dated = dateHeaderMs(res);
+    try { return { bytes, dated, cfg: await verifySignedConfig(bytes, res.headers.get('x-qlab-signature'), res.headers.get('x-qlab-key-id'), trustedKeys, clock(), dated) }; } catch (e) {
+      if (e && e.name === 'PlatformError' && e.code === 'runtime_unsupported') { e.stage = 'config'; throw e; }
+      return null;
+    }
+  };
+}
 /** Codes after which the client stops all network calls until the next launch (error table). */
 const STOP_CODES = new Set(['invalid_key', 'unauthorized', 'developer_not_approved', 'not_a_member', 'key_type_mismatch',
   'origin_not_allowed', 'app_not_allowed', 'app_blocked', 'environment_mismatch', 'sdk_too_old']);
@@ -52,6 +81,21 @@ const TICK_MS = 60_000;
 /** A platform failure: { status, code } from the API's {"error","message"} body. */
 export class PlatformError extends Error {
   constructor(status, code, message) { super(`${status} ${code}${message ? ': ' + message : ''}`); this.name = 'PlatformError'; this.status = status; this.code = code; }
+}
+
+/**
+ * 28.3: a 2xx of a JSON route is its answer only when it is JSON (with `field` a string, when named): a captive
+ * portal's page, an empty 200 or a token answer without a token is unreachable on that host. 202 and 204 may be empty.
+ */
+export function acceptJson(field = null) {
+  return async (res, status) => {
+    const text = await res.text();
+    if (!text && (status === 202 || status === 204)) return true;
+    try {
+      const j = JSON.parse(text);
+      return j && typeof j === 'object' && (!field || (typeof j[field] === 'string' && j[field] !== '')) ? true : null;
+    } catch (_) { return null; }
+  };
 }
 
 const subtle = () => globalThis.crypto.subtle;
@@ -172,7 +216,14 @@ export class QuranLab {
     if (!o || typeof o.key !== 'string' || !/^qlk_v1_/.test(o.key)) throw new TypeError('QuranLab: a developer key qlk_v1_... is needed');
     const inBrowser = typeof globalThis.window !== 'undefined' && !!globalThis.location;
     this.key = o.key;
-    this.apiUrl = (o.apiUrl || API_URL).replace(/\/$/, '');
+    this.clock = o.clock || Date.now;
+    // the endpoint set (28.1): a test build's apiUrl and modelsUrl replace a role's hosts; one set may be shared with
+    // the frame's controller (o.endpoints), which asks the models hosts with it
+    this.ep = o.endpoints instanceof Endpoints ? o.endpoints
+      : Endpoints.fromSeams({ apiUrl: o.apiUrl || null, modelsUrl: o.modelsUrl || o.cdnUrl || null, clock: () => this.clock(),
+        headMs: Number.isFinite(o.apiTimeoutMs) && o.apiTimeoutMs > 0 ? Math.min(HEAD_MS, o.apiTimeoutMs) : HEAD_MS });
+    // the API's URL as the SDK names it (the first api host): a request to it goes through the api order
+    this.apiUrl = this.ep.origin(this.ep.builtIn.api[0]);
     this.cdnUrl = (o.cdnUrl || CDN_URL).replace(/\/$/, '');
     this.modelsUrl = o.modelsUrl ? o.modelsUrl.replace(/\/+$/, '') : null;
     this.legacyCdn = !!o.cdnUrl && !o.modelsUrl;
@@ -181,9 +232,13 @@ export class QuranLab {
     if (!this.bundleId) throw new TypeError('QuranLab: bundleId is needed outside a browser (the origin for a web key, the app id for a desktop key)');
     this.origin = o.origin || null; // Node only: browsers set Origin themselves
     this.appVersion = o.appVersion || '0';
+    // 27.1: the app's build (a string, or none); the config request carries both, cleaned, read once here
+    this.appBuild = typeof o.appBuild === 'string' ? o.appBuild : null;
     this.appName = o.appName || null;
-    this.fetch = o.fetch || globalThis.fetch.bind(globalThis);
-    this.clock = o.clock || Date.now;
+    // every request to an api host through the api order (28.3), each host bounded by 10 s to its status and the
+    // API's 30 s after it; anything else (presigned upload URLs) as it is
+    this.rawFetch = o.fetch || globalThis.fetch.bind(globalThis);
+    this.fetch = this.ep.wrap(this.rawFetch, { bodyMs: Number.isFinite(o.apiTimeoutMs) && o.apiTimeoutMs > 0 ? o.apiTimeoutMs : API_BODY_MS });
     this.state = o.state || localState();
     this.trustedKeys = o.trustedKeys || [QURANLAB_PUBLIC_KEY_HEX];
     this.analyticsOn = o.analytics !== 'off';
@@ -233,6 +288,22 @@ export class QuranLab {
     const saved = this.state.get('config');
     if (saved && saved.cfg && saved.cfg.expires_at * 1000 > this.configClock(saved)) this.config = saved.cfg;
     if (this.state.get('bucket') === null) this.state.set('bucket', Math.floor(Math.random() * 100));
+    // a request answered on another host after its first host was unreachable: one silent report of its stage (28.7)
+    if (!this.ep.onFailover) {
+      this.ep.onFailover = (f) => this._silent(f.stage, 'failover', { host_role: f.role, fallback: true,
+        ...(f.status ? { http_status: f.status } : {}), error_code: f.reason });
+    }
+    this._syncEndpoints();
+  }
+
+  /** 28.2: the api and models lists of the config in force (its endpoints), else the built-in lists. A config's
+   * hosts are kept nowhere but with the config. */
+  _syncEndpoints() {
+    try {
+      const cfg = this.config;
+      const inForce = !!cfg && Number.isFinite(cfg.expires_at) && cfg.expires_at * 1000 > this.configClock();
+      this.ep.useConfig(cfg && cfg.endpoints, inForce);
+    } catch (_) { /* the lists stay */ }
   }
 
   /** Configure and run the launch sequence (token, register, config, pending telemetry and issues).
@@ -240,6 +311,7 @@ export class QuranLab {
   static async configure(o) {
     const ql = new QuranLab(o);
     await ql.launch();
+    await ql.launchSent; // the 3.x entry keeps its order: the launch's telemetry sent before it resolves
     return ql;
   }
 
@@ -330,8 +402,9 @@ export class QuranLab {
   }
 
   // ---- HTTP ----
-  async _call(method, path, { body = null, auth = 'token', headers = {}, raw = false, keepalive = false } = {}) {
+  async _call(method, path, { body = null, auth = 'token', headers = {}, raw = false, keepalive = false, accept = undefined } = {}) {
     if (this.stopped) throw new PlatformError(0, this.stopped, 'stopped for this launch');
+    const stage = STAGE_OF(path) || 'config';
     const h = { ...headers };
     if (this.origin) h.origin = this.origin;
     if (auth === 'key') h['x-qlab-key'] = this.key;
@@ -341,14 +414,20 @@ export class QuranLab {
     // request, so neither a header (the developer key of the token request) nor a body goes to another host
     const init = { method, headers: h, body: body === null ? undefined : typeof body === 'string' ? body : JSON.stringify(body), redirect: 'error' };
     if (keepalive) init.keepalive = true; // a page being hidden or left: the request outlives it
+    // the api order (28.3): a 2xx that is not the route's answer (a captive portal's page) is unreachable on that host
+    init.qlAccept = accept !== undefined ? accept : raw ? null : acceptJson();
+    this._syncEndpoints();
     let r;
     try { r = await this.fetch(this.apiUrl + path, init); } catch (e) {
-      // no HTTP answer. On a page that can be the browser refusing the answer of an origin that is not on the
-      // key: the origin check tells (once per page load); else the failure stays what it was
+      // the route's own check could not run here at all (no WebCrypto): that failure, as it is
+      if (e && e.name === 'PlatformError') { if (!e.stage) e.stage = stage; throw e; }
+      // no HTTP answer from any host. On a page that can be the browser refusing the answer of an origin that is not
+      // on the key: the origin check tells (once per page load); else the failure stays what it was (the first host's)
       const refused = await this.originCheck();
-      if (refused) { if (!refused.stage) refused.stage = STAGE_OF(path) || 'config'; throw refused; }
-      throw tag(e, { stage: STAGE_OF(path) || 'config', reason: 'network' });
+      if (refused) { if (!refused.stage) refused.stage = stage; throw refused; }
+      throw tag(e, { stage, reason: 'network', host_role: 'api', fallback: !!e.qlFallback });
     }
+    const fallback = !!r.qlFallback;
     if (r.status < 400 && auth !== 'none') { this.keyAccepted = true; this.refusedError = null; } // the server answered a call made with this key or its token
     // a register or token answer that succeeds accepts the key (the config does when it has verified)
     if (r.status < 400 && !raw && (path === '/v1/register' || path === '/v1/attest')) this._accepted();
@@ -357,7 +436,9 @@ export class QuranLab {
       let e = {};
       try { e = await r.json(); } catch (_) { /* no body */ }
       const err = new PlatformError(r.status, e.error || 'http_' + r.status, e.message || '');
-      err.stage = STAGE_OF(path) || 'config';
+      err.stage = stage;
+      err.host_role = 'api';
+      err.fallback = fallback;
       if (typeof e.min_sdk === 'string') err.minSdk = e.min_sdk; // 403 sdk_too_old: the version this key needs
       // the check that refused (a 401 invalid_key names it: app_not_allowed, origin_not_allowed, key_type_mismatch);
       // the error raised to the app reads it first, what the client does with the network follows `error`
@@ -374,11 +455,15 @@ export class QuranLab {
       this._refusal(err);
       if (err.code === 'invalid_token' && !stop && auth === 'token' && !headers['x-retried']) {
         this._token = null; this.state.set('token', null);
-        return this._call(method, path, { body, auth, headers: { ...headers, 'x-retried': '1' }, keepalive }).catch((e2) => { throw e2; });
+        return this._call(method, path, { body, auth, headers: { ...headers, 'x-retried': '1' }, keepalive, accept }).catch((e2) => { throw e2; });
       }
       throw err;
     }
-    return r.status === 204 || r.status === 304 ? null : r.json();
+    if (r.status === 204 || r.status === 304) return null;
+    // a 2xx every host gave that is not the route's answer (the first host's, 28.3 item 4): invalid_answer
+    try { return await r.json(); } catch (_) {
+      throw Object.assign(new PlatformError(r.status, 'invalid_answer', 'the answer is not the route\'s'), { stage, host_role: 'api', fallback });
+    }
   }
 
   /** An unattested app token (24 h), renewed when under 1 h is left. */
@@ -386,7 +471,7 @@ export class QuranLab {
     const now = this.clock() / 1000;
     const t = this._token || this.state.get('token');
     if (t && t.exp - now > 3600) { this._token = t; return t.token; }
-    const r = await this._call('POST', '/v1/attest', { auth: 'key', body: { platform: this.platform, bundle_id: this.bundleId } });
+    const r = await this._call('POST', '/v1/attest', { auth: 'key', body: { platform: this.platform, bundle_id: this.bundleId }, accept: acceptJson('token') });
     this._token = { token: r.token, exp: now + (r.expires_in || 86400), attested: !!r.attested };
     this.state.set('token', this._token);
     return r.token;
@@ -427,10 +512,15 @@ export class QuranLab {
   async launch() {
     this.telemetry.count('launches');
     this.telemetry.launched();
-    const steps = [() => this.register(), () => this.refreshConfig(), () => this.sendTelemetry('launch')];
+    const steps = [() => this.register(), () => this.refreshConfig()];
     for (const s of steps) {
       try { await s(); } catch (e) { this.lastError = e; this.reportFailure(e, { silent: true }); if (this.stopped) break; }
     }
+    // the launch's telemetry and pending reports go in the background: the start never waits for them. A host that
+    // keeps no reports (a backup host answers them 503, ENDPOINTS_40.md 28.9) sends the request across every host of
+    // the order, which took 20 s or more a request with the first hosts silent (E7, 11-20); the reports stay queued
+    // and go with a later send, as before
+    this.launchSent = this.stopped ? Promise.resolve() : this.sendTelemetry('launch').catch((e) => { this.lastError = e; this.reportFailure(e, { silent: true }); });
     if (this.autoSend) this._startSchedule();
   }
 
@@ -451,7 +541,8 @@ export class QuranLab {
     const pendingNew = this.state.get('register.pending_new') === true;
     const newInstall = first || pendingNew;
     this.state.set('register.pending_new', newInstall);
-    const body = { platform: this.platform, bundle_id: this.bundleId, app_version: this.appVersion, sdk_version: SDK_VERSION, new_install: newInstall };
+    // 27.1: the app's version cleaned as the config request carries it, or the placeholder "0" when unknown
+    const body = { platform: this.platform, bundle_id: this.bundleId, app_version: appValue(this.appVersion) || '0', sdk_version: SDK_VERSION, new_install: newInstall };
     if (this.appName) body.app_name = this.appName;
     if (this.modelRevision) body.model_revision = this.modelRevision;
     const r = await this._call('POST', '/v1/register', { body });
@@ -540,17 +631,25 @@ export class QuranLab {
     // normal choice with pin.status "unavailable". A stored config made for another pin is not reused.
     const pin = this.modelVersionPin || null;
     if (pin) q.set('model_version', pin);
+    // 27.1: the app's version and build, after the parameters of before, cleaned, a + as %2B; left out when unknown
+    const av = appValue(this.appVersion), ab = appValue(this.appBuild);
+    if (av) q.set('app_version', av);
+    if (ab) q.set('app_build', ab);
     const samePin = saved && (saved.pin || null) === pin;
     const headers = {};
     if (saved && saved.etag && !nearExpiry && samePin) headers['if-none-match'] = saved.etag;
-    const r = await this._call('GET', `/v1/config?${q}`, { headers, raw: true });
+    // 28.3: a 200 is the config's answer only when it verifies: one that does not is unreachable on that host and the
+    // next host is asked (a runtime that cannot verify at all ends the request with that failure)
+    const r = await this._call('GET', `/v1/config?${q}`, { headers, raw: true, accept: configAccept(this.trustedKeys, () => this.clock()) });
     this.configCheckedAt = this.clock();
-    if (r.status === 304 && saved) { this.config = saved.cfg; this.configFresh = true; this._accepted(); this._noticeSdkLatest(); return this.config; }
+    if (r.status === 304 && saved) { this.config = saved.cfg; this.configFresh = true; this._accepted(); this._syncEndpoints(); this._noticeSdkLatest(); return this.config; }
     if (r.status >= 400) {
       let e = {};
       try { e = await r.json(); } catch (_) { /* none */ }
       const err = new PlatformError(r.status, e.error || 'http_' + r.status, e.message);
       err.stage = 'config';
+      err.host_role = 'api';
+      err.fallback = !!r.qlFallback;
       if (typeof e.min_sdk === 'string') err.minSdk = e.min_sdk;
       if (typeof e.reason === 'string') err.reason = e.reason;
       const stop = stopReasonOf(err.reason);
@@ -559,16 +658,23 @@ export class QuranLab {
       this._refusal(err);
       throw err;
     }
-    const body = new Uint8Array(await r.arrayBuffer());
     let cfg;
-    const device = this.clock(), dated = dateHeaderMs(r);
-    try {
-      cfg = await verifySignedConfig(body, r.headers.get('x-qlab-signature'), r.headers.get('x-qlab-key-id'), this.trustedKeys, device, dated);
-    } catch (e) {
-      // a runtime that cannot verify at all is the runtime's limit, not a bad signature (and not offline); either
-      // way the launch reports it (3.1.7: an error report, ERRORS_40.md 24.1)
-      if (e && e.name === 'PlatformError') e.stage = 'config';
-      throw e;
+    const device = this.clock();
+    let dated = dateHeaderMs(r);
+    if (r.qlValue && r.qlValue.cfg) {
+      // verified as the host's answer (28.3): the bytes read once
+      ({ cfg, dated } = r.qlValue);
+      try { if (r.body && typeof r.body.cancel === 'function') r.body.cancel().catch(() => {}); } catch (_) { /* read */ }
+    } else {
+      const body = new Uint8Array(await r.arrayBuffer());
+      try {
+        cfg = await verifySignedConfig(body, r.headers.get('x-qlab-signature'), r.headers.get('x-qlab-key-id'), this.trustedKeys, device, dated);
+      } catch (e) {
+        // a runtime that cannot verify at all is the runtime's limit, not a bad signature (and not offline); either
+        // way the launch reports it (3.1.7: an error report, ERRORS_40.md 24.1)
+        if (e && e.name === 'PlatformError') { e.stage = 'config'; e.host_role = 'api'; e.fallback = !!r.qlFallback; }
+        throw e;
+      }
     }
     // the device clock's offset from the server's, kept with the config, so the stored config is judged by the same
     // clock at the next start (configClock)
@@ -578,6 +684,7 @@ export class QuranLab {
     this.configFresh = true;
     this._accepted(); // a config that verified: the server accepts this key
     this.state.set('config', { cfg, pin, etag: r.headers.get('etag'), sig: r.headers.get('x-qlab-signature'), kid: r.headers.get('x-qlab-key-id'), skew });
+    this._syncEndpoints(); // 28.2: its endpoints are the lists in force from the next request
     if (cfg.flags && cfg.flags.analytics === false) this.telemetry.clear();
     this.telemetry.enabled = this.analyticsOn && !(cfg.flags && cfg.flags.analytics === false);
     this._noticeSdkLatest();
@@ -627,7 +734,8 @@ export class QuranLab {
     this.modelBuild = String(rec.revision);
     // the base: the app's modelsUrl, else the signed config's base, else the app's cdnUrl (old /hf/ path), else
     // cdn.quranlab.ai/models. A bare cdn.quranlab.ai base always means the /hf/ path.
-    const signed = typeof cfg.base === 'string' && SAFE_BASE.test(cfg.base) ? cfg.base.replace(/\/+$/, '') : null;
+    // (a base on a host of the allow-list, ENDPOINTS_40.md 28.4; a test build's own model host too)
+    const signed = typeof cfg.base === 'string' && this.ep.baseOf(cfg.base.replace(/\/*$/, '/')) ? cfg.base.replace(/\/+$/, '') : null;
     let base = this.modelsUrl || signed || (this.legacyCdn ? this.cdnUrl + '/hf' : MODELS_URL);
     if (REGIONAL_CDN.test(base)) base += '/hf';
     const pin = cfg.pin && typeof cfg.pin === 'object' && typeof cfg.pin.version === 'string' ? { version: cfg.pin.version, status: String(cfg.pin.status || '') } : null;

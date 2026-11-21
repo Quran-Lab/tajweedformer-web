@@ -1,6 +1,6 @@
 {
   "name": "@quran-lab/tajweedformer",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "TajweedFormer, API 4. In a browser: a thin wrapper that loads Quran Lab's hosted loader, which runs the protected engine in a frame and Worker on Quran Lab's origin. In Node: a desktop app, the same signed engine in a worker thread. The model is only usable through the SDK.",
   "type": "module",
   "main": "web/index.js",

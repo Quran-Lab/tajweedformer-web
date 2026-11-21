@@ -17,11 +17,18 @@ test('web_lease.json: the Turnstile cdata, byte for byte; the frame\'s hostname 
   const W = vector('web_lease.json');
   for (const c of W.cdata) assert.equal(await turnstileCdata(c.install_hash_hex, c.challenge), c.cdata, c.challenge);
   assert.equal(W.frame_host, 'web.quranlab.ai');
+  // 564c144: every web_frame host Turnstile and siteverify take, in order; the loader opens its frame on these
+  if (W.frame_hosts) {
+    const { FRAME_BASES } = await import('../../sdk4/loader/client.js');
+    const { ROLES } = await import('../../sdk4/shared/endpoints.js');
+    assert.deepEqual(W.frame_hosts, [...ROLES.web_frame]);
+    assert.deepEqual(FRAME_BASES.map((b) => new URL(b).hostname), W.frame_hosts);
+  }
   assert.equal(new URL((await import('../../sdk4/loader/client.js')).FRAME_BASE).hostname, W.frame_host, 'the loader frames the hostname Turnstile is checked on');
 });
 
 const mk = async (srv) => {
-  const c = new Controller({ key: srv.apiKey, site: srv.site, apiUrl: 'https://api.test', fetch: srv.fetch, files: new MemoryFiles(), kv: new MemoryKV(), engine,
+  const c = new Controller({ key: srv.apiKey, site: srv.site, apiUrl: 'https://api.test', modelsUrl: 'https://cdn.test/models', fetch: srv.fetch, files: new MemoryFiles(), kv: new MemoryKV(), engine,
     trustedKeys: [srv.trustedKey], turnstile: srv.turnstile, autoSend: false });
   await c.init();
   return c;
@@ -58,6 +65,10 @@ test('the 4.0 config: no key id is model_unavailable (a plaintext build); a base
   const b = await mk(withBase);
   await b.openModel();
   const files = withBase.state.requests.filter((r) => r.path.includes('/models/'));
-  assert.ok(files.length > 0 && files.every((r) => r.host === 'cdn.test'), 'the files come from the lease answer base only');
+  assert.ok(files.every((r) => r.host !== 'elsewhere.example'), 'the config\'s base is never asked');
+  // (this page has no modelsUrl: its early fetch asked the production model host's folder for the manifest, which
+  // this fake CDN does not serve; the files came from the lease answer's base only)
+  const qle = files.filter((r) => r.path.endsWith('.qle'));
+  assert.ok(qle.length > 0 && qle.every((r) => r.host === 'cdn.test'), 'the files come from the lease answer base only');
   await b.close();
 });

@@ -17,6 +17,11 @@
 // or an upload it does not know) and 410 (the upload was deleted): dropped. 400: dropped, with an issue. 401:
 // the token renewed, sent again. Anything else (429, 5xx, no connection): again later, with the outbox's
 // backoff. Sharing turned off drops it: no request is started after a withdrawal.
+//
+// 4.0.1: a session whose last request got no answer at all (item.json `lastFailure` 'network': offline, or a CORS
+// refusal, which a browser reports the same way) is tried once at the first pass of the next page (`_loadRetry`;
+// the consent controller starts that pass at the page's start when the queue holds one, networkFailedIn), then its
+// backoff goes on. One the server answered keeps its backoff.
 
 import { segmentName, wholePages } from './oggopus.js';
 import { freshUrl, parseUrls, SharingError } from './uploader.js';
@@ -41,6 +46,24 @@ const PARALLEL = 1;
 
 const enc = new TextEncoder(), dec = new TextDecoder();
 const isId = (s) => /^[0-9a-f]{32}$/.test(s);
+
+/**
+ * 4.0.1: whether a queued session waits on its backoff because its last request got no answer at all (offline, or a
+ * CORS refusal: a browser gives no status for either), not because the server answered (a refusal, a 4xx, a limit, a
+ * 5xx). item.json's `lastFailure` says so ('network' or 'answer'); a record an earlier SDK wrote has no such field and
+ * is read from the words it left in `lastError`: a PUT that failed with no answer is "PUT seg-NNNNN.opus: <the
+ * browser's message>", a call to the API that got none is the browser's message alone; every answer of a server has
+ * "HTTP <status>" in it, and the other reasons (the token, an answer without URLs, the attestation tier, the segment
+ * cap, "...; waiting") are their own words.
+ */
+export function lastFailedOnNetwork(rec) {
+  if (!rec || rec.state !== 'active' || !rec.nextAttempt) return false;
+  if (rec.lastFailure !== undefined) return rec.lastFailure === 'network';
+  const e = typeof rec.lastError === 'string' ? rec.lastError : '';
+  if (!e || /\bHTTP \d{3}\b/.test(e) || /; waiting$/.test(e)) return false;
+  if (/^PUT seg-\d+\.opus: /.test(e)) return true;
+  return !/^(token: |no token$|no upload URLs|attestation_required|segment_cap$)/.test(e);
+}
 
 export async function sha256Hex(bytes) {
   const d = await globalThis.crypto.subtle.digest('SHA-256', bytes);
@@ -191,6 +214,17 @@ export async function defaultStorage() {
 }
 
 export const readJson = async (s, id, name) => { const b = await s.read(id, name); if (!b) return null; try { return JSON.parse(dec.decode(b)); } catch (_) { return null; } };
+
+/** 4.0.1: the ids of the recordings in `storage` whose record says their last request got no answer
+ * (lastFailedOnNetwork), read from item.json alone: a page looks before it makes its pipeline. */
+export async function networkFailedIn(storage) {
+  const out = [];
+  for (const id of await storage.sessions()) {
+    const rec = await readJson(storage, id, FILES.item);
+    if (rec && rec.id === id && lastFailedOnNetwork(rec)) out.push(id);
+  }
+  return out;
+}
 export const writeJson = (s, id, name, v) => s.write(id, name, enc.encode(JSON.stringify(v)));
 
 /** The closed segments' markers, in order. */
@@ -300,6 +334,9 @@ export class Outbox {
     this._offWaiters = new Set(); // waits of a pass that end when sharing goes off (the app's token and Turnstile callbacks)
     this.wakeTimer = null;
     this.seqTop = 0;
+    // 4.0.1: the first pass of this page (the pipeline is made once per page load) tries at once the sessions whose
+    // last failure got no answer at all (lastFailedOnNetwork), whatever their backoff says; later passes keep it
+    this._loadRetry = true;
   }
 
   // ---- public ----
@@ -317,6 +354,13 @@ export class Outbox {
 
   /** Sessions not yet fully uploaded. */
   async pending() { return (await this.items()).filter((x) => x.status === 'queued'); }
+
+  /** 4.0.1: the ids of the queued sessions whose last request got no answer at all (lastFailedOnNetwork), oldest
+   * first: the ones this page's first pass tries at once. */
+  async networkFailed() {
+    await this._scan();
+    return [...this.records.values()].filter((r) => lastFailedOnNetwork(r)).sort((a, b) => a.seq - b.seq).map((r) => r.id);
+  }
 
   /** Seconds of audio in closed segments not yet uploaded, every session. */
   backlogSeconds() {
@@ -559,7 +603,16 @@ export class Outbox {
     if (this.stopped) return;
     const allowed = this.uploadAllowed();
     const now = this.clock();
-    const due = [...this.records.values()].filter((r) => r.state === 'active' && (ignoringBackoff || !r.nextAttempt || r.nextAttempt <= now))
+    // 4.0.1: once per page load, at the first pass that may upload: a session whose last failure was a request
+    // with no answer (offline, or a CORS refusal, which a browser reports as no answer: a bucket rule
+    // held every web PUT that way for four days in November 2026) is tried now instead of at the end of its backoff,
+    // which reaches 6 hours. A refusal or
+    // any other answer keeps its backoff, and if the retry fails the backoff goes on from where it was. Consent,
+    // deletion and limits are as for every pass: the switch and the flags above, the consent stamps of _scan, _expire.
+    const loadRetry = this._loadRetry && allowed.ok;
+    if (allowed.ok) this._loadRetry = false;
+    const due = [...this.records.values()].filter((r) => r.state === 'active' && (ignoringBackoff || !r.nextAttempt || r.nextAttempt <= now
+      || (loadRetry && lastFailedOnNetwork(r))))
       .sort((a, b) => a.seq - b.seq).map((r) => r.id);
     // take lists of recordings already uploaded: a retry, or one a closed page left
     const lists = () => [...this.records.values()].filter((r) => r.takeList === 'pending' && (ignoringBackoff || !r.takeListNext || r.takeListNext <= this.clock()))
@@ -653,6 +706,7 @@ export class Outbox {
     rec.state = 'uploaded';
     this.waiting.delete(id);
     rec.lastError = null;
+    rec.lastFailure = null;
     rec.nextAttempt = null;
     rec.urls = null;
     // a recording of 2 or more takes: its take list follows its last segment; the item is uploaded either way
@@ -755,7 +809,7 @@ export class Outbox {
     const rec = this.records.get(id);
     if (!rec || rec.state !== 'active') return 'stop';
     this._networkResult(r.status);
-    if (r.status === 0) { await this._retry(id, `PUT ${name}: ${r.error}`); return 'offline'; }
+    if (r.status === 0) { await this._retry(id, `PUT ${name}: ${r.error}`, { network: true }); return 'offline'; }
     if (r.status >= 200 && r.status < 300) {
       if (!rec.uploaded.includes(name)) rec.uploaded.push(name);
       const w = this.waiting.get(id);
@@ -763,6 +817,7 @@ export class Outbox {
       if (this.ladder) this.ladder.uploadOk(this.backlogSeconds());
       rec.urls = (rec.urls || []).filter((x) => x.n !== m.n);
       rec.lastError = null;
+      rec.lastFailure = null;
       await this._save(rec);
       await this.storage.remove(id, name);
       return 'ok';
@@ -795,7 +850,7 @@ export class Outbox {
   // (PLATFORM_CLIENT 8) and null comes back.
   async _answer(id, r) {
     this._networkResult(r.status);
-    if (r.status === 0) { await this._retry(id, r.error || 'offline'); return null; }
+    if (r.status === 0) { await this._retry(id, r.error || 'offline', { network: true }); return null; }
     if (r.status >= 200 && r.status < 300) {
       const u = parseUrls(r.body, id);
       if (u) return u;
@@ -817,6 +872,7 @@ export class Outbox {
       if (rec) {
         const now = this.clock();
         rec.lastError = `HTTP ${r.status} ${code}: retry tomorrow`;
+        rec.lastFailure = 'answer';
         rec.nextAttempt = (Math.floor(now / DAY_MS) + 1) * DAY_MS + Math.floor(this.random() * 3600000);
         await this._save(rec);
       }
@@ -836,10 +892,12 @@ export class Outbox {
 
   // ---- states ----
 
-  async _retry(id, why, { immediately = false, long = false } = {}) {
+  // `network`: the request got no answer at all (status 0: offline, a CORS refusal, a redirect); else an answer came
+  async _retry(id, why, { immediately = false, long = false, network = false } = {}) {
     const rec = this.records.get(id);
     if (!rec || this.stopped) return;
     rec.lastError = why;
+    rec.lastFailure = network ? 'network' : 'answer';
     const n = Math.max(1, rec.attempts);
     const base = long ? 6 * 3600 : Math.min(30 * 2 ** Math.min(n - 1, 16), 6 * 3600);
     const delay = immediately ? 0 : base * (0.8 + 0.4 * this.random());
@@ -934,7 +992,7 @@ export class Outbox {
       if (!capturing && stamp !== epoch) { await this._remove(id, until); continue; }
       if (!capturing && !(await readJson(s, id, FILES.end)) && !(await recover(s, id))) continue;
       const fresh = { id, seq: ++this.seqTop, state: 'active', started: false, urls: null, uploaded: [], failCode: null,
-        failMessage: null, attempts: 0, lastError: null, nextAttempt: null, createdAt: this.clock(), epoch: stamp };
+        failMessage: null, attempts: 0, lastError: null, lastFailure: null, nextAttempt: null, createdAt: this.clock(), epoch: stamp };
       await this._save(fresh);
       await this._countWaiting(fresh);
     }

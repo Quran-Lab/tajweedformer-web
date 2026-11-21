@@ -10,7 +10,10 @@
 // Worker, attests, leases, downloads the test build's ciphertext into the origin private file system, installs and
 // opens it, and a take of pushed audio gives chunks; (2) on an origin the key does not list, the browser refuses the
 // frame (frame-ancestors) and the loader reports invalid_key from the origin check; (3) a frame told to claim
-// another allowed origin than its parent's sends a hello the browser never delivers.
+// another allowed origin than its parent's sends a hello the browser never delivers; (4) model.reference.units()
+// reads the build's reference data through the Core from the origin private file system (Gate C, 11-20: 4.0.0 called
+// the Core with the frame's file handles closed, so it failed reference_missing in every browser with OPFS); (5) the
+// first units() waits while another page of the site holds the reference file, instead of failing for good (4.0.1).
 //
 //   QL_TEST_BUILD=<test build sdk/v4.0> PLAYWRIGHT_CORE=<a playwright-core folder> node scripts/browser-web4.mjs
 //   ED25519=absent   the frame's Worker (where the config, the engine index and the Core are) has no Ed25519 in
@@ -41,6 +44,8 @@ const PB = Number(process.env.QL_PORT_BASE) || 8790;
 const SITE = `http://127.0.0.1:${PB}`, OTHER = `http://localhost:${PB}`, FRAME = `http://127.0.0.1:${PB + 2}`, API = `http://127.0.0.1:${PB + 1}`;
 // the fallback host (web2.quranlab.ai in production): the same frame on another origin; DOWN: a first host that never answers
 const FRAME2 = `http://127.0.0.1:${PB + 3}`, DOWN = `http://127.0.0.1:${PB + 9}`;
+// a second host that never answers (4.0.1, 28.8 check 9: the frame on the third host when the first two never answer)
+const DOWN2 = `http://127.0.0.1:${PB + 8}`;
 const dir = testBuild();
 if (!dir || !existsSync(join(HOSTED, 'loader.js')) || !existsSync(PW)) {
   console.log('skipped: needs QL_TEST_BUILD, dist/hosted-test (build_web4.py hosted --test) and playwright-core');
@@ -121,9 +126,13 @@ const RUN = `(async () => {
   const out = window.__result = { steps: [] };
   try {
     const t0 = performance.now();
-    // ?primary=<base>: the first host the loader tries (DOWN: one that never answers, so the fallback's frame is used)
-    const primary = new URLSearchParams(location.search).get('primary') || ${JSON.stringify(FRAME)};
-    const client = await QuranLab.TajweedClient.create({ key: ${JSON.stringify(srv.apiKey)}, _frameBase: primary, _frameFallback: ${JSON.stringify(FRAME2)}, _switchMs: 1500, _apiUrl: ${JSON.stringify(API)}, _timeoutMs: 8000 });
+    // ?primary=<base>: the first host the loader tries (DOWN: one that never answers, so the fallback's frame is used);
+    // ?bases=<a,b,c>: the frame's hosts in order (4.0.1: each next one after the switch time without a hello)
+    const q = new URLSearchParams(location.search);
+    const primary = q.get('primary') || ${JSON.stringify(FRAME)};
+    const hosts = q.get('bases') ? { _frameBases: q.get('bases').split(',') } : { _frameBase: primary, _frameFallback: ${JSON.stringify(FRAME2)} };
+    // the app's version and build (27.1): the frame's config requests carry them
+    const client = await QuranLab.TajweedClient.create({ key: ${JSON.stringify(srv.apiKey)}, appVersion: '2.4.0', appBuild: '412', ...hosts, _switchMs: 1500, _apiUrl: ${JSON.stringify(API)}, _timeoutMs: 8000 });
     out.steps.push('client ' + Math.round(performance.now() - t0));
     out.frameOrigin = new URL(document.querySelector('iframe').src).origin;
     const t1 = performance.now();
@@ -214,9 +223,56 @@ const TIMING = `(async () => {
   } catch (e) { out.error = { code: e.code, message: String(e.message) }; }
   out.done = true;
 })();`;
+// The reference data (R3, SPEC 13.7) from the browser's own storage: the Core reads the build's reference file (device
+// form, in the origin private file system) at the first units() after each open of its model. One ayah, six more, one
+// the table does not have, then the first again after a take at 48 kHz (the Core's model is opened again for that rate,
+// and its table with it). The client stays open: the harness reads the frame's storage, then closes it.
+const REFERENCE = `(async () => {
+  const out = window.__result = {};
+  try {
+    const client = window.__client = await QuranLab.TajweedClient.create({ key: ${JSON.stringify(srv.apiKey)}, _frameBase: ${JSON.stringify(FRAME)}, _apiUrl: ${JSON.stringify(API)}, _timeoutMs: 8000 });
+    const model = await client.model();
+    out.available = !!model.reference;
+    let t = performance.now();
+    const u = await model.reference.units(1, 1);
+    out.first = { ms: Math.round(performance.now() - t), units: u.units.length, words: u.words.length, wordCount: u.wordCount, wordBar: u.units.includes(1) };
+    t = performance.now();
+    for (let a = 2; a <= 7; a++) await model.reference.units(1, a);
+    out.sixMoreMs = Math.round(performance.now() - t);
+    try { await model.reference.units(1, 99); out.ayah99 = 'answered'; } catch (e) { out.ayah99 = e.code; }
+    const s = model.session({ sampleRate: 48000, heads: ['conf'] });
+    const reader = (async () => { for await (const c of s.chunks) { /* drained */ } })();
+    s.push(new Float32Array(48000));
+    await s.finish(); await reader;
+    t = performance.now();
+    out.afterReopen = JSON.stringify(await model.reference.units(1, 1)) === JSON.stringify(u);
+    out.afterReopenMs = Math.round(performance.now() - t);
+    out.ok = true;
+  } catch (e) { out.error = { code: e.code, message: String(e.message) }; }
+  out.done = true;
+})();`;
+// Another page of the same site holding the reference file (4.0.1): the model opens, then waits for the harness, which
+// takes the file's sync access handle from another Worker on the frame's origin for 1.5 s; the first units() then
+// waits for the file instead of handing the Core a read that fails for the life of the model.
+const REFERENCE_BUSY = `(async () => {
+  const out = window.__result = {};
+  try {
+    const client = window.__client = await QuranLab.TajweedClient.create({ key: ${JSON.stringify(srv.apiKey)}, _frameBase: ${JSON.stringify(FRAME)}, _apiUrl: ${JSON.stringify(API)}, _timeoutMs: 8000 });
+    const model = await client.model();
+    out.opened = true;
+    await new Promise((r) => { window.__go = r; });
+    const t = performance.now();
+    const u = await model.reference.units(1, 1);
+    out.ms = Math.round(performance.now() - t);
+    out.units = u.units.length;
+    out.wordCount = u.wordCount;
+    out.ok = true;
+  } catch (e) { out.error = { code: e.code, message: String(e.message) }; }
+  out.done = true;
+})();`;
 await listen(PB, (req, res) => {
   res.writeHead(200, { 'content-type': 'text/html' });
-  res.end(page(req.url.startsWith('/spoof') ? SPOOF : req.url.startsWith('/open') ? OPEN : req.url.startsWith('/timing') ? TIMING : req.url.startsWith('/noanalytics') ? NOANALYTICS : req.url.startsWith('/noaudience') ? NOAUDIENCE : RUN));
+  res.end(page(req.url.startsWith('/spoof') ? SPOOF : req.url.startsWith('/open') ? OPEN : req.url.startsWith('/timing') ? TIMING : req.url.startsWith('/noanalytics') ? NOANALYTICS : req.url.startsWith('/noaudience') ? NOAUDIENCE : req.url.startsWith('/reference-busy') ? REFERENCE_BUSY : req.url.startsWith('/reference') ? REFERENCE : RUN));
 });
 
 const results = [];
@@ -237,10 +293,15 @@ try {
     return { r, logs };
   };
   const a = await run(`${SITE}/`);
+  const configs = srv.state.requests.filter((r) => r.path === 'GET /v1/config');
   check('allowed origin: handshake, signed engine, lease, OPFS install, open, a take', a.r.ok === true && a.r.chunks > 0 && a.r.model.tokens === 38,
     a.r.ok ? { openMs: a.r.openMs, steps: a.r.steps, chunks: a.r.chunks, frames: a.r.frames, storage: a.r.diagnose.storage, store: a.r.storage.models[0] && a.r.storage.models[0].bytes, lease: a.r.diagnose.lease } : { error: a.r.error, logs: a.logs.slice(-5) });
   if (NO_ED25519) check('the Worker had no Ed25519 in WebCrypto (its first refusal was seen)', probes.includes('/probe/ed25519-refused'), probes);
   if (CLOCK_MS) check(`the Worker's clock ${process.env.CLOCK}: the config accepted by the server's Date, the lease by the Core's clock`, a.r.ok === true, a.r.ok ? a.r.diagnose.lease : a.r.error);
+  check('the frame\'s config requests carry the app\'s version and build after the parameters of before (27.1), and diagnose names the frame\'s host (28.7)',
+    configs.length > 0 && configs.every((r) => /^\?bucket=\d+&sdk=[^&]+&app_version=2\.4\.0&app_build=412$/.test(r.search)) && a.r.ok === true
+      && a.r.diagnose.endpoints && a.r.diagnose.endpoints.webFrame === new URL(FRAME).host,
+    { queries: [...new Set(configs.map((r) => r.search.replace(/bucket=\d+/, 'bucket=n')))], endpoints: a.r.ok ? a.r.diagnose.endpoints : a.r.error });
   check('every API call named the verified site', [...srv.state.sawSite].every((o) => o === SITE) && srv.state.sawSite.size === 1, [...srv.state.sawSite]);
   check('sharing in the page: the checked chunk loaded, the sheet elements defined, offered by the config, not on before a yes',
     !!a.r.sharing && a.r.sharing.available === true && a.r.sharing.on === false && a.r.sharing.elements === true && srv.state.pageAttests >= 1, a.r.sharing);
@@ -265,6 +326,11 @@ try {
   const fb = await run(`${SITE}/?primary=${encodeURIComponent(DOWN)}`);
   check('the first host down: the fallback host\'s frame answers, leases, installs, opens, a take', fb.r.ok === true && fb.r.frameOrigin === FRAME2 && fb.r.chunks > 0,
     fb.r.ok ? { steps: fb.r.steps, frame: fb.r.frameOrigin, openMs: fb.r.openMs } : { error: fb.r.error, logs: fb.logs.slice(-5) });
+  // 28.8 check 9: the first two hosts never answer; the third host\'s frame (at two switch times) is the page\'s
+  const third = await run(`${SITE}/?bases=${encodeURIComponent([DOWN, DOWN2, FRAME2].join(','))}`);
+  check('the first two frame hosts down: the third host\'s frame answers, leases, installs, opens, a take; diagnose names it',
+    third.r.ok === true && third.r.frameOrigin === FRAME2 && third.r.chunks > 0 && third.r.diagnose.endpoints.webFrame === new URL(FRAME2).host,
+    third.r.ok ? { steps: third.r.steps, frame: third.r.frameOrigin, openMs: third.r.openMs, webFrame: third.r.diagnose.endpoints.webFrame } : { error: third.r.error, logs: third.logs.slice(-5) });
   const fbo = await run(`${OTHER}/?primary=${encodeURIComponent(DOWN)}`);
   check('an origin the key does not list, with the first host down: the fallback host refuses the frame too, invalid_key', !fbo.r.ok && fbo.r.error && fbo.r.error.code === 'invalid_key', fbo.r.error);
   const na = await run(`${SITE}/noanalytics`);
@@ -272,6 +338,51 @@ try {
   const nu = await run(`${SITE}/noaudience`);
   check('no audience option in 4.0: create({ audience }) is invalid_argument for children, general and undefined, and no frame is opened',
     !nu.r.created && nu.r.errors.length === 3 && nu.r.errors.every((e) => e.code === 'invalid_argument' && /audience option was removed/.test(e.message) && /migrating-to-4\.md/.test(e.message)) && nu.r.frames === 0, nu.r);
+  // the reference data from the frame's origin private file system, in a fresh profile; the frame's storage is read
+  // in the frame itself (the partition its Worker uses), so a memory fallback cannot pass
+  {
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+    await p.goto(`${SITE}/reference`);
+    await p.waitForFunction(() => window.__result && window.__result.done, null, { timeout: 120_000 });
+    const r = await p.evaluate(() => window.__result);
+    const fr = p.frames().find((f) => f.url().startsWith(`${FRAME}/4/frame/`));
+    const opfs = fr ? await fr.evaluate(async () => {
+      try { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('quranlab-sdk4'); const n = []; for await (const k of d.keys()) n.push(k); return n.sort(); } catch (e) { return String(e); }
+    }) : 'no frame';
+    await p.evaluate(() => window.__client && window.__client.close()).catch(() => {});
+    await ctx.close();
+    const ref = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')).files.find((f) => f.role === 'reference');
+    const device = `2_${encodeURIComponent(ref.decoded.path)}`; // QLC_FORM_DEVICE, as stores.js names it
+    check('the reference data from the browser\'s own storage (OPFS): units() of an ayah, six more, one the table does not have, again after the Core\'s model opened again at 48 kHz',
+      r.ok === true && r.available === true && r.first.units > 4 && r.first.wordCount >= 4 && r.first.words === r.first.units && r.first.wordBar && r.ayah99 === 'invalid_argument'
+        && r.afterReopen === true && Array.isArray(opfs) && opfs.includes(device),
+      r.ok ? { first: r.first, sixMoreMs: r.sixMoreMs, ayah99: r.ayah99, afterReopen: r.afterReopen, afterReopenMs: r.afterReopenMs, opfs: Array.isArray(opfs) ? opfs.includes(device) : opfs } : { error: r.error, opfs: Array.isArray(opfs) ? opfs.includes(device) : opfs });
+  }
+  // the reference file held by another page of the site while the first units() asks for it: the call waits for it
+  {
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+    await p.goto(`${SITE}/reference-busy`);
+    await p.waitForFunction(() => window.__result && (window.__result.opened || window.__result.done), null, { timeout: 120_000 });
+    const fr = p.frames().find((f) => f.url().startsWith(`${FRAME}/4/frame/`));
+    const ref = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')).files.find((f) => f.role === 'reference');
+    const held = fr ? await fr.evaluate((name) => new Promise((res) => {
+      const src = 'onmessage = async (e) => { try { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle("quranlab-sdk4");'
+        + ' const h = await (await d.getFileHandle(e.data)).createSyncAccessHandle(); postMessage("held");'
+        + ' setTimeout(() => { h.close(); postMessage("released"); }, 1500); } catch (x) { postMessage("error " + x.name); } };';
+      const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+      w.onmessage = (m) => { if (m.data !== 'released') res(m.data); };
+      w.postMessage(name);
+    }), `2_${encodeURIComponent(ref.decoded.path)}`) : 'no frame';
+    await p.evaluate(() => window.__go && window.__go());
+    await p.waitForFunction(() => window.__result && window.__result.done, null, { timeout: 60_000 });
+    const r = await p.evaluate(() => window.__result);
+    await p.evaluate(() => window.__client && window.__client.close()).catch(() => {});
+    await ctx.close();
+    check('the reference file held by another page of the site (1.5 s): the first units() waits for it and reads the table',
+      held === 'held' && r.ok === true && r.units > 4 && r.wordCount >= 4 && r.ms >= 1000, { held, ...(r.ok ? { ms: r.ms, units: r.units } : { error: r.error }) });
+  }
   // window.open from an allowed site, and the frame's URL opened top-level: both refuse before any request
   const ctx = await browser.newContext();
   const opener = await ctx.newPage();

@@ -1,5 +1,5 @@
 // The install keys and the lease of the Node path, kept in its storage folder across runs of the app (the desktop
-// class: 24 h leases, contract 18.4.7). The same shape as the frame's lease-store.js, so the Controller takes it as its
+// class: leases as long as the server makes them, contract 18.4.7). The same shape as the frame's lease-store.js, so the Controller takes it as its
 // lease store, with the desktop row of 18.4.2 in place of a non-extractable WebCrypto key (Node cannot keep one):
 //
 //   keys.bin   the install keys' PKCS8 and public keys, sealed (AES-256-GCM) under the machine key (machine.js) with

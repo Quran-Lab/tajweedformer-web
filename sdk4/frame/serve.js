@@ -9,14 +9,16 @@ import { ReportError } from '../shared/recited.js';
 export function errorOf(e) {
   if (e instanceof SdkError) return { code: e.code, message: e.message, reason: e.reason || null };
   if (e instanceof ReportError) return { code: 'invalid_argument', message: e.message, reason: null };
-  const t = toTajweedError(e, { fallback: 'engine_failed', sdk: '4.0.0' });
+  const t = toTajweedError(e, { fallback: 'engine_failed', sdk: '4.0.1' });
   return { code: t.code, message: (e && e.message) || t.message, reason: (e && e.reason) || null };
 }
 
-/** Serve `ctl` (a Controller) on `port`; `post` sends one-way events (progress). */
+/** Serve `ctl` (a Controller) on `port`; `post` sends one-way events (progress, the endpoint state). */
 export function serve(port, ctl, { onClose = null } = {}) {
   let q = Promise.resolve();
   const ev = (d) => port.postMessage(d);
+  // the controller's own events (its api and models P moved: the page's other endpoint set is told)
+  ctl.emit = ev;
   const handlers = {
     init: (a) => ctl.init(a),
     model: (a) => ctl.openModel(a),
@@ -43,6 +45,8 @@ export function serve(port, ctl, { onClose = null } = {}) {
   port.onmessage = (e) => {
     const { id, op, args } = e.data || {};
     if (!OPS.includes(op)) { port.postMessage({ id, ok: false, error: { code: 'invalid_argument', message: `unknown call ${op}` } }); return; }
+    // the page's endpoint state: taken at once, never behind a call in flight (a model open can take a while)
+    if (op === 'endpoints') { let ok = false; try { ok = ctl.adoptEndpoints(args || {}); } catch (_) { ok = false; } port.postMessage({ id, ok: true, value: { adopted: !!ok } }); return; }
     q = q.then(async () => {
       try {
         const value = await handlers[op](args || {});

@@ -73,7 +73,7 @@ async function keptBesideTheStop(dev) {
 async function launch(dev, api, extra = {}) {
   resetClientForTests();
   const fetch = async (url, init = {}) => {
-    if (new URL(url).host === 'cdn.test') dev.events.push(`cdn ${decodeURIComponent(new URL(url).pathname.split('/sdk/v4.0/')[1] || '')}`);
+    if (new URL(url).host === 'cdn-stand-in.quran-lab.com') dev.events.push(`cdn ${decodeURIComponent(new URL(url).pathname.split('/sdk/v4.0/')[1] || '')}`);
     if (dev.traceFetch) dev.events.push(`fetch ${new URL(url).host} ${new URL(url).pathname}`);
     return (extra.fetch || api.fetch)(url, init);
   };
@@ -408,7 +408,7 @@ function answering(api, c) {
   if (c.from === 'cdn') { api.state.cdnAnswer = { status: c.status, body: c.body }; return api.fetch; }
   return async (url, init = {}) => {
     const u = new URL(url);
-    if (u.host === 'cdn.test') return api.fetch(url, init);
+    if (u.host === 'cdn-stand-in.quran-lab.com') return api.fetch(url, init);
     api.log.push({ method: init.method || 'GET', host: 'api', path: u.pathname, forced: true });
     if (c.status === null) throw new TypeError('fetch failed');
     if (c.status === 200) {
@@ -547,7 +547,7 @@ test('15.3 a refusal that came from a model request is not ended by an answer of
   // a relaunch where the API answers and accepts the key (token, register, config) but the CDN is not reached:
   // the stop holds, also on the device
   api.state.cdnAnswer = null;
-  const noCdn = async (url, init) => { if (new URL(url).host === 'cdn.test') throw new TypeError('fetch failed'); return api.fetch(url, init); };
+  const noCdn = async (url, init) => { if (new URL(url).host === 'cdn-stand-in.quran-lab.com') throw new TypeError('fetch failed'); return api.fetch(url, init); };
   dev.state.set('register.day', null); // a register answer too
   api.log.length = 0;
   client = await launch(dev, api, { fetch: noCdn });
@@ -705,7 +705,7 @@ test('15.3 the web\'s origin check: a page refused by its origin, its key or its
     const corsRefused = async (url, init = {}) => {
       const u = new URL(url);
       if (u.pathname === '/v1/origin-check') return new Response(JSON.stringify({ origin: ORIGIN, allowed: false, why, environment: 'production' }), { status: 200 });
-      if (u.host === 'cdn.test') return api.fetch(url, init);
+      if (u.host === 'cdn-stand-in.quran-lab.com') return api.fetch(url, init);
       throw new TypeError('Failed to fetch');
     };
     const client = await launch(dev, api, { fetch: corsRefused });

@@ -6,6 +6,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { openFrame, SWITCH_MS, TIMEOUT_MS } from '../../sdk4/loader/link.js';
+import { FRAME_BASES } from '../../sdk4/loader/client.js';
+import { ROLES } from '../../sdk4/shared/endpoints.js';
 import { HELLO, ACK, API } from '../../sdk4/shared/protocol.js';
 
 const A = 'https://web.test', B = 'https://web2.test';
@@ -31,9 +33,49 @@ const closePorts = (b) => { for (const f of b.frames) for (const x of f.posted) 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const originCheck = (allowed) => async () => new Response(JSON.stringify({ allowed, why: allowed ? 'listed' : 'not_listed' }), { status: 200 });
 
-test('the defaults: the fallback after 4 s (taken over within 5 s), the origin check after 20 s', () => {
+test('the defaults: each next host after 4 s (the second has taken over within 5 s), the origin check at 24 s (28.6)', () => {
   assert.equal(SWITCH_MS, 4000);
-  assert.equal(TIMEOUT_MS, 20000);
+  assert.equal(TIMEOUT_MS, 24000);
+  // the frame's hosts of a released loader: the web_frame role, in order (the five of contract 564c144)
+  assert.deepEqual([...FRAME_BASES], ROLES.web_frame.map((h) => `https://${h}`));
+  assert.equal(TIMEOUT_MS, (ROLES.web_frame.length - 1) * SWITCH_MS + 8000, 'the origin check 8 s after the last host starts');
+});
+
+test('five hosts: each next frame after each switch time without a hello; the third answers when the first two never do', async () => {
+  const b = browser();
+  const H = ['https://w1.test', 'https://w2.test', 'https://w3.test', 'https://w4.test', 'https://w5.test'];
+  const p = openFrame({ key: 'qlk_v1_k', frameBases: H, apiUrl: 'https://api.test', win: b.win, doc: b.doc, switchMs: 40, timeoutMs: 2000 });
+  assert.equal(b.frames.length, 1);
+  await wait(55);
+  assert.equal(b.frames.length, 2);
+  await wait(40);
+  assert.equal(b.frames.length, 3);
+  assert.equal(b.frames[2].src, `${H[2]}/4/frame/qlk_v1_k`);
+  b.say(b.frames[2], H[2]);
+  const link = await p;
+  assert.equal(link.base, H[2]);
+  assert.equal(link.fallback, true);
+  assert.deepEqual(b.frames.map((f) => f.removed), [true, true, false]);
+  await wait(100);
+  assert.equal(b.frames.length, 3, 'no host opened after a hello');
+  closePorts(b);
+});
+
+test('no hello from any of five hosts: all five opened in order, then the origin check through the api order', async () => {
+  const b = browser();
+  const H = ['https://w1.test', 'https://w2.test', 'https://w3.test', 'https://w4.test', 'https://w5.test'];
+  // the api order: the first api host does not answer, the second says the origin is not on the key
+  const asked = [];
+  const fetch = async (url) => {
+    asked.push(new URL(url).host);
+    if (new URL(url).host === 'api.quranlab.ai') throw new TypeError('fetch failed');
+    return new Response(JSON.stringify({ allowed: false, why: 'not_listed' }), { status: 200 });
+  };
+  const p = openFrame({ key: 'qlk_v1_k', frameBases: H, apiUrl: 'https://api.quranlab.ai', win: b.win, doc: b.doc, switchMs: 10, timeoutMs: 120, fetch });
+  await assert.rejects(p, (e) => e.code === 'invalid_key');
+  assert.deepEqual(b.frames.map((f) => new URL(f.src).origin), H);
+  assert.ok(b.frames.every((f) => f.removed));
+  assert.deepEqual(asked, ['api.quranlab.ai', 'api-b.tajweedformer.com']);
 });
 
 test('the first host answers: no second frame, the first is the page\'s', async () => {

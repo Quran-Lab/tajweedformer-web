@@ -102,7 +102,7 @@ export async function stubPlatform(o = {}) {
     if (state.offline) throw new TypeError('fetch failed');
     const u = new URL(url);
     const h = Object.fromEntries(Object.entries(init.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
-    if (u.host === 'cdn.test') {
+    if (u.host === 'cdn-stand-in.quran-lab.com') {
       state.cdnRequests++;
       if (state.cutAfter !== null && state.cdnRequests > state.cutAfter) throw new TypeError('fetch failed');
       const mm = /^\/models\/Quran-Lab\/tajweedformer-v4\/([0-9a-f]{40})\/sdk\/v4\.0\/(.+)$/.exec(u.pathname);
@@ -143,7 +143,7 @@ export async function stubPlatform(o = {}) {
       }
       const cfg = { v: 1, app: `web:${ORIGIN}`, channel: 'stable', issued_at: now, expires_at: now + 86400, models: {},
         recommended: b ? { model: 'Quran-Lab/tajweedformer-v4', model_id: 'v4.0', folder: 'sdk/v4.0', revision: b.build, version: b.manifest.version, source: 'stable' } : null,
-        denylist: [], flags: state.flags, base: 'https://cdn.test/models',
+        denylist: [], flags: state.flags, base: 'https://cdn-stand-in.quran-lab.com/models',
         ...(state.inference ? { inference: state.inference } : {}), ...(pin ? { pin } : {}), ...(state.sdkLatest ? { sdk_latest: state.sdkLatest } : {}) };
       const bytes = enc(JSON.stringify(cfg));
       const sig = new Uint8Array(await crypto.subtle.sign({ name: 'Ed25519' }, kp.privateKey, bytes));

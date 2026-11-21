@@ -24,7 +24,7 @@ import { toTajweedError } from '../web/api/errors.js';
 
 const FILE = Uint8Array.from([10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
 const SUM = await sha256Hex(FILE);
-const BASE = 'https://cdn.test/models/x/';
+const BASE = 'https://cdn-stand-in.quran-lab.com/models/x/';
 const manifest = new TextEncoder().encode(JSON.stringify({ files: [{ path: 'a.bin', size: FILE.length, sha256: SUM }] }));
 const rangeOf = (init) => { const m = /^bytes=(\d+)-(\d+)$/.exec((init.headers && init.headers.range) || ''); return m ? [Number(m[1]), Number(m[2])] : null; };
 const good = (lo, hi) => new Response(FILE.slice(lo, hi + 1), { status: 206, headers: { 'content-range': `bytes ${lo}-${hi}/${FILE.length}` } });

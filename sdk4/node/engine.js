@@ -15,13 +15,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { verifyEngineIndex, variantFiles, checkEngineFile, chooseEngine } from '../shared/engine-index.js';
+import { Endpoints, ROLES } from '../shared/endpoints.js';
 import { sha256Hex } from '../shared/bytes.js';
 import { writeAtomic } from './machine.js';
 import { SdkError } from '../frame/controller.js';
 
 /** The engine build this package was published with (set at publish by the release tool; null in a source tree). */
 export const BUILTIN_ENGINE = null;
-export const ENGINE_BASE = 'https://web.quranlab.ai/4/engine/';
+/** The engine's path on every web_frame host (ENDPOINTS_40.md 28.6: Node takes the engine files from them, by 28.3). */
+export const ENGINE_PATH = '/4/engine/';
+export const ENGINE_BASE = `https://${ROLES.web_frame[0]}${ENGINE_PATH}`;
 
 // the error reports' reason of each cause (ERRORS_40.md 24.3, stage runtime), as the frame's engine-loader.js
 const REASON = { fetch: 'wasm_fetch', index: 'wasm_fetch', signature: 'signature', sha256: 'hash', compile: 'wasm_compile' };
@@ -29,18 +32,36 @@ class EngineFailure extends SdkError {
   constructor(code, cause, message) { super(code, message, { stage: 'runtime', why: REASON[cause] || 'other' }); this.cause = cause; }
 }
 
-async function fetchBytes(fetch, url) {
-  const r = await fetch(url, { redirect: 'error' });
-  if (r.status !== 200) throw new Error(`${url}: ${r.status}`);
-  return new Uint8Array(await r.arrayBuffer());
+/**
+ * One engine file through the web_frame order (28.3): P first, the next host when one is unreachable (no answer, a 5xx,
+ * a redirect, a 4xx that is not the server's, a 200 that `check` refuses). Resolves the bytes; rejects with
+ * { why: 'fetch' | 'check', host_role, fallback } when no host gave them (check: a host answered bytes that are not
+ * the file).
+ */
+async function fetchBytes(ep, fetch, path, check = null) {
+  const accept = async (res, status) => {
+    if (status !== 200) return null;
+    const b = new Uint8Array(await res.arrayBuffer());
+    return !check || (await check(b)) ? b : null;
+  };
+  let got;
+  try { got = await ep.request('web_frame', path, { redirect: 'error' }, { fetch, accept }); } catch (e) {
+    throw Object.assign(new Error(`${path}: ${(e && e.message) || e}`), { why: 'fetch', host_role: 'web_frame', fallback: !!(e && e.qlFallback) });
+  }
+  if (got.cls === 'taken') return got.value;
+  throw Object.assign(new Error(`${path}: ${got.status}`), { why: got.status >= 200 && got.status < 300 ? 'check' : 'fetch', host_role: 'web_frame', fallback: got.fallback });
 }
 
 /**
  * { factory, wasm, id, why, core, failures } of the engine to run, or throws (with `failures`) when no build loads.
- * @param {object} o  { dir (storage folder), config, pinned (Ed25519 public keys), base, builtIn, fetch, importModule }
+ * @param {object} o  { dir (storage folder), config, pinned (Ed25519 public keys), endpoints (the process's endpoint
+ *   set: the engine files come from its web_frame hosts, 28.6), base (a test build's one engine host and path), builtIn,
+ *   fetch, importModule }
  */
-export async function loadNodeEngine({ dir, config, pinned, base = ENGINE_BASE, builtIn = BUILTIN_ENGINE, fetch = globalThis.fetch,
+export async function loadNodeEngine({ dir, config, pinned, endpoints = null, base = null, builtIn = BUILTIN_ENGINE, fetch = globalThis.fetch,
   importModule = (url) => import(url) }) {
+  const ep = endpoints instanceof Endpoints ? endpoints : Endpoints.fromSeams({ frameBases: base ? [new URL(base).origin] : null });
+  const prefix = base ? new URL(base).pathname : ENGINE_PATH;
   const ch = chooseEngine(config && config.web, { threads: 'off', fallback: builtIn });
   const kept = fs.existsSync(path.join(dir, 'engine')) ? fs.readdirSync(path.join(dir, 'engine')).filter((x) => /^\d{8}\.[0-9a-f]{12}$/.test(x)).sort().reverse() : [];
   // the build named, its previous, the package's own, then the newest build kept in the folder (an offline start
@@ -71,7 +92,10 @@ export async function loadNodeEngine({ dir, config, pinned, base = ENGINE_BASE, 
     try { const k = readKept('index.json'); json = k ? JSON.parse(new TextDecoder().decode(k)) : null; } catch (_) { json = null; }
     let idx = json ? await verifyEngineIndex(json, pinned).catch(() => null) : null;
     if (!idx || idx.engine !== id) {
-      try { json = JSON.parse(new TextDecoder().decode(await fetchBytes(fetch, `${base}${id}/index.json`))); } catch (e) { throw new EngineFailure('download_failed', 'index', `engine ${id}: ${e.message}`); }
+      const isJson = (b) => { try { JSON.parse(new TextDecoder().decode(b)); return true; } catch (_) { return false; } };
+      try { json = JSON.parse(new TextDecoder().decode(await fetchBytes(ep, fetch, `${prefix}${id}/index.json`, isJson))); } catch (e) {
+        throw Object.assign(new EngineFailure('download_failed', 'index', `engine ${id}: ${e.message}`), { host_role: 'web_frame', fallback: !!e.fallback });
+      }
       idx = await verifyEngineIndex(json, pinned).catch((e) => { throw new EngineFailure('signature_invalid', 'signature', `engine ${id}: ${e.code || e.message}`); });
       if (idx.engine !== id) throw new EngineFailure('signature_invalid', 'signature', `engine ${id}: the index names ${idx.engine}`);
       fromNet = true;
@@ -82,8 +106,13 @@ export async function loadNodeEngine({ dir, config, pinned, base = ENGINE_BASE, 
       const k = readKept(entry.name);
       if (k && (await checkEngineFile(entry, k).then(() => true, () => false))) return { bytes: k, fresh: false };
       let b;
-      try { b = await fetchBytes(fetch, `${base}${id}/${entry.name}`); } catch (e) { throw new EngineFailure('download_failed', 'fetch', `engine ${id}: ${e.message}`); }
-      await checkEngineFile(entry, b).catch((e) => { throw new EngineFailure('signature_invalid', 'sha256', e.message); });
+      // a host whose bytes are not the signed file is unreachable (28.3): the next host is asked; none gave them: the
+      // failure as before (sha256 when a host answered other bytes, else fetch)
+      try { b = await fetchBytes(ep, fetch, `${prefix}${id}/${entry.name}`, (x) => checkEngineFile(entry, x).then(() => true, () => false)); } catch (e) {
+        const f = e.why === 'check' ? new EngineFailure('signature_invalid', 'sha256', `engine ${id}: ${entry.name} is not the signed file`)
+          : new EngineFailure('download_failed', 'fetch', `engine ${id}: ${e.message}`);
+        throw Object.assign(f, { host_role: 'web_frame', fallback: !!e.fallback });
+      }
       return { bytes: b, fresh: true };
     };
     const js = await get(files.js), wasm = await get(files.wasm);

@@ -1,4 +1,4 @@
-// Type definitions for @quran-lab/tajweedformer 4.0.0 (web API 4): the whole public surface, and nothing else.
+// Type definitions for @quran-lab/tajweedformer 4.0.1 (web API 4): the whole public surface, and nothing else.
 // The package is a thin wrapper that loads Quran Lab's hosted loader; the same names are on globalThis.QuranLab.
 // Five concepts: Client, Model, Session, Heads, Backend. Call order: Client, model, listen, read.
 
@@ -30,7 +30,12 @@ type TajweedErrorCode =
 export interface TajweedClientOptions {
   /** The developer key, qlk_v1_..., from sdk.quranlab.ai (a web key in browsers, a desktop key in Node). */
   key: string;
+  /** The app's version (from 4.0.1 the config request carries it, cleaned: ASCII letters, digits, dots, plus and minus,
+   * at most 32). */
   appVersion?: string;
+  /** The app's build number, a string (4.0.1): the config request carries it, cleaned as appVersion; anything but a
+   * string is invalid_argument. */
+  appBuild?: string;
   /** Node only (a desktop key): the app id you gave that key at sdk.quranlab.ai. Required in Node. */
   appId?: string;
   /** In a browser: a name that separates this client's stored state (letters, digits, dot, dash, underscore; at most 40).
@@ -88,6 +93,14 @@ export interface TajweedDiagnosis {
   droppedChunks: number;
   /** The connection as far as the runtime can tell; 'unknown' in Node and where the browser has no Network Information API. */
   connection: 'unmetered' | 'metered' | 'none' | 'unknown';
+  /** 4.0.1: the servers in use: the API and model servers asked first, the frame's server (the engine's in Node), and the
+   * last request whose first server could not be reached, or null. */
+  endpoints?: {
+    api: string;
+    models: string;
+    webFrame?: string;
+    lastFailover: { role: 'api' | 'models' | 'web_frame'; from: string; to: string | null; reason: string; status: number | null; at: number } | null;
+  };
 }
 
 /** Recitation sharing: every learner is asked, under the SDK's rules, and the choice is theirs: "Not now", and turning
@@ -102,9 +115,9 @@ export interface TajweedSharing {
    * browser or the system had already buffered of that segment may still go out) and deletes the unsent queue. */
   /** Off: the promise resolves when the uploads in flight are aborted and the unsent queue is gone. */
   setOn(on: boolean): Promise<void>;
-  /** Ask at the app's own moment: only when an ask is due by the SDK's rules (the first after 24 hours and 3
-   * completed takes, a re-ask card after 14 days and 7 takes, then 30 days and 10; three at most; never again
-   * after a yes), never before a completed take of this visit and never during a take. Resolves with the
+  /** Ask at the app's own moment: only when an ask is due by the SDK's rules (the first not right after the
+   * install and after a few completed takes, a re-ask card only much later; three at most; never again after a
+   * yes), never before a completed take of this visit and never during a take. Resolves with the
    * learner's answer, or null when no ask is due (nothing is shown). */
   ask(): Promise<{ yes: boolean } | null>;
   /** Audio the app already captures outside takes: used for the lead-in and tail of shared recordings only. */

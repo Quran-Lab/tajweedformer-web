@@ -363,7 +363,23 @@ export function enableSharing(ql, o = {}) {
     if ((await pipe.outbox.sweep()) === 0 && state.changes === at) ql.state.set('sharing.swept', at);
   };
   ctl.sweep = sweep;
-  Promise.resolve().then(sweep).catch(() => {});
+  // 4.0.1: recordings an earlier page could not send because their requests got no answer at all (offline, or a
+  // CORS refusal: a bucket rule held every web upload that way for four days in November 2026) wait in the outbox on
+  // a backoff that reaches 6 hours. At the page's start, with sharing on, they are tried once at once (the outbox's
+  // first pass, Outbox._loadRetry), then the backoff goes on. A refusal or any other answer keeps its backoff, and
+  // nothing is loaded or asked when the queue holds none. Consent, deletion and limits are the outbox's, as always.
+  const retryAtLoad = async () => {
+    if (!state.sharing) return;
+    const mod = await import('../sharing/index.js');
+    // the queue's records are read first: a page with none to try makes no pipeline at its start
+    const storage = ql.sharingStorage || await mod.defaultStorage();
+    if (!(await mod.networkFailedIn(storage)).length || !state.sharing) return;
+    const pipe = await mod.outbox.configure(await pipelineOptions());
+    ctl.outbox = mod.outbox;
+    await pipe.outbox.drain();
+  };
+  ctl.retryAtLoad = retryAtLoad;
+  ctl.loadRetried = Promise.resolve().then(sweep).catch(() => {}).then(retryAtLoad).catch(() => {});
   let takes = 0; // takes running now (a buffer fed while a take runs is dropped)
   let feedWaiting = 0; // fed samples on their way to the pipeline
   /** Fed samples that have not reached the pipeline yet (at most FEED_WAIT_S of audio). */

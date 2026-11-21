@@ -52,12 +52,14 @@ test('a page session: lease with Turnstile, install, open, takes; only ciphertex
   assert.ok(info.calibration && info.calibration.text.startsWith('{'));
   assert.equal(srv.state.leases, 1);
   assert.equal(srv.state.passed.size, 1, 'the first lease of the page session passed Turnstile');
-  // the order (11-14): config, attest, lease, then the manifest and the files from the lease answer's base
+  // the order (11-14, 4.0.1): attest, config, then the lease and, beside it, the manifest and the files from the
+  // build's model folder, which is the lease answer's base; the manifest is asked before the lease answer is in
   const calls = srv.state.calls;
   const lease = calls.indexOf('POST /v1/model-key'), cfg = calls.indexOf('GET /v1/config'), att = calls.indexOf('POST /v1/attest');
   const firstCdn = calls.findIndex((x) => x.includes('/models/'));
-  assert.ok(att < cfg && cfg < lease && lease < firstCdn, calls.join(' | '));
+  assert.ok(att < cfg && cfg < firstCdn && firstCdn < lease, calls.join(' | '));
   assert.ok(calls[firstCdn].endsWith('/manifest.json'));
+  assert.equal(calls.filter((x) => x.endsWith('/manifest.json')).length, 1, 'one request for the manifest');
   // every API and CDN request named the verified site
   assert.deepEqual([...srv.state.sawSite], [srv.site]);
   // stored: device forms (QLE1 containers, form 2) and the plain calibration; no CDN form left, no plaintext
