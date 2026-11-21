@@ -532,6 +532,7 @@ export async function createClient(options, seams = {}) {
     ql.onModelStop = () => { client._purge(); };
     if (ql.modelRefusal || client._purgeOwed()) await client._purge();
     await ql.launch();
+    await ql.launchSent; // the 3.x Client keeps its order: the launch's telemetry and reports sent before it goes on
     if (client._purgeChain) await client._purgeChain; // a stop the launch received: removed before create() returns
     if (ql.lastError) client._lastError = toTajweedError(ql.lastError, { sdk: SDK_VERSION, fallback: 'download_failed' }).code;
     current = client;

@@ -4,8 +4,8 @@
 //   ffmpeg -i take.wav -f f32le -ac 1 -ar 16000 take.f32   (one way to get the raw samples)
 //
 // The key is your app's desktop key from sdk.quranlab.ai, the app id the one you gave that app. The first run takes a
-// lease (24 hours), downloads the model's ciphertext and the signed engine into the storage folder (by default under
-// your OS's cache folder) and checks both; a later run within the lease opens from there, also without a network.
+// lease, downloads the model's ciphertext and the signed engine into the storage folder (by default under
+// your OS's cache folder) and checks both; a later run opens from there, also without a network.
 // The engine runs in a worker thread, so the app's own event loop is never held up by a take.
 // Prints each token with its confidence and times, the words, and where the model heard speech.
 import { readFileSync } from 'node:fs';

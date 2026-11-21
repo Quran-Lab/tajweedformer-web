@@ -117,7 +117,7 @@ async function serve(api) {
         for await (const c of req) chunks.push(c);
         const headers = {};
         for (const [k, v] of Object.entries(req.headers)) if (['authorization', 'x-qlab-key', 'range', 'if-none-match', 'content-type', 'x-qlab-id'].includes(k)) headers[k] = v;
-        const r = await api.fetch(`https://${u.pathname.startsWith('/v1/') ? 'api' : 'cdn'}.test${u.pathname}${u.search}`,
+        const r = await api.fetch(`https://${u.pathname.startsWith('/v1/') ? 'api.test' : 'cdn-stand-in.quran-lab.com'}${u.pathname}${u.search}`,
           { method: req.method, headers, ...(chunks.length ? { body: Buffer.concat(chunks).toString('utf8') } : {}) });
         const out = { 'cache-control': 'no-store' };
         r.headers.forEach((v, k) => { out[k] = v; });

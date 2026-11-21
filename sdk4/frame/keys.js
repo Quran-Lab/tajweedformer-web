@@ -1,8 +1,8 @@
 // The install keys of the frame: a WebCrypto ECDH P-256 agreement key and an ECDSA P-256
 // signing key, both made with extractable false, in the engine Worker. Never sent anywhere but as public keys.
 //
-// Kept across page loads (owner, 11-18: "web keeps a lease across page loads, for 24 h, stored with a non-extractable
-// WebCrypto key"): the CryptoKey objects themselves go into the frame's IndexedDB (lease-store.js), which keeps
+// Kept across page loads (owner, 11-18: "web keeps a lease across page loads, ... stored with a non-extractable
+// WebCrypto key"; as long as the server made the lease, 11-19): the CryptoKey objects themselves go into the frame's IndexedDB (lease-store.js), which keeps
 // them non-extractable (a structured clone of a CryptoKey keeps `extractable: false`; no script, the frame's own
 // included, can read the private bytes). The lease is wrapped to the agreement key, so a stored lease is usable
 // only through this origin's WebCrypto and the Core. A page with no stored record makes new keys.

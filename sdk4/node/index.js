@@ -13,7 +13,7 @@
 //
 // No frame and no page: the Core, its lease and the model's ciphertext live in a worker_threads Worker of this process
 // (sdk4/node/worker.js), driven by the same Controller as the web frame. The desktop class of the contract (18.4.2,
-// 18.4.7): 24 h leases, the install keys in the storage folder sealed under a key of this machine and user, the lease
+// 18.4.7): leases as long as the server makes them, the install keys in the storage folder sealed under a key of this machine and user, the lease
 // kept across runs, the engine the same signed build the web frame runs (fetched from Quran Lab, verified, kept in the
 // folder). Audio comes in as samples (session.push, or listen({ from })): Node has no microphone of the SDK's.
 import { Worker, MessageChannel } from 'node:worker_threads';
@@ -27,11 +27,13 @@ import { TajweedHeads } from '../../web/api/heads.js';
 import { TajweedError, invalid } from '../../web/api/errors.js';
 import { MODEL_VERSION_RE } from '../../web/tajweed/manifest.js';
 
-export const SDK_VERSION = '4.0.0';
+export const SDK_VERSION = '4.0.1';
 export const API = 4;
 const MADE = Symbol('TajweedClient.create');
 const APP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const open = new Set(); // the storage folders a Client of this process holds
+/** The codes a start ends on when Quran Lab refused the key (worker.js): the Client is made, and model() says it. */
+const REFUSED_AT_START = new Set(['invalid_key', 'sdk_too_old']);
 
 /** The desktop platform of this process, as the API knows it. */
 export const desktopPlatform = (p = process.platform) => ({ win32: 'windows', darwin: 'macos' }[p] || 'linux');
@@ -69,7 +71,7 @@ export class TajweedClient {
   /**
    * Start the SDK for a desktop app: the Worker registers, reads the signed config, loads the engine and keeps the
    * install keys and the model in the storage folder.
-   * @param {{key: string, appId: string, appVersion?: string, storage?: string}} options
+   * @param {{key: string, appId: string, appVersion?: string, appBuild?: string, storage?: string}} options
    *   key: the app's desktop key (qlk_v1_...); appId: the app id you gave it at sdk.quranlab.ai; storage: a folder
    *   (default defaultStorage(appId)). An `analytics` or `audience` key, whatever its value, is invalid_argument
    *   (ANALYTICS_40 22.2, ONE_SHEET_40 26.1).
@@ -78,7 +80,7 @@ export class TajweedClient {
     const o = options || {};
     if (typeof o.key !== 'string' || !/^qlk_v1_[A-Za-z0-9_-]+$/.test(o.key)) throw invalid('a desktop key qlk_v1_... is needed (from sdk.quranlab.ai)');
     if (typeof o.appId !== 'string' || !APP_ID_RE.test(o.appId)) throw invalid('appId is needed in Node: the app id of your desktop key (letters, digits, dots, dashes, underscores)');
-    for (const k of ['appVersion', 'storage']) if (o[k] !== undefined && o[k] !== null && typeof o[k] !== 'string') throw invalid(`${k} must be a string`);
+    for (const k of ['appVersion', 'appBuild', 'storage']) if (o[k] !== undefined && o[k] !== null && typeof o[k] !== 'string') throw invalid(`${k} must be a string`);
     refuseRemovedOptions(o); // an `analytics` or `audience` key is invalid_argument (ANALYTICS_40 22.2, ONE_SHEET_40 26.1)
     const dir = path.resolve(o.storage || defaultStorage(o.appId));
     if (open.has(dir)) throw new TajweedError('client_exists');
@@ -90,14 +92,18 @@ export class TajweedClient {
     const rpc = caller(ch.port1);
     worker.on('error', (e) => rpc.fail(errorFrom(e, 'engine_failed')));
     worker.on('exit', () => rpc.fail(new TajweedError('engine_failed', { detail: 'the engine thread ended' })));
-    worker.postMessage({ ql: 'start', port: ch.port2, options: { key: o.key, appId: o.appId, appVersion: o.appVersion,
+    worker.postMessage({ ql: 'start', port: ch.port2, options: { key: o.key, appId: o.appId, appVersion: o.appVersion, appBuild: o.appBuild,
       dir, platform: desktopPlatform(), test } }, [ch.port2]);
     let init;
     try { init = await rpc.call('init', {}); } catch (e) {
+      const err = errorFrom(e, 'needs_connection');
+      // the start ended on Quran Lab's refusal of the key (15.3; worker.js fetches no engine for it): the Client is made
+      // as in 4.0.0, and its model() and prefetch() reject with that refusal at once
+      if (REFUSED_AT_START.has(err.code)) return new TajweedClient({ rpc, worker, port: ch.port1, init: { engine: null, core: null }, dir, refusal: err }, MADE);
       await worker.terminate().catch(() => {});
       ch.port1.close();
       open.delete(dir);
-      throw errorFrom(e, 'needs_connection');
+      throw err;
     }
     return new TajweedClient({ rpc, worker, port: ch.port1, init, dir }, MADE);
   }
@@ -110,6 +116,7 @@ export class TajweedClient {
     this._guard();
     const v = version && typeof version === 'object' ? version.version : version;
     if (v !== undefined && v !== null && (typeof v !== 'string' || !MODEL_VERSION_RE.test(v))) throw invalid(`version ${JSON.stringify(v)} is not a model version (x.y.z)`);
+    if (this._x.refusal) return Promise.reject(this._fail(this._x.refusal, 'invalid_key'));
     const pinned = v || null;
     if (this._opening && this._opening.pinned === pinned) return this._opening.promise;
     if (this._model && !this._model._closed && this._modelPinned === pinned) return Promise.resolve(this._model);
@@ -134,6 +141,7 @@ export class TajweedClient {
   async prefetch({ onProgress = null, version = null } = {}) {
     this._guard();
     if (onProgress !== null && typeof onProgress !== 'function') throw invalid('onProgress must be a function');
+    if (this._x.refusal) throw this._fail(this._x.refusal, 'invalid_key');
     const progressId = Math.random().toString(36).slice(2);
     let total = 0;
     const off = this._x.rpc.onEvent((d) => { if (d.ev === 'progress' && d.id === progressId) { total = d.bytesTotal; if (onProgress) onProgress({ bytesDone: d.bytesDone, bytesTotal: d.bytesTotal }); } });
@@ -169,12 +177,15 @@ export class TajweedClient {
       storage: await this.storage().catch(() => ({ models: [], sharingQueueBytes: 0 })),
       lastError: this._lastError,
       lease: w ? w.lease : null,
+      // 4.0.1 (28.7): the servers in use; webFrame is the host the engine files come from first
+      ...(w && w.endpoints ? { endpoints: { api: w.endpoints.api, models: w.endpoints.models, ...(w.endpoints.webFrame ? { webFrame: w.endpoints.webFrame } : {}),
+        lastFailover: w.endpoints.lastFailover || null } } : {}),
     };
   }
 
   /** The app is going to the background (a desktop app minimized, a service idle): the day's totals are sent. */
-  background() { return this._x.rpc.call('background').then(() => {}, () => {}); }
-  foreground() { this._x.rpc.call('foreground').catch(() => {}); }
+  background() { return this._x.refusal ? Promise.resolve() : this._x.rpc.call('background').then(() => {}, () => {}); }
+  foreground() { if (!this._x.refusal) this._x.rpc.call('foreground').catch(() => {}); }
 
   /** End: the open Model is closed, the day's totals sent, the lease kept for the next run, the engine thread ended. */
   async close() {

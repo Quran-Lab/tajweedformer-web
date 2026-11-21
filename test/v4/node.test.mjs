@@ -26,12 +26,17 @@ const made = [];
 const folder = () => { const d = fs.mkdtempSync(path.join(TMP, 'qlnode-')); made.push(d); return d; };
 
 let srv = null, API = null, server = null;
+// the engine files the test server gave, and a silent API (silent: every API request is read and never answered;
+// what came is kept in held, the requests in hung, ended at the end)
+let engineHits = 0, silent = false;
+const held = [], hung = [];
 before(async () => {
   if (skip) return;
   server = createServer(async (req, res) => {
     const u = new URL(req.url, 'http://127.0.0.1');
     const m = /^\/4\/engine\/([^/]+)\/([^/]+)$/.exec(u.pathname);
     if (m) {
+      engineHits++;
       if (srv.state.offline) { req.socket.destroy(); return; }
       const p = path.join(ENGINES, m[1], m[2]);
       if (!fs.existsSync(p)) { res.writeHead(404); res.end(); return; }
@@ -39,6 +44,13 @@ before(async () => {
     }
     const chunks = [];
     for await (const c of req) chunks.push(c);
+    if (silent) {
+      let body = null;
+      try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch (_) { body = null; }
+      held.push({ path: u.pathname, reportId: body && body.report_id ? body.report_id : null });
+      hung.push(res);
+      return;
+    }
     let r;
     try { r = await srv.fetch(`${API}${req.url}`, { method: req.method, headers: req.headers, body: chunks.length ? Buffer.concat(chunks).toString() : undefined }); } catch (_) { req.socket.destroy(); return; }
     const h = {};
@@ -50,7 +62,7 @@ before(async () => {
   API = `http://127.0.0.1:${server.address().port}`;
   srv = await fakeServer({ cdnDir: dir, cdnBase: `${API}/models`, engineId: ENGINE_ID, turnstile: 'required' });
 });
-after(() => { if (server) server.close(); });
+after(() => { for (const r of hung) { try { r.socket.destroy(); } catch (_) { /* gone */ } } if (server) server.close(); });
 
 const APP = 'org.example.live';
 const seams = (machineId = 'machine-A') => ({ apiUrl: API, modelsUrl: `${API}/models`, pins: [srv.trustedKey], engineBase: `${API}/4/engine/`, builtIn: ENGINE_ID, machineId });
@@ -95,6 +107,10 @@ test('a run: attest as a desktop app, lease (no site, no Turnstile), install int
   assert.ok(heads.get('log_probs').frames > 0);
   const d = await c.diagnose();
   assert.equal(d.sdk.runtime, 'node');
+  // 28.7: the servers in use, the engine's host among them (the test's stand-in for each role)
+  assert.equal(d.endpoints.api, new URL(API).host);
+  assert.equal(d.endpoints.webFrame, new URL(API).host);
+  assert.equal(d.endpoints.lastFailover, null);
   await c.close();
   // what the server saw: a desktop attest and lease, no site header, no Turnstile token, a lease with no web flag
   const att = srv.state.requests.find((r) => r.path === 'POST /v1/attest' && r.body && r.body.install_key);
@@ -201,4 +217,94 @@ test('in Node there is no microphone: listen() without `from` is microphone_unav
   assert.ok(n >= 6, `chunks ${n}`);
   assert.ok(heads.get('log_probs').frames > 0);
   await c.close();
+});
+
+// 28.6: Node takes the engine files from the web_frame hosts by 28.3: the first host down (a 503, then no answer), the
+// next answers; a host whose bytes are not the signed file is unreachable too; diagnose's endpoints name the engine's P
+test('the engine from the web_frame hosts in order: a host that is down or serves other bytes is passed, the next serves it', { skip: ENGINE_ID ? false : 'no packaged engine' }, async () => {
+  const { Endpoints } = await import('../../sdk4/shared/endpoints.js');
+  const { signerPub } = await import('./helpers/fake-api.mjs');
+  const pinned = [Buffer.from(signerPub()).toString('hex')];
+  const read = (name) => new Uint8Array(fs.readFileSync(path.join(ENGINES, ENGINE_ID, name)));
+  for (const first of ['503', 'none', 'bytes']) {
+    const asked = [];
+    const fetch = async (url) => {
+      const u = new URL(url), name = u.pathname.split('/').pop();
+      asked.push(`${u.host}/${name}`);
+      if (u.host === 'w1.test') {
+        if (first === '503') return new Response('{"error":"service_unavailable"}', { status: 503 });
+        if (first === 'none') throw new TypeError('fetch failed');
+        // the index as served, the engine files with one byte changed
+        const b = read(name);
+        if (name !== 'index.json') b[100] ^= 1;
+        return new Response(b, { status: 200 });
+      }
+      return new Response(read(name), { status: 200 });
+    };
+    const ep = new Endpoints({ hosts: { web_frame: ['w1.test', 'w2.test'] }, origins: { 'w1.test': 'https://w1.test', 'w2.test': 'https://w2.test' }, headMs: 2000 });
+    const eng = await loadNodeEngine({ dir: folder(), config: null, pinned, endpoints: ep, builtIn: ENGINE_ID, fetch });
+    assert.equal(eng.id, ENGINE_ID, first);
+    assert.equal(ep.roles.web_frame.p, 'w2.test', `${first}: the second host is P`);
+    assert.equal(ep.lastFailover.role, 'web_frame', first);
+    assert.equal(ep.lastFailover.to, 'w2.test', first);
+    assert.ok(asked.some((x) => x.startsWith('w2.test/')), first);
+    if (first !== 'bytes') assert.equal(asked.filter((x) => x.startsWith('w1.test/')).length, 1, `${first}: P moved after the first file`);
+  }
+});
+
+// 15.3 (E7c, P3): a key refused or stopped at the start gets no engine. create() keeps 4.0.0's contract (it resolves);
+// model() and prefetch() reject with the refusal at once
+test('a key stopped at the start: create resolves as in 4.0.0, no engine file is fetched, model() and prefetch() say invalid_key at once', { skip }, async () => {
+  const storage = folder(); // nothing kept: before 4.0.1's fix the engine came first, from the web_frame hosts
+  const hits = engineHits;
+  srv.state.stopAll = 'key_revoked';
+  try {
+    const c = await create(storage);
+    const t0 = Date.now();
+    await assert.rejects(c.model(), (e) => e.code === 'invalid_key');
+    assert.ok(Date.now() - t0 < 1000, `model() took ${Date.now() - t0} ms`);
+    await assert.rejects(c.prefetch(), (e) => e.code === 'invalid_key');
+    const d = await c.diagnose();
+    assert.equal(d.key.accepted, false);
+    assert.equal(d.lastError, 'invalid_key');
+    assert.equal(d.model, null);
+    assert.deepEqual((await c.storage()).models, []);
+    await c.background();
+    assert.equal(engineHits, hits, 'no engine file asked for a refused key');
+    await c.close();
+  } finally { srv.state.stopAll = null; }
+  // the key accepted again: the next run starts as usual
+  const c = await create(storage);
+  assert.ok(engineHits > hits);
+  const m = await c.model();
+  assert.equal(m.build, srv.build);
+  await c.close();
+});
+
+// the close's last send is bounded: an app's exit never waits for a silent API (28.3: 10 s for each silent host); what
+// the close could not send stays queued in the folder and goes at the next run
+test('close with the API silent ends within seconds, and the report it could not send goes at the next run', { skip }, async () => {
+  const storage = folder();
+  const a = await create(storage);
+  const m = await a.model();
+  const s = m.session({});
+  const pcm = noise(16000);
+  for (let i = 0; i < pcm.length; i += 1600) s.push(pcm.subarray(i, i + 1600));
+  await s.finish();
+  const from = held.length;
+  silent = true;
+  let ms;
+  try {
+    const t0 = Date.now();
+    await a.close();
+    ms = Date.now() - t0;
+  } finally { silent = false; }
+  assert.ok(ms < 6000, `the close took ${ms} ms`);
+  const ids = held.slice(from).filter((h) => h.path === '/v1/events' && h.reportId).map((h) => h.reportId);
+  assert.ok(ids.length >= 1, 'the close tried to send the day');
+  assert.ok(!srv.state.events.some((e) => e && ids.includes(e.report_id)), 'nothing of it arrived');
+  const b = await create(storage);
+  for (let i = 0; i < 200 && !srv.state.events.some((e) => e && ids.includes(e.report_id)); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(srv.state.events.some((e) => e && ids.includes(e.report_id)), 'the next run sent the report the close could not');
+  await b.close();
 });

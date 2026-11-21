@@ -88,7 +88,7 @@ const TS_RESETS = 4;
 async function turnstileToken(doc, { sitekey, action, cdata }, show) {
   if (!sitekey) return null;
   // a widget that gives no token (its script blocked, it failed, it timed out, it wanted the learner): false; the lease
-  // is then asked without a token, and the server gives the 24-hour class (18.4.9); no site key: null, no gate
+  // is then asked without a token, and the server gives the unattested class (18.4.9); no site key: null, no gate
   const ts = await turnstileScript(doc).catch(() => null);
   if (!ts) return false;
   const box = doc.getElementById('ts');
@@ -134,12 +134,15 @@ export async function startFrame(win = globalThis.window) {
   const show = (on) => ch.port1.postMessage({ show: !!on });
   ch.port1.onmessage = async (m) => {
     const d = m.data || {};
+    // 4.0.1: the Worker will ask for a token soon (no kept lease): the script loads now, nothing is rendered yet
+    if (d.prepare) { turnstileScript(win.document).catch(() => {}); return; }
     if (d.turnstile) ch.port1.postMessage({ id: d.id, token: await turnstileToken(win.document, d.turnstile, show).catch(() => false) });
   };
   const o = hs.opts;
   worker.postMessage({ ql: 'start', port: hs.port, frame: ch.port2, key: hs.key, site: hs.site, storage: hs.storage,
     // (no analytics or audience option in 4.0: an `analytics` or `audience` the page puts in its opts is not passed on)
     appVersion: typeof o.appVersion === 'string' ? o.appVersion : undefined,
+    appBuild: typeof o.appBuild === 'string' ? o.appBuild : undefined,
     threads: o.threads === 'auto' ? 'auto' : 'off' }, [hs.port, ch.port2]);
   return { worker, site: hs.site };
 }

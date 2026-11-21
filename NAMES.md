@@ -11,7 +11,7 @@ Every public type and function, and nothing else. The names are the four SDKs';
 | Name | Where | What |
 |---|---|---|
 | `QuranLab.api` | loader | `4` |
-| `QuranLab.version` | loader | `"4.0.0"` (the loader's version; the engine's is in `diagnose().sdk.engine`) |
+| `QuranLab.version` | loader | `"4.0.1"` (the loader's version; the engine's is in `diagnose().sdk.engine`) |
 | `QuranLab.v4` | loader | the same object, by API number |
 | `LOADER_URL` | npm | `"https://web.quranlab.ai/4/loader.js"` |
 | `API` | npm | `4` |
@@ -50,7 +50,7 @@ Every public type and function, and nothing else. The names are the four SDKs';
 
 ## Plain data types (TypeScript, `web/index.d.ts`)
 
-`TajweedClientOptions` (`key`, `appVersion?`, `appId?` (Node only: the desktop key's app id, required there),
+`TajweedClientOptions` (`key`, `appVersion?`, `appBuild?` (4.0.1), `appId?` (Node only: the desktop key's app id, required there),
 `storage?`, `threads?`: `'off'` by default or `'auto'`),
 `TajweedSessionOptions` (`context?`, `sampleRate?`, `heads?`, `backend?`, `topK?`, `endOnSilenceMs?`, `pace?`,
 `onChunk?`, `onEvent?`), `TajweedChunk`, `TajweedEvent`, `TajweedDecoded`, `TajweedToken`, `TajweedWord`,
@@ -63,7 +63,7 @@ Every public type and function, and nothing else. The names are the four SDKs';
   `reportRecited`'s fourth argument, `diagnose().sdk.engine`, `diagnose().sdk.core`, `diagnose().lease`.
 - Node ships in 4.0: `@quran-lab/tajweedformer/node` (and the package's `node` condition) runs the same API for a
   desktop app, with a desktop key and `TajweedClientOptions.appId`, in a worker thread with no frame; its lease is a
-  desktop app's, 24 hours, kept in the storage folder across runs.
+  desktop app's, kept in the storage folder across runs.
 - Gone: the `analytics` and `audience` options of `TajweedClientOptions` (an `analytics` or `audience` key passed from
   JavaScript, whatever its value, is `invalid_argument`; see docs/migrating-to-4.md). `client.sharing.ask()` resolves
   with `{ yes }` alone.

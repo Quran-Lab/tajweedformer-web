@@ -44,7 +44,7 @@ test('lease_site.json through this binding: a web lease only on the site it name
 
 const skip = engine && dir ? false : 'no packaged engine or test build';
 const mk = async (srv, o = {}) => {
-  const c = new Controller({ key: srv.apiKey, site: o.site || srv.site, apiUrl: 'https://api.test', fetch: srv.fetch, files: new MemoryFiles(), kv: new MemoryKV(), engine,
+  const c = new Controller({ key: srv.apiKey, site: o.site || srv.site, apiUrl: 'https://api.test', modelsUrl: 'https://cdn.test/models', fetch: srv.fetch, files: o.files || new MemoryFiles(), kv: new MemoryKV(), engine,
     trustedKeys: [srv.trustedKey], turnstile: srv.turnstile, autoSend: false });
   await c.init();
   return c;
@@ -77,11 +77,64 @@ test('the vocabulary and the reference data from the Core (R4, R3)', { skip }, a
   const info = await c.openModel();
   assert.deepEqual(info.tokens, [...KNOWN_VOCABULARIES[info.tokensSha256]], 'the Core\'s names are the V4 vocabulary');
   assert.equal(info.reference, true);
-  const r = c.reference({ surah: 1, ayah: 1 });
+  const r = await c.reference({ surah: 1, ayah: 1 });
   assert.ok(r.units.length > 4 && r.wordCount >= 4, JSON.stringify(r).slice(0, 120));
   assert.equal(r.words.length, r.units.length);
   assert.ok(r.units.includes(1), 'the word bar between words');
-  assert.equal(c.reference({ surah: 1, ayah: 99 }), null, 'an ayah the table does not have');
-  assert.throws(() => c.reference({ surah: 0, ayah: 1 }), (e) => e.code === 'invalid_argument');
+  assert.equal(await c.reference({ surah: 1, ayah: 99 }), null, 'an ayah the table does not have');
+  await assert.rejects(c.reference({ surah: 0, ayah: 1 }), (e) => e.code === 'invalid_argument');
+  await c.close();
+});
+
+// The browser's rule (stores.js OpfsFiles): the Core reads and writes a file only between the frame's files.open() and
+// files.close(), where its sync access handles are open; outside them read, write and commit fail. MemoryFiles has no
+// such rule, so this store adds it, and notes every call the Core made outside.
+class HandleFiles extends MemoryFiles {
+  constructor() { super(); this.isOpen = false; this.outside = []; this.opens = 0; this.busyNext = 0; }
+  // busyNext: that many opens find a file held by another page of the site past the store's wait (OpfsFiles `busy`)
+  async open() { this.isOpen = true; this.opens++; this.busy = this.busyNext > 0 && this.busyNext-- ? ['2_expected_tj3.zfx'] : []; }
+  async close() { this.isOpen = false; }
+  read(form, path, off, dst) { if (!this.isOpen) { this.outside.push(`read ${form} ${path}`); return false; } return super.read(form, path, off, dst); }
+  write(form, path, off, b) { if (!this.isOpen) { this.outside.push(`write ${form} ${path}`); return false; } return super.write(form, path, off, b); }
+  commit(form, path) { if (!this.isOpen) { this.outside.push(`commit ${form} ${path}`); return false; } return super.commit(form, path); }
+}
+
+test('the reference data on storage the Core can read only while the frame has it open (OPFS): read at the first call, and again after the model opens again', { skip }, async () => {
+  const srv = await fakeServer({ cdnDir: dir });
+  const files = new HandleFiles();
+  const c = await mk(srv, { files });
+  await c.openModel();
+  // 4.0.0 called the Core with the files closed: the read failed, the Core marked the reference failed for the life of
+  // the model, and every call was reference_missing (Gate C, 11-20)
+  let opens = files.opens;
+  const r = await c.reference({ surah: 1, ayah: 1 });
+  assert.ok(r.units.length > 4 && r.wordCount >= 4, JSON.stringify(r).slice(0, 120));
+  assert.equal(files.opens, opens + 1, 'the first call opens the files');
+  // 4.0.1: the table is in the Core's memory now, so later calls open no file
+  assert.equal(await c.reference({ surah: 1, ayah: 99 }), null, 'an ayah the table does not have');
+  for (let a = 2; a <= 7; a++) await c.reference({ surah: 1, ayah: a });
+  assert.equal(files.opens, opens + 1, 'no open after the table is loaded');
+  // a take at another rate opens the Core's model again, and its table goes with it: the next call reads it again
+  await c.warm({ context: c.model.context, sampleRate: 48000 });
+  opens = files.opens;
+  assert.deepEqual(await c.reference({ surah: 1, ayah: 1 }), r);
+  assert.equal(files.opens, opens + 1, 'the model opened again: the first call opens the files again');
+  assert.deepEqual(files.outside, [], 'no Core call touched a file while the files were closed');
+  assert.equal(files.isOpen, false, 'the files are closed again after each call');
+  await c.close();
+});
+
+test('a reference file another page of the site holds is never handed to the Core: that call fails, the next one reads the table', { skip }, async () => {
+  const srv = await fakeServer({ cdnDir: dir });
+  const files = new HandleFiles();
+  const c = await mk(srv, { files });
+  await c.openModel();
+  files.busyNext = 1;
+  await assert.rejects(c.reference({ surah: 1, ayah: 1 }), (e) => e.code === 'reference_missing' && /another page/.test(e.message));
+  assert.equal(files.isOpen, false, 'closed again');
+  // the Core never read the file, so it did not mark the reference failed: the next call reads it
+  const r = await c.reference({ surah: 1, ayah: 1 });
+  assert.ok(r.units.length > 4 && r.wordCount >= 4, JSON.stringify(r).slice(0, 120));
+  assert.deepEqual(files.outside, []);
   await c.close();
 });

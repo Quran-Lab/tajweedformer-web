@@ -16,6 +16,7 @@ import { ROOT } from './helpers/env.mjs';
 import { fakeServer } from './helpers/fake-api.mjs';
 import { loadEngine, testBuild } from './helpers/env.mjs';
 import { Controller } from '../../sdk4/frame/controller.js';
+import { ROLES } from '../../sdk4/shared/endpoints.js';
 import { MemoryFiles, MemoryKV } from '../../sdk4/frame/stores.js';
 
 const OPUS = path.join(ROOT, 'dist', 'tajweedformer-opus.wasm');
@@ -107,4 +108,41 @@ test('the sheet\'s counters land in the engine Worker\'s day; nothing else cross
   assert.equal(d.share_asked, 1);
   assert.equal(d.share_yes, 1);
   await c.close();
+});
+
+test('one sticky host per role per page (28.3): the sharing link starts from the frame\'s api host, follows it, and tells the frame when an answer moves it', { skip: skipAudio }, async () => {
+  const api = await stubApi({ contributions: true });
+  const run = async (endpoints) => {
+    const asked = [];
+    const fetch = async (url, init) => {
+      if (url === OPUS_URL) return new Response(readFileSync(OPUS));
+      const h = new URL(url).host;
+      asked.push(h);
+      if (h === ROLES.api[0]) throw new TypeError('fetch failed'); // the first api host gives no answer
+      return api.fetch(url, init);
+    };
+    const sh = await startSharing({ key: KEY, rpc: { call: async () => ({}) }, apiUrl: 'https://api.quranlab.ai', fetch, trustedKeys: [api.pub], state: memoryState(),
+      bundleId: 'https://app.example', opusUrl: OPUS_URL, ...(endpoints ? { endpoints } : {}) });
+    return { sh, asked };
+  };
+  // as 4.0.1 before this: the link's own host state asks the first host first, though the frame found it silent
+  const alone = await run(null);
+  assert.equal(alone.asked[0], ROLES.api[0]);
+  // the frame's P (the backup host, moved 1 s ago): the link never asks the first host
+  const told = [];
+  const listeners = new Set();
+  const frameState = { api: { hosts: [...ROLES.api], p: ROLES.api[1], age: 1000 }, models: { hosts: [...ROLES.models], p: ROLES.models[0], age: null } };
+  const shared = await run({ state: () => frameState, subscribe: (f) => listeners.add(f), tell: (s) => told.push(s) });
+  assert.ok(shared.asked.length > 0);
+  assert.ok(!shared.asked.includes(ROLES.api[0]), `the link asked ${shared.asked.join(', ')}`);
+  assert.equal(shared.sh.link.ep.roles.api.p, ROLES.api[1]);
+  assert.equal(told.length, 0, 'nothing moved: nothing told');
+  // the frame's probe found the first host again: the link follows
+  for (const f of listeners) f({ ...frameState, api: { hosts: [...ROLES.api], p: ROLES.api[0], age: null } });
+  assert.equal(shared.sh.link.ep.roles.api.p, ROLES.api[0]);
+  // a request of the link finds it silent once more and the backup answers: the frame is told the link's P
+  await shared.sh.link.refreshConfig();
+  assert.equal(shared.sh.link.ep.roles.api.p, ROLES.api[1]);
+  assert.equal(told.length, 1);
+  assert.equal(told[0].api.p, ROLES.api[1]);
 });

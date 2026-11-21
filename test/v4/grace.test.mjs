@@ -179,3 +179,23 @@ test('two opens past exp within 60 s make one attempt', { skip }, async () => {
   assert.equal(s.srv.state.askedPieces.length, asked, 'no second attempt within 60 s');
   await b.close();
 });
+
+test('past exp with no config at the page\'s start and the API silent at the open: the open does not wait for a config, it is in grace within the attempt time', { skip }, async () => {
+  const s = await leased();
+  s.clock.off = 25 * H;
+  s.srv.state.offline = true; // the page's start gets no answer: no config in this page
+  let silent = false;
+  const srv = { ...s.srv, fetch: (url, init) => (silent ? new Promise(() => {}) : s.srv.fetch(url, init)) };
+  const b = await load(srv, { ...s, attemptWaitMs: 300 });
+  assert.equal(b.ql.config, null);
+  silent = true; // every request now gets no byte at all (10 s per host before 4.0.1's next host)
+  const t0 = Date.now();
+  const info = await b.openModel();
+  const ms = Date.now() - t0;
+  assert.ok(ms < 5000, `the open took ${ms} ms (a config refresh first would take 10 s)`);
+  assert.ok(info.lease.graceUntil > 0, 'in grace');
+  b.closeModel();
+  silent = false;
+  s.srv.state.offline = true;
+  await b.close();
+});

@@ -37,7 +37,7 @@ window.fill = async (store, text) => {
   const manifest = enc.encode(JSON.stringify({ files: [{ path: 'a.bin', size: file.length, sha256: sum }] }));
   const build = hex(await crypto.subtle.digest('SHA-256', manifest)).slice(0, 40);
   await store.put('sha256/' + sum, file);
-  await store.put('manifest/https://cdn.test/' + build + '/', manifest);
+  await store.put('manifest/https://cdn-stand-in.quran-lab.com/' + build + '/', manifest);
   return { build, sum };
 };
 // the stored device key itself, read from IndexedDB as any code of this origin could

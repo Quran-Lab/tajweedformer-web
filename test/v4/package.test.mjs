@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as entry from '../../web/index.js';
+import { ROLES, LOADER_SWITCH_MS } from '../../sdk4/shared/endpoints.js';
 import { TajweedClient as LoaderClient } from '../../sdk4/loader/client.js';
 import { TajweedModel as LoaderModel } from '../../sdk4/loader/model.js';
 import { TajweedClient as NodeClient } from '../../sdk4/node/index.js';
@@ -63,31 +64,74 @@ test('the browser entry exports every class and entry point of NAMES.md', () => 
   assert.equal(Object.getOwnPropertyNames(entry.TajweedModel).includes('open'), false);
 });
 
-test('the browser entry exports nothing else; the fallback host\'s loader stays inside the wrapper', () => {
+test('the browser entry exports nothing else; the other hosts\' loader URLs stay inside the wrapper', () => {
   assert.deepEqual(Object.keys(entry).sort(), [...ENTRY, ...CLASSES].sort());
-  assert.equal('LOADER_FALLBACK_URL' in entry, false, 'not an export: the fallback host is the loader\'s own business');
-  assert.equal(/LOADER_FALLBACK_URL/.test(read('web/index.d.ts')) || /LOADER_FALLBACK_URL/.test(read('NAMES.md')), false);
-  // still used: loadQuranLab() tries web2.quranlab.ai when the default loader does not load
-  assert.match(read('web/index.js'), /^const LOADER_FALLBACK_URL = 'https:\/\/web2\.quranlab\.ai\/4\/loader\.js';$/m);
+  for (const name of ['LOADER_FALLBACK_URL', 'LOADER_URLS']) {
+    assert.equal(name in entry, false, 'not an export: the other hosts are the loader\'s own business');
+    assert.equal(new RegExp(name).test(read('web/index.d.ts')) || new RegExp(name).test(read('NAMES.md')), false);
+  }
 });
 
-test('loadQuranLab: the default loader that does not load is tried on the fallback host, web2.quranlab.ai', async () => {
+// a page whose scripts do what `act(src)` says: 'load' runs the loader, 'fail' errors, 'hang' never ends; a fresh
+// copy of the wrapper each time (it loads the loader once per page)
+let runs = 0;
+async function wrapperRun(act, o = {}) {
+  const wrapper = await import(`../../web/index.js?run=${++runs}`);
   const g = globalThis, tried = [];
   const saved = { document: g.document, QuranLab: g.QuranLab };
-  // a page whose web.quranlab.ai script fails and whose web2.quranlab.ai script runs the loader
   g.document = {
-    head: { appendChild: (s) => { tried.push(s.src); setTimeout(() => { if (s.src.includes('//web2.')) { g.QuranLab = { api: 4, v4: { ok: true } }; s.onload(); } else s.onerror(); }, 0); } },
+    head: { appendChild: (s) => {
+      tried.push(s.src);
+      const a = act(s.src);
+      setTimeout(() => { if (a === 'load') { g.QuranLab = { api: 4, v4: { ok: true, from: s.src } }; s.onload(); } else if (a === 'fail') s.onerror(); }, 0);
+    } },
     createElement: () => ({ remove() {} }),
   };
   try {
     delete g.QuranLab;
-    const v4 = await entry.loadQuranLab();
-    assert.deepEqual(v4, { ok: true });
-    assert.deepEqual(tried, ['https://web.quranlab.ai/4/loader.js', 'https://web2.quranlab.ai/4/loader.js']);
+    let v4 = null, err = null;
+    try { v4 = await wrapper.loadQuranLab(o); } catch (e) { err = e; }
+    return { v4, err, tried };
   } finally {
     if (saved.document === undefined) delete g.document; else g.document = saved.document;
     if (saved.QuranLab === undefined) delete g.QuranLab; else g.QuranLab = saved.QuranLab;
   }
+}
+const LOADERS = ROLES.web_frame.map((h) => `https://${h}/4/loader.js`);
+
+test('the wrapper\'s written-out hosts are the web_frame role of endpoints.js, in order', () => {
+  const m = /const LOADER_URLS = \[([^\]]*)\]/.exec(read('web/index.js'));
+  assert.ok(m, 'the list is written out in web/index.js');
+  assert.deepEqual(m[1].split(',').map((x) => x.trim().replace(/^'|'$/g, '')), [...ROLES.web_frame]);
+  assert.equal(/LOADER_SWITCH_MS = 4_000;/.test(read('web/index.js')), LOADER_SWITCH_MS === 4000);
+});
+
+test('loadQuranLab: the web_frame hosts in order (28.6): a host that fails is followed at once, the first that loads is the page\'s', async () => {
+  // web fails, web2 loads: as 4.0.0
+  let r = await wrapperRun((src) => (src.includes('//web2.') ? 'load' : 'fail'));
+  assert.deepEqual(r.v4, { ok: true, from: LOADERS[1] });
+  assert.deepEqual(r.tried, LOADERS.slice(0, 2));
+  // the first two fail: the third host's loader
+  r = await wrapperRun((src) => (src === LOADERS[2] ? 'load' : 'fail'));
+  assert.equal(r.v4.from, LOADERS[2]);
+  assert.deepEqual(r.tried, LOADERS.slice(0, 3));
+  // every host fails: needs_connection, after all five were tried
+  r = await wrapperRun(() => 'fail');
+  assert.equal(r.err && r.err.code, 'needs_connection');
+  assert.deepEqual(r.tried, LOADERS);
+});
+
+test('loadQuranLab: a host that has not loaded within the switch time is left in the page and the next is tried; a src given is the only one', async () => {
+  // web and web2 never answer: web-b after two switch times, and it loads
+  const t0 = Date.now();
+  let r = await wrapperRun((src) => (src === LOADERS[2] ? 'load' : 'hang'), { switchMs: 40 });
+  assert.equal(r.v4.from, LOADERS[2]);
+  assert.deepEqual(r.tried, LOADERS.slice(0, 3));
+  assert.ok(Date.now() - t0 >= 75, 'the third host after two switch times');
+  // a pinned src: that one only
+  r = await wrapperRun(() => 'fail', { src: 'https://web.quranlab.ai/4/loader@0123456789ab.js' });
+  assert.equal(r.err && r.err.code, 'needs_connection');
+  assert.deepEqual(r.tried, ['https://web.quranlab.ai/4/loader@0123456789ab.js']);
 });
 
 test('the exports map: the browser entry for a bundler, the Node path for Node (also as ./node), every file there', () => {

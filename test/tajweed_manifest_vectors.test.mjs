@@ -164,13 +164,13 @@ function cdn(manifestBytes) {
 test('delivery: the 519235d0 manifest verifies on the 3.0 path and is refused only for having no model version; a tampered one stops at the signature', async () => {
   // a 2.x build: the signature is good, so the refusal is the version rule of SDK 3.0 (SPEC 2a), not the signature
   const good = cdn(RAW['519235d0']);
-  await assert.rejects(openTajweedFolder(cachedReader({ baseUrl: 'https://cdn.test/sdk/', fetch: good.fetch, store: false }), { requireSignature: true, verify: 'on-read' }),
+  await assert.rejects(openTajweedFolder(cachedReader({ baseUrl: 'https://cdn-stand-in.quran-lab.com/sdk/', fetch: good.fetch, store: false }), { requireSignature: true, verify: 'on-read' }),
     (e) => e instanceof ModelFolderError && e.code === 'version_missing');
   assert.deepEqual(good.log, ['manifest.json']);
   const m = load('519235d0');
   m.golden_tolerance.coreml.site_flag_diffs = 2;
   const bad = cdn(enc.encode(JSON.stringify(m)));
-  await assert.rejects(openTajweedFolder(cachedReader({ baseUrl: 'https://cdn.test/sdk/', fetch: bad.fetch, store: false }), { requireSignature: true, verify: 'on-read' }),
+  await assert.rejects(openTajweedFolder(cachedReader({ baseUrl: 'https://cdn-stand-in.quran-lab.com/sdk/', fetch: bad.fetch, store: false }), { requireSignature: true, verify: 'on-read' }),
     (e) => e instanceof ModelFolderError && e.code === 'signature_invalid');
   assert.deepEqual(bad.log, ['manifest.json']);
   // the same through the SDK's opening of a model (internal since 3.1.0), as catalogue codes

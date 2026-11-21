@@ -30,7 +30,8 @@ export * from './oggopus.js';
 export { OpusEncoder, loadOpus, opusVersion, decodeOggOpus, OPUS_REQUEST } from './encoder.js';
 export { ShareResampler } from './resampler.js';
 export { ContributionClient, SharingError, sessionJson, parseUrls, requestCounts, utcDay, b64url, deletionMessage, INPUT_ROUTES, SDK_VERSION } from './uploader.js';
-export { Outbox, MemoryStorage, dirStorage, indexedDbStorage, defaultStorage, recover, markers, markerSeconds, activeCaptures, sha256Hex, MAX_AGE_MS, FILES } from './outbox.js';
+export { Outbox, MemoryStorage, dirStorage, indexedDbStorage, defaultStorage, recover, markers, markerSeconds, activeCaptures, sha256Hex, MAX_AGE_MS, FILES,
+  lastFailedOnNetwork, networkFailedIn } from './outbox.js';
 export { BitrateLadder, BITRATE_RUNGS, UP_STREAK, UP_MAX_BACKLOG_S, DOWN_BACKLOG_S, isNetworkFailure } from './bitrate.js';
 export { joinWindowMs, takeStartMs, roundGap, takeList, takesBody, DEFAULT_JOIN_MS, MAX_JOIN_MS, RECORDING_CAP_MS, MAX_TAKES, HOLD_MS } from './takes.js';
 export { ShareRecorder, ShareTake } from './recorder.js';

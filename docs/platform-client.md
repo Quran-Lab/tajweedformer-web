@@ -18,11 +18,11 @@ sharing and nothing is sent before the learner answers "Share", and a learner wh
 ### Consent
 
 - The SDK asks at most three times per install, ever (SDK 4.0, contract section 20): the first ask is the full
-  sheet, never in the first 24 hours after the install, never before the 3rd completed session, and only at the
+  sheet, never right after the install, never before the 3rd completed session, and only at the
   end of a good session (a take that ended normally, at least 60 seconds recited in this app session), once the
   moment has settled (3 seconds with no new take). After "Not now" a re-ask is a small card (the deck's
-  `card.line`, with `card.open` opening the full sheet and `card.not_now`), when both 14 days and 7 completed
-  sessions have passed since the last ask; the next after 30 days and 10 sessions. A card on screen counts as
+  `card.line`, with `card.open` opening the full sheet and `card.not_now`), only after a good while and several
+  completed sessions since the last ask; the next after longer still. A card on screen counts as
   one of the three; one dismissed, or gone because a take started or the page was hidden, is "Not now". A
   learner who said "Share" is never asked again; a learner who turned sharing off after a yes is not asked
   again. After that, only the app's own settings entry point (the SDK's settings switch) turns sharing on or
@@ -139,7 +139,7 @@ the UTC day. Off with the signed config's `flags.analytics: false` or the develo
 
 The SDK sends a delta: what happened since the previous delta of the same UTC day, never spanning midnight,
 with a fresh random `report_id` (32 lower-case hex, drawn per delta). It sends one every 15 minutes while
-the app is in use and one when the app goes to the background; unsent deltas are kept up to 7 days. A retry
+the app is in use and one when the app goes to the background; unsent deltas are kept for a while. A retry
 sends the same body with the same `report_id`, which the server counts once. 202 deletes the delta; 400 drops
 it; 401 renews the token and retries; 429, 5xx, 503 and network errors keep it for a retry with backoff.
 
@@ -219,7 +219,7 @@ signed config's `flags.issues` is Quran Lab's switch. Developers see them on the
    program and verdict, loads it again at the next launch in the background, and usually starts its first
    session on the accelerator; a session never waits for it.
 4. **If anything fails** before promotion (download, compile, a crash or hang, a different result), the CPU
-   stays, the reason is recorded, and the step is retried later (after 1, 6 and 24 hours at most; never for a
+   stays, the reason is recorded, and the step is retried later (later, a few times at most; never for a
    wrong result, a NaN or a crash, until a new model or OS version). Only in good conditions: not in low power mode,
    battery at 20 % or charging, the device not hot.
 5. **If the accelerator fails during a session** (an error, NaN or out-of-range output, or a chunk past its
@@ -235,7 +235,7 @@ signed config's `flags.issues` is Quran Lab's switch. Developers see them on the
    - **A cold start is not a fault.** The accelerator is warmed up when a take starts and when the app becomes
      active, the first chunk of a take has a generous limit (at least 1 s), and the limit of later chunks comes
      from warm chunks only. A single late chunk is served by the CPU and costs nothing more.
-   - **What sets an accelerator aside.** Late chunks in three sessions within 24 hours, or one disagreement with
+   - **What sets an accelerator aside.** Late chunks in three sessions close together, or one disagreement with
      the CPU: a few hours' pause, then it serves again (no new test). For good, for that model and OS version:
      NaN or out-of-range output, a second disagreement with the CPU, a self-test mismatch, or a crash. An error
      from the accelerator itself sets it aside for a day, then it is tested again (at most three times for that
@@ -248,7 +248,7 @@ signed config's `flags.issues` is Quran Lab's switch. Developers see them on the
    stage and cause, the error's domain, code and message (paths removed), the chunk and its deadline, the
    self-test clip that differed, the device model, OS build, chip, compute units, model revision and context,
    the thermal and low-power state, and the stall. Never audio, text or identifiers.
-   Reports made offline, or before the app configured Quran Lab, are kept on the device for up to 7 days and sent
+   Reports made offline, or before the app configured Quran Lab, are kept on the device for a while and sent
    once the app has configured Quran Lab with its key and the network is there; an app that never configures
    Quran Lab sends none.
 

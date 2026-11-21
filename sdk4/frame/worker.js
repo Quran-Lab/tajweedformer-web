@@ -37,10 +37,12 @@ self.onmessage = async (e) => {
     // false, and the lease is asked without a token (18.4.9)
     setTimeout(() => { if (tsWaiting.delete(id)) resolve(false); }, 25_000);
   });
+  // 4.0.1: the frame loads Turnstile's script ahead of the first token (a page with no kept lease, Controller.init)
+  const turnstilePrepare = () => frame.postMessage({ prepare: true });
   const name = `quranlab-sdk4${d.storage ? '.' + d.storage : ''}`;
   const ctl = new Controller({
-    key: d.key, site: d.site, apiUrl: API_URL, modelsUrl: typeof __QL_MODELS__ !== 'undefined' ? __QL_MODELS__ : undefined, trustedKeys: PINS, appVersion: d.appVersion,
-    files: await openFiles(name), kv: await openKV(name), turnstile,
+    key: d.key, site: d.site, apiUrl: API_URL, modelsUrl: typeof __QL_MODELS__ !== 'undefined' ? __QL_MODELS__ : undefined, trustedKeys: PINS, appVersion: d.appVersion, appBuild: d.appBuild,
+    files: await openFiles(name), kv: await openKV(name), turnstile, turnstilePrepare,
     loadEngine: (config) => loadEngine({ base: ENGINE_BASE, config, pinned: PINS, builtIn: ENGINE_BUILTIN, threads: d.threads === 'auto' ? 'auto' : 'off' }),
   });
   serve(d.port, ctl, { onClose: () => setTimeout(() => self.close(), 0) });

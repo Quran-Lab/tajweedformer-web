@@ -35,7 +35,8 @@ function faulty(srv, plan) {
     const from = range ? Number(/^bytes=(\d+)-$/.exec(range)[1]) : 0;
     seen.push({ path, n, range: range || null, ifRange: ifRange || null });
     const f = plan(path, n, from) || {};
-    if (f.status) return new Response('', { status: f.status });
+    // a status with the CDN's JSON error (a refusal of 28.3 for a 4xx), or { page: true }: a proxy's or a firewall's page
+    if (f.status) return new Response(f.page ? '<html>blocked</html>' : JSON.stringify({ error: f.status === 429 ? 'model_limit' : f.status === 404 ? 'not_found' : 'model_attestation_required' }), { status: f.status });
     let body = all, status = 200;
     const headers = { etag: '"v1"' };
     if (range && !f.ignoreRange) {
@@ -137,6 +138,16 @@ test('asked once and never again in the call: a 429, a 404, a refusal', { skip }
     assert.equal(cdn.of(big.path).length, 1, `${status}: one request`);
     await c.close();
   }
+});
+
+test('a 4xx that is not the CDN answer (no JSON error: a page of a proxy or a firewall) is unreachable: asked again (ENDPOINTS_40.md 28.3)', { skip }, async () => {
+  const srv = await fakeServer({ cdnDir: dir });
+  const big = bigOf(srv);
+  const cdn = faulty(srv, (p, n) => (p === big.path && n === 1 ? { status: 403, page: true } : null));
+  const c = await frame(srv, cdn.fetch);
+  await c.openModel();
+  assert.equal(cdn.of(big.path).length, 2);
+  await c.close();
 });
 
 test('kept blocks that make a file that is not the signed bytes are dropped; the next call downloads it whole', { skip }, async () => {

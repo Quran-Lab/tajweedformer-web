@@ -307,6 +307,11 @@ export function classify(e) {
   else { const [stage, reason] = BY_CODE[e && e.code] || ['session', 'other']; set(stage, reason); }
   if (t.http_status && !out.http_status) out.http_status = t.http_status;
   if (t.error_code && !out.error_code) out.error_code = t.error_code;
+  // 4.0.1 (ENDPOINTS_40.md 28.7): the role of the request the cause is, and whether it was asked of more than one host
+  const role = (x && x.host_role) || t.host_role || (x && x.qlHostRole);
+  if (HOST_ROLES.includes(role)) out.host_role = role;
+  const fb = x && typeof x.fallback === 'boolean' ? x.fallback : typeof t.fallback === 'boolean' ? t.fallback : x && typeof x.qlFallback === 'boolean' ? x.qlFallback : undefined;
+  if (out.host_role && typeof fb === 'boolean') out.fallback = fb;
   if (!INTERNAL.has(name) && ERROR_NAME.test(name)) out.error_name = name;
   if (out.error_code !== undefined && !ERROR_CODE.test(String(out.error_code))) delete out.error_code;
   return out;
@@ -315,7 +320,12 @@ export function classify(e) {
 // ---- 24.5 and 24.6: the queue ----
 
 const KEY = 'errors.v1';
-const FIELDS = ['error_name', 'error_code', 'retries', 'build'];
+const FIELDS = ['error_name', 'error_code', 'retries', 'build', 'host_role', 'fallback'];
+/** 28.7: the roles a report may name, and the stages whose cause is a request to one of Quran Lab's hosts (and
+ * runtime wasm_fetch, an engine file); any other report leaves host_role and fallback out. */
+export const HOST_ROLES = Object.freeze(['api', 'models', 'web_frame']);
+const HOST_STAGES = ['config', 'register', 'attest', 'lease', 'manifest', 'download', 'sharing', 'events'];
+const hostStage = (stage, reason) => HOST_STAGES.includes(stage) || (stage === 'runtime' && reason === 'wasm_fetch');
 
 /**
  * One install's error reports: the queue, the day's signatures and the reported list, kept in the state store under
@@ -404,6 +414,10 @@ export class ErrorReports {
     error.first_launch = !!r.first_launch;
     error.first_report = !!r.first_report;
     if (typeof f.build === 'string' && HEX40.test(f.build)) error.build = f.build;
+    if (hostStage(r.stage, r.reason) && HOST_ROLES.includes(f.host_role)) {
+      error.host_role = f.host_role;
+      if (typeof f.fallback === 'boolean') error.fallback = f.fallback;
+    }
     if (f.web && typeof f.web === 'object') {
       const web = { ...f.web };
       if (!web.storage_free && estimate.bucket) web.storage_free = estimate.bucket;

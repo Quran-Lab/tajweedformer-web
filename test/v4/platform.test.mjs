@@ -64,9 +64,9 @@ test('launch: unattested token, register (new install once), signed config verif
   assert.equal(attest.headers.origin, 'https://app.example');
   const reg = api.log.find((x) => x.path === '/v1/register');
   assert.equal(reg.body.new_install, true);
-  assert.equal(reg.body.sdk_version, '4.0.0');
+  assert.equal(reg.body.sdk_version, '4.0.1');
   const cfgReq = api.log.find((x) => x.path === '/v1/config');
-  assert.match(cfgReq.query, /sdk=4\.0\.0/);
+  assert.match(cfgReq.query, /sdk=4\.0\.1/);
   assert.match(cfgReq.query, /bucket=\d+/);
   // second launch on the same storage and UTC day: no register (once per day); config answered 304 from the stored ETag
   api.log.length = 0;
@@ -138,7 +138,7 @@ test('telemetry v2 deltas: closed body with the 2.0.1 fields, sealed at a send p
   const [p] = ql.telemetry.pending();
   assert.deepEqual(Object.keys(p), ['v', 'day', 'product', 'platform', 'sdk_version', 'app_version', 'device', 'cohorts', 'coverage',
     'ayahs', 'words', 'surah_ayahs', 'rule_checks', 'rule_flags', 'reported', 'report_id']);
-  assert.equal(p.v, 2); assert.equal(p.product, 'web'); assert.equal(p.day, '2026-11-06'); assert.equal(p.sdk_version, '4.0.0');
+  assert.equal(p.v, 2); assert.equal(p.product, 'web'); assert.equal(p.day, '2026-11-06'); assert.equal(p.sdk_version, '4.0.1');
   const c = p.cohorts[0];
   assert.equal(c.sessions, 1); assert.equal(c.minutes, 0.5); assert.equal(c.chunks, 3);
   assert.deepEqual(c.latency_ms, { le_20: 1, le_40: 1, gt_320: 1 });
@@ -339,7 +339,9 @@ test('platform client fixtures (local stack e2e recordings): the recorded signed
 test('model source: the signed base, then cdn.quranlab.ai/models; modelsUrl wins; cdnUrl alone keeps /hf/', async () => {
   const path = 'Quran-Lab/tajweedformer-v4/abc123/sdk/v4.0/';
   const url = async (base, extra = {}) => (await (await QuranLab.configure(opts(await mockApi({ base }), extra))).modelSource()).url;
-  assert.equal(await url('https://models.example.org'), `https://models.example.org/${path}`);
+  // a base on a host of the allow-list (ENDPOINTS_40.md 28.4: a backup host's own model host), and one off it ignored
+  assert.equal(await url('https://cdn-b.tajweedformer.com/models'), `https://cdn-b.tajweedformer.com/models/${path}`);
+  assert.equal(await url('https://models.example.org'), `https://cdn.quranlab.ai/models/${path}`, 'a base off the allow-list is ignored');
   assert.equal(await url('https://cdn.quranlab.ai'), `https://cdn.quranlab.ai/hf/${path}`, 'a bare cdn base means the old /hf/ path');
   assert.equal(await url('https://cdn.quranlab.ai/hf/'), `https://cdn.quranlab.ai/hf/${path}`);
   assert.equal(await url('javascript:alert(1)'), `https://cdn.quranlab.ai/models/${path}`, 'an unsafe base is ignored');

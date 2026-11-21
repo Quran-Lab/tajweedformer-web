@@ -327,3 +327,45 @@ test('integrity: another refusal at the lease is as before (refused, its error)'
   assert.deepEqual(r.q, [['lease', 'refused', 'server_rejected', 403]]);
   assert.deepEqual(r.ec, ['lease_attestation_required']);
 });
+
+// ---- 4.0.1: errors_40.json of contract 564c144 ----
+import { CoreError, QLC as QLC4 } from '../../sdk4/frame/core.js';
+
+test('core_open: a Core status the model open fails with, to the report\'s reason and error_code (24.3)', () => {
+  assert.ok(V.core_open.length >= 4);
+  for (const c of V.core_open) {
+    const e = Controller.prototype._coreError.call({}, new CoreError(c.status, 0, 'qlc_model_open'), 'the model could not be opened');
+    assert.equal(e.code, c.code, c.name);
+    assert.equal(e.stage, c.stage, c.name);
+    assert.equal(e.why, c.reason, c.name);
+    assert.equal(e.error_code, c.error_code, c.name);
+    assert.equal(QLC4[c.name.replace(/^QLC_/, '')], c.status, `${c.name} is the binding's status`);
+  }
+});
+
+test('bodies with host_role and fallback (28.7): the report the SDK builds is the vector\'s; a role not of the three, or a fallback that is not a bool, never goes out', async () => {
+  let n = 0;
+  for (const b of V.bodies.filter((x) => x.accepted && x.body.error && 'host_role' in x.body.error)) {
+    const want = b.body.error;
+    const r = new ErrorReports({ state: memoryState(), clock: () => at(b.body.day), top: () => ({ platform: b.body.platform, sdk_version: b.body.sdk_version, app_version: b.body.app_version, os_version: b.body.os_version, device_class: b.body.device_class }) });
+    r.occur({ stage: want.stage, reason: want.reason, code: b.body.code, revision: b.body.revision, http_status: want.http_status, error_code: want.error_code,
+      retries: want.retries, host_role: want.host_role, fallback: want.fallback, first_launch: want.first_launch });
+    let body = null;
+    await r.flush(async (x) => { body = x; });
+    assert.ok(body, `${b.name}: a report`);
+    for (const k of ['stage', 'reason', 'http_status', 'error_code', 'host_role', 'fallback']) assert.deepEqual(body.error[k], want[k], `${b.name}: ${k}`);
+    n++;
+  }
+  assert.ok(n >= 4, 'the 4.0.1 bodies are there');
+  for (const b of V.bodies.filter((x) => !x.accepted && x.body.error && ('host_role' in x.body.error || 'fallback' in x.body.error))) {
+    const e = b.body.error;
+    const r = new ErrorReports({ state: memoryState(), clock: () => at(b.body.day), top: () => ({}) });
+    r.occur({ stage: e.stage, reason: e.reason, code: b.body.code, host_role: e.host_role, fallback: e.fallback });
+    let body = null;
+    await r.flush(async (x) => { body = x; });
+    if (body) {
+      assert.ok(!('host_role' in body.error) || ['api', 'models', 'web_frame'].includes(body.error.host_role), b.name);
+      assert.ok(!('fallback' in body.error) || typeof body.error.fallback === 'boolean', b.name);
+    }
+  }
+});

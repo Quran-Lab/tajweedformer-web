@@ -2,25 +2,26 @@
 // engine Worker serves. The loader never reads the frame and the frame never reads the page.
 import { API, HELLO, ACK, caller } from '../shared/protocol.js';
 import { TajweedError } from '../../web/api/errors.js';
+import { Endpoints, FRAME_SWITCH_MS, FRAME_TIMEOUT_MS } from '../shared/endpoints.js';
 
 const HIDDEN = 'position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0;pointer-events:none;z-index:-1';
 
-/** No hello from the first host this long: the frame of the fallback host is opened beside it (the first hello wins).
- * 4 s, so the fallback has taken over within 5 s of the start (Stage B, 11-18: at 5 s it took 5.1 s). */
-export const SWITCH_MS = 4_000;
-/** No hello from any host this long: the origin check says why. */
-export const TIMEOUT_MS = 20_000;
+/** No hello for this long after a host's frame was opened: the next host's frame is opened beside it (the first hello
+ * wins). 4 s, so the second host has taken over within 5 s of the start (Stage B, 11-18), the third at 8 s (28.6). */
+export const SWITCH_MS = FRAME_SWITCH_MS;
+/** No hello from any host this long: the origin check says why. 24 s with five hosts: 8 s after the last one (28.6). */
+export const TIMEOUT_MS = FRAME_TIMEOUT_MS;
 
 /**
- * Open the frame for `key` and wait for its hello. The frame is Quran Lab's on its first host (web.quranlab.ai); when
- * no hello has come after `switchMs` (4 s), the same frame on the fallback host (web2.quranlab.ai, a separate route
- * of its own) is opened beside it, and the first frame to say hello is the page's: the other is removed. Both hosts
- * serve the same files under the same rules (frame-ancestors per key, the handshake, the site in x-qlab-site and in
- * the lease); each frame's storage is its own origin's. Resolves { rpc, iframe, base, fallback, close() }. Rejects
- * with a TajweedError when no frame answers within `timeoutMs` (20 s): the origin check tells whether the page's
- * origin is not on the key.
- * @param {object} o  { key, frameBases (["https://web.quranlab.ai", "https://web2.quranlab.ai"]) or frameBase, apiUrl,
- *   storage, opts, switchMs, timeoutMs, win, doc, fetch }
+ * Open the frame for `key` and wait for its hello (ENDPOINTS_40.md 28.6). The frame is Quran Lab's, on the web_frame
+ * hosts in order: the first at once, the next after each `switchMs` (4 s) without a hello (web at 0, web2 at 4 s, then
+ * the backup hosts at 8, 12 and 16 s), each beside the ones before; the first frame to say hello is the page's and
+ * the others are removed. Every host serves the same files under the same rules (frame-ancestors per key, the
+ * handshake, the site in x-qlab-site and in the lease); each frame's storage is its own origin's. Resolves
+ * { rpc, iframe, base, fallback, close() }. Rejects with a TajweedError when no frame answers within `timeoutMs`
+ * (24 s): the origin check, through the api order, tells whether the page's origin is not on the key.
+ * @param {object} o  { key, frameBases (the hosts' https origins, in order) or frameBase, apiUrl, endpoints, storage,
+ *   opts, switchMs, timeoutMs, win, doc, fetch }
  */
 export function openFrame(o) {
   const win = o.win || globalThis.window, doc = o.doc || win.document;
@@ -45,8 +46,9 @@ export function openFrame(o) {
     (doc.body || doc.documentElement).appendChild(iframe);
   };
   return new Promise((resolve, reject) => {
-    let timer = null, switcher = null, settled = false;
-    const stop = () => { settled = true; clearTimeout(timer); clearTimeout(switcher); win.removeEventListener('message', onMessage); };
+    let timer = null, settled = false;
+    const switchers = [];
+    const stop = () => { settled = true; clearTimeout(timer); for (const t of switchers) clearTimeout(t); win.removeEventListener('message', onMessage); };
     const onMessage = (e) => {
       const d = e.data;
       // from one of the frames this loader opened, stamped with that frame's own origin
@@ -64,7 +66,9 @@ export function openFrame(o) {
         close() { rpc.fail(new TajweedError('invalid_argument', { detail: 'this client is closed' })); f.iframe.remove(); } });
     };
     win.addEventListener('message', onMessage);
-    if (bases.length > 1) switcher = setTimeout(() => { if (!settled) open(bases[1]); }, Number.isFinite(o.switchMs) ? o.switchMs : SWITCH_MS);
+    // each next host after switchMs more without a hello: the i-th at i times switchMs (28.6)
+    const every = Number.isFinite(o.switchMs) ? o.switchMs : SWITCH_MS;
+    for (let i = 1; i < bases.length; i++) switchers.push(setTimeout(() => { if (!settled) open(bases[i]); }, i * every));
     timer = setTimeout(async () => {
       stop();
       for (const x of frames) x.iframe.remove();
@@ -75,16 +79,18 @@ export function openFrame(o) {
 }
 
 // No hello: the browser refused the frame (frame-ancestors), or the network did. The origin check (a simple GET the
-// API answers for every origin, 3.x NAMING section 7) tells which.
+// API answers for every origin, 3.x NAMING section 7), asked through the api order (28.3, 28.6), tells which.
 async function refusalOf(o, site) {
   try {
-    const r = await (o.fetch || globalThis.fetch)(`${o.apiUrl}/v1/origin-check?key=${encodeURIComponent(o.key)}`, { redirect: 'error', credentials: 'omit' });
-    if (r.status === 200) {
-      const a = await r.json();
-      if (a && a.allowed === false) {
-        return new TajweedError('invalid_key', { detail: `the page's origin ${site} is not allowed for this key (${a.why || 'not listed'}); add it in the portal` });
-      }
+    const ep = o.endpoints instanceof Endpoints ? o.endpoints : Endpoints.fromSeams({ apiUrl: o.apiUrl || null });
+    // the origin check's answer is JSON with `allowed`: anything else (a captive portal's page) is no answer here
+    const accept = async (res) => { try { const a = await res.json(); return a && typeof a === 'object' && typeof a.allowed === 'boolean' ? a : null; } catch (_) { return null; } };
+    const got = await ep.request('api', `/v1/origin-check?key=${encodeURIComponent(o.key)}`, { redirect: 'error', credentials: 'omit' },
+      { fetch: o.fetch || globalThis.fetch.bind(globalThis), accept });
+    const a = got.cls === 'taken' ? got.value : null;
+    if (a && a.allowed === false) {
+      return new TajweedError('invalid_key', { detail: `the page's origin ${site} is not allowed for this key (${a.why || 'not listed'}); add it in the portal` });
     }
   } catch (_) { /* not reached either */ }
-  return new TajweedError('needs_connection', { detail: 'the Quran Lab frame did not answer on either of its hosts (offline, or blocked by the page\'s Content-Security-Policy: see the README)' });
+  return new TajweedError('needs_connection', { detail: 'the Quran Lab frame did not answer on any of its hosts (offline, or blocked by the page\'s Content-Security-Policy: see the README)' });
 }

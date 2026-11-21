@@ -44,7 +44,7 @@ test('piece.json through this binding: the Core takes the signed pieces and refu
 });
 
 async function session(srv, kv, files = new MemoryFiles(), { leaseStore } = {}) {
-  const c = new Controller({ key: srv.apiKey, site: srv.site, apiUrl: 'https://api.test', fetch: srv.fetch, files, kv, engine,
+  const c = new Controller({ key: srv.apiKey, site: srv.site, apiUrl: 'https://api.test', modelsUrl: 'https://cdn.test/models', fetch: srv.fetch, files, kv, engine,
     trustedKeys: [srv.trustedKey], turnstile: srv.turnstile, autoSend: false, ...(leaseStore === false ? { leaseStore: false } : {}) });
   await c.init();
   return c;
@@ -160,7 +160,7 @@ test('engine_load_failed: a build that is not the signed bytes is reported, and 
   assert.equal(direct.id, PREV);
   assert.equal(direct.why, 'previous');
   assert.deepEqual(direct.failures, [{ id: CUR, cause: 'sha256' }]);
-  const c = new Controller({ key: srv.apiKey, site: srv.site, apiUrl: 'https://api.test', fetch: srv.fetch, files: new MemoryFiles(), kv: new MemoryKV(),
+  const c = new Controller({ key: srv.apiKey, site: srv.site, apiUrl: 'https://api.test', modelsUrl: 'https://cdn.test/models', fetch: srv.fetch, files: new MemoryFiles(), kv: new MemoryKV(),
     loadEngine: loader, trustedKeys: [srv.trustedKey], turnstile: srv.turnstile, autoSend: false });
   const init = await c.init();
   assert.equal(init.engine.id, PREV);
@@ -170,14 +170,14 @@ test('engine_load_failed: a build that is not the signed bytes is reported, and 
   assert.equal(issue.kind, 'engine_failed', 'a kind qlab-api accepts (ISSUE_KINDS)');
   assert.equal(issue.code, `engine_load_failed:${CUR}:sha256`);
   assert.match(issue.code, /^[A-Za-z0-9_.:-]{1,64}$/, 'the issue code form qlab-api accepts');
-  assert.equal(issue.sdk_version, '4.0.0');
+  assert.equal(issue.sdk_version, '4.0.1');
   await c.close();
 });
 
 test('engine_load_failed: when no build loads, each is reported and sent before the start fails', { skip: skipFlow }, async () => {
   const es = await engineServer({ corrupt: [CUR], missing: [PREV] });
   const srv = await fakeServer({ cdnDir: dir });
-  const c = new Controller({ key: srv.apiKey, site: srv.site, apiUrl: 'https://api.test', fetch: srv.fetch, files: new MemoryFiles(), kv: new MemoryKV(),
+  const c = new Controller({ key: srv.apiKey, site: srv.site, apiUrl: 'https://api.test', modelsUrl: 'https://cdn.test/models', fetch: srv.fetch, files: new MemoryFiles(), kv: new MemoryKV(),
     loadEngine: () => loadHostedEngine({ base: 'https://web.test/4/engine/', config: cfg, pinned: es.pinned, fetch: es.fetch, importModule: async () => ({ default: engine.factory }) }),
     trustedKeys: [srv.trustedKey], turnstile: srv.turnstile, autoSend: false });
   await assert.rejects(c.init(), (e) => e.code === 'signature_invalid');

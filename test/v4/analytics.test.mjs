@@ -43,6 +43,7 @@ test('an analytics option given to the frame\'s client is never read: the day\'s
     assert.equal(ql.telemetry.enabled, true);
     await ql.launch();
     assert.equal(ql.config.v, 1);
+    await ql.launchSent; // 4.0.1: the launch's telemetry goes in the background
     assert.ok(api.st.events >= 1, `the delta was sent (${api.st.calls.join(', ')})`);
   }
 });
@@ -53,4 +54,21 @@ test('the signed config\'s flags.analytics false is the only off switch: nothing
   await ql.launch();
   assert.equal(ql.telemetry.enabled, false);
   assert.equal(api.st.events, 0);
+});
+
+// 4.0.1 (E7, 11-20): the frame's start waits for register and the config, never for its telemetry. A backup host answers
+// events and issues 503 (it keeps no reports, ENDPOINTS_40.md 28.9), so with the first hosts silent that send crossed
+// every host of the order, 20 s and more, and the start waited for it
+test('the launch never waits for its telemetry: an events request that does not answer holds up nothing', async () => {
+  const api = stand({ analytics: true, issues: true });
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const fetch = async (url, init) => { if (String(url).includes('/v1/events')) await gate; return api.fetch(url, init); };
+  const ql = await client({ ...api, fetch });
+  await ql.launch();
+  assert.equal(ql.config.v, 1, 'the config is in');
+  assert.equal(api.st.events, 0, 'the delta is still on its way');
+  release();
+  await ql.launchSent;
+  assert.ok(api.st.events >= 1, 'and it went');
 });

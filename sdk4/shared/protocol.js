@@ -14,7 +14,7 @@ export const API = 4;
 export const HELLO = 'hello';
 export const ACK = 'ack';
 export const OPS = Object.freeze(['init', 'model', 'prefetch', 'storage', 'removeModels', 'diagnose', 'warm', 'start', 'push', 'finish',
-  'cancel', 'reportRecited', 'reportChecks', 'telemetryCount', 'takeReport', 'clip', 'reference', 'background', 'foreground', 'closeModel', 'close']);
+  'cancel', 'reportRecited', 'reportChecks', 'telemetryCount', 'takeReport', 'clip', 'reference', 'background', 'foreground', 'closeModel', 'close', 'endpoints']);
 
 /** The ArrayBuffers of a value, for postMessage's transfer list. */
 export function transferables(x, out = []) {

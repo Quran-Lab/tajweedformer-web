@@ -1,5 +1,6 @@
-// The web lease across page loads (owner, 11-18: "web keeps a lease across page loads, for 24 h, stored with a
-// non-extractable WebCrypto key, instead of one lease per page"; contract 18.4.9 as amended for it).
+// The web lease across page loads (owner, 11-18: "web keeps a lease across page loads, ... stored with a
+// non-extractable WebCrypto key, instead of one lease per page"; contract 18.4.9 as amended for it). The lease is kept
+// for as long as the server made it (its exp, set by Quran Lab) and its grace; the frame sets no length of its own.
 //
 // One record per site and developer key in the frame's KV (IndexedDB on Quran Lab's frame origin, partitioned by the
 // browser per top-level site), written whole in one transaction:
@@ -22,7 +23,10 @@
 // Rules at load (each is a plain fall back to what a page did before: new keys, attest, Turnstile, a new lease):
 //   - a record of another site or key is never read (the record's name and the seal's associated data);
 //   - keys that are extractable, of another algorithm, or not the stored public keys: the record is dropped;
-//   - keys older than KEYS_MAX_MS (30 days, an unattested certificate's life): a new install;
+//   - keys older than KEYS_MAX_MS (an unattested certificate's life): a new install, at the first page load
+//     whose record holds no lease in force (its exp and the grace after it, on the device clock corrected
+//     by the lease's anchor, below). A lease in force is never dropped for the keys' age: until 4.0.1 a lease given
+//     on the keys' 20th day was gone on their 30th, however long the server had made it;
 //   - a device clock set back: the device clock corrected by the lease's anchor (the Core's clock minus the device
 //     clock, taken once right after the lease was accepted, when the Core's clock is the server's iat: `anchorD`)
 //     more than CLOCK_BACK_S behind the Core's clock at the last save means the clock was set back since: the Core's
@@ -36,9 +40,22 @@
 import { utf8, hex, sha256 } from '../shared/bytes.js';
 import { InstallKeys } from './keys.js';
 
+const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
 export const LEASE_RECORD = 'lease.v1';
 export const KEYS_MAX_MS = 30 * 86_400_000;
 export const CLOCK_BACK_S = 3600;
+// the grace after a lease's exp while Quran Lab cannot be reached (18.4.7.1): the Core's, a record holds its lease that long
+export const LEASE_GRACE_S = 86_400;
+
+/** Whether a record's lease is still in force at `nowMs` (device clock): before its exp plus the grace, on the device
+ * clock corrected by the lease's anchor (`anchorD`, the Core's clock minus the device clock when it was accepted). The
+ * Core judges the lease itself; this only decides whether the record is kept. */
+export function leaseInForce(rec, nowMs) {
+  const l = isObj(rec) ? rec.lease : null;
+  if (!isObj(l) || !Number.isFinite(l.exp)) return false;
+  return nowMs / 1000 + (Number.isFinite(l.anchorD) ? l.anchorD : 0) < l.exp + LEASE_GRACE_S;
+}
 
 /** The KV name of the record of one site and developer key. */
 export async function recordName(site, key) { return `${LEASE_RECORD}.${hex(await sha256(utf8(`${site}\n${key}`))).slice(0, 32)}`; }
@@ -54,7 +71,6 @@ export function certField(cert, field) {
 }
 
 const aad = (site, key, installHex) => utf8(`quranlab-web-lease 1\n${key}\n${site}\n${installHex}\n`);
-const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 export class LeaseStore {
   /**
@@ -79,7 +95,7 @@ export class LeaseStore {
    * The record of this site and key: { keys (InstallKeys), coreState (Uint8Array or null), cert, lease, mirror, why }.
    * `why`: 'none' (no record: new keys), 'restored', 'clock' (keys and certificate, no Core state), 'sealed' (the
    * Core state did not open: keys and certificate only), 'keys' (the keys were not usable: dropped), 'old' (keys older
-   * than 30 days: dropped). Never throws.
+   * than KEYS_MAX_MS and no lease in force: dropped). Never throws.
    */
   async load() {
     const out = { keys: null, coreState: null, cert: null, lease: null, mirror: null, why: 'none' };
@@ -87,7 +103,11 @@ export class LeaseStore {
     try { rec = this.state.get(await this._name()); } catch (_) { rec = null; }
     if (!isObj(rec) || rec.v !== 1 || rec.site !== this.site || rec.key !== this.key) return out;
     const now = this.clock();
-    if (!(Number.isFinite(rec.made) && now - rec.made < KEYS_MAX_MS && rec.made - now < 86_400_000)) { await this.clear(); out.why = 'old'; return out; }
+    if (!(Number.isFinite(rec.made) && rec.made - now < 86_400_000) || (now - rec.made >= KEYS_MAX_MS && !leaseInForce(rec, now))) {
+      await this.clear();
+      out.why = 'old';
+      return out;
+    }
     const keys = await InstallKeys.restore(rec.keys || {}, this.subtle);
     if (!keys) { await this.clear(); out.why = 'keys'; return out; }
     out.keys = keys;

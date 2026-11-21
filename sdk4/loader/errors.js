@@ -8,5 +8,5 @@ export function errorFrom(e, fallback = 'engine_failed') {
     if (e.reason) t.reason = e.reason;
     return t;
   }
-  return toTajweedError(e, { fallback, sdk: '4.0.0' });
+  return toTajweedError(e, { fallback, sdk: '4.0.1' });
 }

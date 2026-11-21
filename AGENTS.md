@@ -58,7 +58,7 @@ Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai) and paste 
   its key and its files live in that frame's Worker, on Quran Lab's origin: the site's own scripts, other
   third-party scripts and extensions limited to the site cannot read them.
 - **Evergreen.** The loader picks the engine build Quran Lab's signed config names for your site (automatic, or
-  pinned in the portal for up to 30 days), and runs it only after checking Quran Lab's Ed25519 signature and every
+  pinned in the portal for a while), and runs it only after checking Quran Lab's Ed25519 signature and every
   file's SHA-256 (with WebCrypto's Ed25519 where the browser has it, else the vendored @noble/ed25519 2.3.0, MIT, so
   Chrome before 137 and Safari before 17 work too). The public API has a number, 4; engine updates never change it.
 - **A wrong device clock changes nothing.** The signed config is judged by the server's time when the device clock
@@ -96,10 +96,10 @@ import { TajweedClient } from '@quran-lab/tajweedformer';
 | **Key** | A web key from [sdk.quranlab.ai](https://sdk.quranlab.ai), locked to your site's origins: Quran Lab's frame is shown only on the origins your key lists. For local work use the app's development key, with `http://localhost:*` among its origins. |
 | **Page** | A secure context: `https`, or `http://localhost`. If your site sends a Content-Security-Policy, add the lines of "The Content-Security-Policy lines your site needs" (after the quick start). Audio starts only after a tap or a click. |
 | **Browser** | WebAssembly with SIMD and AudioWorklet, in a current Chrome, Edge, Firefox or Safari. Node 20 or later runs the same API for a desktop app, with a desktop key and its app id (see "Node"). |
-| **Hosts** | Quran Lab's frame comes from `web.quranlab.ai`; when that host gives no answer within 4 seconds the loader opens the same frame from `web2.quranlab.ai`. Your Content-Security-Policy names both. |
-| **Check** | The first lease passes Cloudflare Turnstile inside Quran Lab's frame, invisibly: a learner never sees a check or a box. When the check gives no answer or Turnstile is down, the learner still gets a lease, and the next lease checks again. |
+| **Hosts** | Quran Lab's frame comes from `web.quranlab.ai`, with backup servers the SDK uses if the main ones can't be reached. Your Content-Security-Policy names them all (see "The Content-Security-Policy lines your site needs"). |
+| **Check** | The first lease passes Cloudflare Turnstile inside Quran Lab's frame, invisibly: a learner never sees a check or a box. When the check gives no answer or Turnstile is down, the learner still gets a lease. |
 | **Download** | The first visit downloads the model, encrypted, into Quran Lab's frame: 55.5 MB, once (68.4 MB stored); later visits read it from the frame's storage. A browser that blocks the site's storage keeps nothing: there the model is downloaded at every visit. |
-| **Offline** | The model opens under a lease of 24 hours that Quran Lab signs for this browser and your site, kept across page loads: a page loaded within it opens the model with no connection. When the lease has ended and Quran Lab cannot be reached, the model keeps opening for up to 24 hours more; a refusal ends that at once. A Model that is open keeps running. |
+| **Offline** | The first visit needs a connection; after that the model opens with no connection, and while online the SDK keeps itself up to date in the background. A Model that is open keeps running. |
 | **Model** | The engine, the model and its lease live in the Worker of Quran Lab's frame: your page's scripts never see the model's files. When Quran Lab refuses the key or the app, the model is removed from the browser. |
 | **Analytics** | Anonymous counts and durations (never audio, text, names or device identifiers) and reports of the failures your learners hit are always sent; you find them at sdk.quranlab.ai under your app, Problems included. |
 | **Takes** | A Model has one open Session (one take) at a time; the next take is a new Session. A take holds at most 20 minutes of audio. |
@@ -122,20 +122,22 @@ take, `session.reportRecited(surah, from, to, { outcome })` (see "Recited ayat")
 
 ## The Content-Security-Policy lines your site needs
 
-If your site sends a Content-Security-Policy, add:
+If your site sends a Content-Security-Policy, add the lines below. The `tajweedformer.com` hosts are backup servers the
+SDK uses if the main ones can't be reached.
 
 ```
-script-src  https://web.quranlab.ai https://web2.quranlab.ai blob:
-frame-src   https://web.quranlab.ai https://web2.quranlab.ai
-connect-src https://web.quranlab.ai https://web2.quranlab.ai https://api.quranlab.ai https://*.r2.cloudflarestorage.com
+script-src  https://web.quranlab.ai https://web2.quranlab.ai https://web-b.tajweedformer.com https://web-g.tajweedformer.com https://web-a.tajweedformer.com blob:
+frame-src   https://web.quranlab.ai https://web2.quranlab.ai https://web-b.tajweedformer.com https://web-g.tajweedformer.com https://web-a.tajweedformer.com
+connect-src https://web.quranlab.ai https://web2.quranlab.ai https://web-b.tajweedformer.com https://web-g.tajweedformer.com https://web-a.tajweedformer.com https://api.quranlab.ai https://api-b.tajweedformer.com https://api-g.tajweedformer.com https://api-a.tajweedformer.com https://*.r2.cloudflarestorage.com
 ```
 
-- `script-src`: the loader (from either host), and `blob:` for what it runs from bytes it checked: the sharing chunk
-  and the microphone's AudioWorklet.
-- `frame-src`: Quran Lab's frame on either host. Without it the browser blocks the frame and `create()` fails with
-  `needs_connection` after 20 seconds.
-- `connect-src`: the frame's host for the sharing chunk and its encoder, `api.quranlab.ai` for the sharing sheet's
-  requests and the origin check, the R2 host for the shared recordings' uploads (as in 3.x).
+- `script-src`: the loader (from any of its hosts), and `blob:` for what it runs from bytes it checked: the sharing
+  chunk and the microphone's AudioWorklet.
+- `frame-src`: Quran Lab's frame on any of its hosts. Without it the browser blocks the frame and `create()` fails
+  with `needs_connection`.
+- `connect-src`: the frame's hosts for the sharing chunk and its encoder, Quran Lab's API hosts for the sharing
+  sheet's requests and the origin check, the R2 host for the shared recordings' uploads (as in 3.x).
+- The backup hosts are listed from 4.0.1; with 4.0.0 the first two of each line are enough.
 - If your page sets `Permissions-Policy`, keep `microphone=(self)` for `listen()`.
 
 Nothing else of yours needs to change: the engine, the model download and the requests to Quran Lab run inside the
@@ -143,30 +145,28 @@ frame, under Quran Lab's own headers.
 
 ## How it works
 
-1. `create()` adds a hidden iframe `https://web.quranlab.ai/4/frame/<your key>` (and, when it has not answered within
-   4 seconds, the same frame from `https://web2.quranlab.ai` beside it; the first to answer stays). Quran Lab's server
-   answers it with `Content-Security-Policy: frame-ancestors <your key's origins>`, so it loads nowhere else.
+1. `create()` adds a hidden iframe `https://web.quranlab.ai/4/frame/<your key>` (from another of its hosts when that
+   one can't be reached). Quran Lab's server answers it with `Content-Security-Policy: frame-ancestors <your key's
+   origins>`, so it loads nowhere else.
 2. The frame runs only inside a page (never top-level, never in a window opened with `window.open`), and learns your
    origin from the browser alone: the origin the browser stamps on your page's answer to its hello, checked against
    the browser's own ancestor list where it has one. Then it starts its Worker and hands it a direct channel to the
    loader. From then on your page and the Worker exchange audio and results only.
 3. The Worker makes the install keys (WebCrypto, not extractable), registers, reads the signed config, loads and
-   verifies the engine build named for your site, and asks for a lease, 24 hours at most: the first one passes
-   Cloudflare Turnstile on Quran Lab's hostname, invisibly. A learner never sees a check or a box. When the check gives
-   no answer or Turnstile is down, the learner still gets a lease, of the 24-hour class, and the next lease checks
-   again; only a token made for another site is refused.
-4. **The lease is kept across page loads** in the frame's storage for your site: the keys as non-extractable WebCrypto
-   keys, the Core's state sealed under another non-extractable key. A reload within the lease's 24 hours opens the
-   model with no request to Quran Lab's lease service, also offline; the lease is renewed in the background after about
-   12 hours. A device clock set back by more than an hour, another site, or a refusal from Quran Lab makes it ask again.
-5. **When Quran Lab cannot be reached** (no answer, a server error, "too many requests") after a lease has ended, the
-   model keeps opening for up to 24 hours more; a refusal from Quran Lab ends this at once. An open past the end of the
-   lease first asks for a new one and waits at most 10 seconds. Each such open is reported; your page gets no error.
-6. The model's files arrive encrypted, are checked against the signed manifest, and the Core converts each once
+   verifies the engine build named for your site, and asks for a lease, the permission to open the model here: it
+   passes Cloudflare Turnstile on Quran Lab's hostname, invisibly. A learner never sees a check or a box. When the
+   check gives no answer or Turnstile is down, the learner still gets a lease; only a token made for another site is
+   refused.
+4. **The first visit needs a connection; after that it works offline.** The lease is kept across page loads in the
+   frame's storage for your site: the keys as non-extractable WebCrypto keys, the Core's state sealed under another
+   non-extractable key. A reload opens the model with no request to Quran Lab, also offline, and while the device is
+   online the SDK keeps itself up to date in the background. Another site, or a refusal from Quran Lab, makes it ask
+   again.
+5. The model's files arrive encrypted, are checked against the signed manifest, and the Core converts each once
    into its device form; only ciphertext is stored (the origin private file system of the frame, partitioned by
-   your site: each site downloads the model once). A download that stalls for 30 seconds or breaks goes on from the
-   bytes it has, up to 5 times in a call, and a later call goes on from the 4 MB blocks kept.
-7. Each open decrypts into the engine's memory; each chunk runs the same engine as 3.x, at the same speed.
+   your site: each site downloads the model once). A download that stalls or breaks goes on from the bytes it has,
+   and a later call goes on from the blocks kept.
+6. Each open decrypts into the engine's memory; each chunk runs the same engine as 3.x, at the same speed.
 
 ## Measured (dev PC, Intel i9-14900KF, one thread)
 
@@ -225,13 +225,13 @@ to is recorded with every shared recording. The code runs in your page, loaded b
 checks by hash, and Quran Lab's frame holds nothing of it. Quran Lab's signed config keeps one switch over sharing,
 `flags.contributions`: a global incident switch that pauses sharing for every app at once.
 
-When the SDK asks is gentler in 4.0. The first ask is the full sheet, never in the first 24 hours after the install,
+When the SDK asks is gentler in 4.0. The first ask is the full sheet, never right after the install,
 never before the learner's 3rd completed session, and only at the end of a good session (a take that ended normally,
 with at least a minute recited in this visit), once the moment has settled (3 seconds with no new take). After
 "Not now" a re-ask is a small card at the bottom of the page, "Your recitation today could help another learner
 tomorrow.", with "See how it helps" (the full sheet, where consent is given) and "Not now"; it blocks nothing and
-takes no focus, and it goes when a take starts or the page is hidden. The card comes only when both 14 days and 7
-completed sessions have passed since the last ask, the next one after 30 days and 10 sessions. Three asks at most,
+takes no focus, and it goes when a take starts or the page is hidden. The card comes only after a good while and
+several completed sessions since the last ask, the next one after longer still. Three asks at most,
 ever (the sheet and two cards). `client.sharing.ask()` asks at your app's own moment only when an ask is due by these
 rules (without the minute), never before a completed take of the visit and never during a take; otherwise it
 resolves with null and shows nothing. Quran Lab's signed config can make asking rarer, never more frequent.
@@ -274,9 +274,9 @@ await client.close();
   ciphertext only, the signed engine, the SDK's small state, and the install keys, sealed under a key made from this
   machine's id and the user's id (mode 0600): a folder copied to another machine does not open there, and the app
   starts as a new install. One Client per folder in a process.
-- **Leases:** the desktop class, 24 hours. The lease is kept across runs, so a run within its 24 hours starts with no
-  request to Quran Lab's lease service, and with no network at all when the model is already in the folder. When Quran
-  Lab cannot be reached after the lease has ended, the model keeps opening for up to 24 hours more, as on the web.
+- **Offline:** as on the web, the first run needs a connection; after that it works offline. The lease is kept
+  across runs, so a run starts with no request to Quran Lab, and with no network at all when the model is already in
+  the folder; while online the SDK keeps itself up to date in the background.
 - **The honest limit:** a desktop key file is protected by software only (`hw 0` in its certificate). On a machine the
   developer controls, the protection is the Core's: the model is never written in plaintext, and the lease opens it
   only in this folder on this machine.
@@ -299,7 +299,7 @@ needs an expert, weeks, and a new effort for every release.
 npm install
 python scripts/build_web4.py engine --core <quranlab-core at f006676 (Core 4.0.0-c3)> --emsdk <emsdk> --work <scratch> --test-key
 python scripts/build_web4.py hosted            # dist/hosted/4: loader, frame, Worker, build.json (SRI)
-QL_CONTRACT=<quranlab-contract at 1c971ab>/sdk_4.0.0 QL_TEST_BUILD=<protected test build sdk/v4.0> npm test
+QL_CONTRACT=<quranlab-contract at 564c144>/sdk_4.0.0 QL_TEST_BUILD=<protected test build sdk/v4.0> npm test && npm run test:3x
 python scripts/build_web4.py hosted --test && QL_TEST_BUILD=... node scripts/browser-web4.mjs
 QL_TEST_BUILD=... node scripts/bench-web4.mjs <clip.f32>
 ```
