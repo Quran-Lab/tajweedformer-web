@@ -166,7 +166,29 @@ export async function fakeServer({ cdnDir, site = 'https://app.example', apiKey 
       if (!rel || !existsSync(p)) return json(404, { error: 'not_found' });
       const b = readFileSync(p);
       st.downloads++; st.bytes += b.length;
-      return new Response(b, { status: 200 });
+      if (!st.ranges && !st.cut) return new Response(b, { status: 200 });
+      // 4.0.2 (SPEC 16.7): st.ranges, the CDN as it answers: an ETag and Accept-Ranges, and an open-ended Range answered
+      // 206 from that byte when its If-Range, if sent, is the file's ETag (else the whole file, 200). st.cut ({ file, at
+      // }): that file's answer cut once, the connection ending after byte `at` of the file
+      const etag = `"${hex(sha256(b)).slice(0, 32)}"`;
+      const m = st.ranges ? /^bytes=(\d+)-$/.exec(String(h.range || '')) : null;
+      const from = m && (h['if-range'] === undefined || h['if-range'] === etag) && Number(m[1]) < b.length ? Number(m[1]) : 0;
+      const part = b.subarray(from);
+      const headers = { etag, 'accept-ranges': 'bytes', 'content-length': String(part.length), ...(from ? { 'content-range': `bytes ${from}-${b.length - 1}/${b.length}` } : {}) };
+      const cut = st.cut && !st.cut.done && rel.endsWith(st.cut.file) ? st.cut : null;
+      if (!cut) return new Response(part, { status: from ? 206 : 200, headers });
+      cut.done = true;
+      const stop = Math.max(0, cut.at - from);
+      let i = 0;
+      const body = new ReadableStream({
+        pull(ctl) {
+          if (i >= stop) { ctl.error(new TypeError('terminated')); return; }
+          const n = Math.min(stop, i + (1 << 20));
+          ctl.enqueue(new Uint8Array(part.subarray(i, n)));
+          i = n;
+        },
+      }, { highWaterMark: 0 });
+      return new Response(body, { status: from ? 206 : 200, headers });
     }
     switch (`${init.method || 'GET'} ${u.pathname}`) {
       case 'GET /v1/origin-check': {

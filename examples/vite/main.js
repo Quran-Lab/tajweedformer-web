@@ -33,7 +33,9 @@ try {
   show(e);
 }
 
-// an error says what happened and, under it, what to do
+// an error says what happened and, under it, what to do; from 4.0.2 its errorCause (short tokens, never a message) is
+// what to quote in a support request
 function show(e) {
-  $('#status').textContent = e && e.fix ? `${e.message}\n${e.fix}` : String(e);
+  const cause = e && e.errorCause ? `\n(${Object.entries(e.errorCause).map(([k, v]) => `${k} ${v}`).join(', ')})` : '';
+  $('#status').textContent = e && e.fix ? `${e.message}\n${e.fix}${cause}` : String(e);
 }

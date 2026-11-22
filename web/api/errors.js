@@ -5,6 +5,7 @@
 // Internals keep their own error classes (ModelFolderError, DeliveryError, PlatformError, SharingError);
 // toTajweedError maps each of them to a catalogue code at the public boundary.
 import { ERRORS_JSON } from './errors-catalogue.js';
+import { classify, publicCause } from '../platform/error-reports.js';
 
 const CATALOGUE = JSON.parse(ERRORS_JSON);
 const BY_CODE = new Map(CATALOGUE.errors.map((e) => [e.code, e]));
@@ -29,7 +30,30 @@ export class TajweedError extends Error {
     this.code = code;
     this.fix = tidy(fill(entry.fix, values));
     this.docs = CATALOGUE.docs_base + code;
+    // 4.0.2 (ERRORS_40.md 24.13): `errorCause`, where the failure was and why, in the tokens of its error report (the
+    // platform's own `cause` keeps the underlying error). Read from the failure the first time it is asked for (a
+    // place that marks the failure with its stage does so before the error leaves the SDK), then kept; an error that
+    // crossed from Quran Lab's frame carries the frame's (setErrorCause).
+    let cause, made = false;
+    Object.defineProperty(this, 'errorCause', {
+      enumerable: true, configurable: true,
+      get: () => {
+        if (!made) { made = true; try { cause = publicCause(classify(this), this.code); } catch (_) { cause = undefined; } }
+        return cause;
+      },
+    });
   }
+}
+
+/**
+ * Sets `err.errorCause` to the cause the failure's own side made (the frame's, which crossed with the error): held
+ * again to 24.2's patterns and frozen here, whatever crossed. Returns `err`.
+ */
+export function setErrorCause(err, c) {
+  if (!(err instanceof TajweedError)) return err;
+  const value = c && typeof c === 'object' ? publicCause(c, err.code, c.needs) : undefined;
+  Object.defineProperty(err, 'errorCause', { value, enumerable: true, configurable: true, writable: false });
+  return err;
 }
 
 /** What the SDK needs to run, in one place: the {minimum} of runtime_unsupported and the README's "Before you start". */

@@ -56,6 +56,8 @@ async function reopen(c) { c.closeModel(); await c.openModel(); }
 // one lease request answered as planned (st.plan); a failed one is expected
 async function ask(c, plan, { fails = false } = {}) {
   c.ql.config = c.ql.config || null;
+  // the vector's asks are apart in time: a busy answer's Retry-After hold of its route (28.11 item 2, 4.0.2) has passed
+  c.ep.holds.clear();
   const src = await c._source(null);
   if (fails) await assert.rejects(c._lease(src)); else await c._lease(src);
 }
@@ -170,7 +172,7 @@ test('engine_load_failed: a build that is not the signed bytes is reported, and 
   assert.equal(issue.kind, 'engine_failed', 'a kind qlab-api accepts (ISSUE_KINDS)');
   assert.equal(issue.code, `engine_load_failed:${CUR}:sha256`);
   assert.match(issue.code, /^[A-Za-z0-9_.:-]{1,64}$/, 'the issue code form qlab-api accepts');
-  assert.equal(issue.sdk_version, '4.0.1');
+  assert.equal(issue.sdk_version, '4.0.2');
   await c.close();
 });
 

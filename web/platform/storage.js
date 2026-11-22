@@ -32,6 +32,33 @@ export function localState(prefix = 'quranlab.') {
   };
 }
 
+/** 4.0.2: the IndexedDB database of the default `storage` name's shared recordings (the one of every name up to 4.0.1). */
+export const SHARING_DB = 'quranlab-sharing';
+/** 4.0.2: one sharing database per `storage` name: `quranlab-sharing` for the default name (none given), and
+ * `quranlab-sharing.<name>` for any other, so one name's answer and passes never touch another name's recordings. */
+export const sharingDbName = (storage) => (typeof storage === 'string' && storage ? `${SHARING_DB}.${storage}` : SHARING_DB);
+
+/**
+ * 4.0.2: the contributor ids the other `storage` names of this origin keep (localState's `quranlab.<name>.contributor`):
+ * the default name's sharing queue leaves alone a recording made under one of them, which that name takes into its own
+ * database (outbox.js, adoptRecordings). An empty set where localStorage cannot be read.
+ */
+export function namedContributors() {
+  const out = new Set();
+  try {
+    const ls = globalThis.localStorage;
+    if (!ls) return out;
+    for (let i = 0; i < ls.length; i++) {
+      const m = /^quranlab\.([A-Za-z0-9._-]{1,40})\.contributor$/.exec(ls.key(i) || '');
+      if (!m) continue;
+      let v = null;
+      try { v = JSON.parse(ls.getItem(ls.key(i))); } catch (_) { v = null; }
+      if (typeof v === 'string' && /^[0-9a-f]{32}$/.test(v)) out.add(v);
+    }
+  } catch (_) { /* nothing known */ }
+  return out;
+}
+
 /** A directory of JSON files (Node). Synchronous on purpose: tiny files, called rarely. */
 export async function dirState(dir) {
   const { fs, path } = node();

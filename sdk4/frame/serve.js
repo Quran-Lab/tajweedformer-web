@@ -1,15 +1,17 @@
 // The engine Worker's side of the loader's port: one call at a time, in order (the Core is single-threaded and a
-// take's audio must reach it in order), each answered with plain data. Errors cross as { code, message, reason }
-// with the code of the SDK's catalogue (web/api/errors-catalogue.js); the loader makes the TajweedError.
+// take's audio must reach it in order), each answered with plain data. Errors cross as { code, message, reason, cause }
+// with the code of the SDK's catalogue (web/api/errors-catalogue.js); the loader makes the TajweedError. `cause` (4.0.2,
+// ERRORS_40.md 24.13) is made here, where the failure is reported, from the same reading as its report.
 import { transferables, OPS } from '../shared/protocol.js';
 import { toTajweedError } from '../../web/api/errors.js';
+import { classify, publicCause } from '../../web/platform/error-reports.js';
 import { SdkError } from './controller.js';
 import { ReportError } from '../shared/recited.js';
 
 export function errorOf(e) {
   if (e instanceof SdkError) return { code: e.code, message: e.message, reason: e.reason || null };
   if (e instanceof ReportError) return { code: 'invalid_argument', message: e.message, reason: null };
-  const t = toTajweedError(e, { fallback: 'engine_failed', sdk: '4.0.1' });
+  const t = toTajweedError(e, { fallback: 'engine_failed', sdk: '4.0.2' });
   return { code: t.code, message: (e && e.message) || t.message, reason: (e && e.reason) || null };
 }
 
@@ -55,6 +57,12 @@ export function serve(port, ctl, { onClose = null } = {}) {
         const out = errorOf(err);
         // ERRORS_40.md section 24: the code the app gets, and where it came from (never in the way of the answer)
         try { if (typeof ctl.reportFailure === 'function') ctl.reportFailure(err, out.code); } catch (_) { /* never in the way */ }
+        // 24.13: the same cause on the app's error; `needs` from what the call needs on the device
+        try {
+          const needs = out.code === 'needs_connection' && typeof ctl.needsOf === 'function' ? await ctl.needsOf(err, op, args || {}) : null;
+          const cause = publicCause(classify(err), out.code, needs);
+          if (cause) out.cause = { ...cause };
+        } catch (_) { /* never in the way */ }
         port.postMessage({ id, ok: false, error: out });
       }
     });

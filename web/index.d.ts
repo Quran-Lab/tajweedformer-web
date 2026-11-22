@@ -1,4 +1,4 @@
-// Type definitions for @quran-lab/tajweedformer 4.0.1 (web API 4): the whole public surface, and nothing else.
+// Type definitions for @quran-lab/tajweedformer 4.0.2 (web API 4): the whole public surface, and nothing else.
 // The package is a thin wrapper that loads Quran Lab's hosted loader; the same names are on globalThis.QuranLab.
 // Five concepts: Client, Model, Session, Heads, Backend. Call order: Client, model, listen, read.
 
@@ -17,6 +17,30 @@ export declare class TajweedError extends Error {
   readonly fix: string;
   /** https://sdk.quranlab.ai/docs/errors#<code> */
   readonly docs: string;
+  /** 4.0.2: where the failure was and why, in short tokens an app can log, match on and send in a support request
+   * (never a message, a URL or an identifier). A frozen object, or undefined for the codes that only say the app used the
+   * API wrongly (invalid_argument, client_exists, session_open, session_closed, cancelled). The platform's own `cause`
+   * keeps the underlying error. */
+  readonly errorCause?: TajweedErrorCause;
+}
+
+/** 4.0.2: the cause on a TajweedError (`error.errorCause`). Every field is a token; the optional ones are there when known. */
+export interface TajweedErrorCause {
+  /** Where the failure was. */
+  readonly stage: 'config' | 'register' | 'attest' | 'lease' | 'manifest' | 'download' | 'verify' | 'storage' | 'runtime'
+    | 'model_open' | 'accelerator' | 'audio' | 'session' | 'sharing' | 'events';
+  /** Why, for that stage: for example 'network' (no answer at all), 'http', 'rate_limited', 'refused', 'quota',
+   * 'permission_denied', 'wasm_compile', 'memory'; 'other' when none fits. New reasons may be added. */
+  readonly reason: string;
+  /** The HTTP status of the answer that failed, when there was one. */
+  readonly httpStatus?: number;
+  /** The platform error's class, for example 'QuotaExceededError', 'NotAllowedError' or 'CompileError'. */
+  readonly errorName?: string;
+  /** The error's code, for example the server's error token ('model_limit', 'app_blocked'). */
+  readonly errorCode?: string;
+  /** On needs_connection only: 'model' when the model files are not on the device yet (connect to download), 'lease'
+   * when the model is on the device and needs Quran Lab's answer to open (connect to continue). */
+  readonly needs?: 'model' | 'lease';
 }
 type TajweedErrorCode =
   | 'invalid_argument' | 'invalid_key' | 'sdk_too_old' | 'server_rejected' | 'client_exists' | 'needs_connection' | 'network_not_permitted'
@@ -51,8 +75,10 @@ export declare class TajweedClient {
   static create(options: TajweedClientOptions): Promise<TajweedClient>;
   /** The Model for this app: downloads on first use, verifies, opens and warms the engine. `version` pins a model version. */
   model(version?: string | { version?: string }): Promise<TajweedModel>;
-  /** Download and verify the model ahead of use: resumable, a no-op when done. */
-  prefetch(options?: { unmeteredOnly?: boolean; onProgress?: (p: { bytesDone: number; bytesTotal: number }) => void; version?: string }):
+  /** Download and verify the model ahead of use: resumable, a no-op when done. It downloads on whatever network the device
+   * has; there is no option to wait for Wi-Fi (4.0.2). Each model file is one request for the whole file; a cut download
+   * goes on from its last byte with one more request (4.0.2). */
+  prefetch(options?: { onProgress?: (p: { bytesDone: number; bytesTotal: number }) => void; version?: string }):
     Promise<{ bytesDone: number; bytesTotal: number; complete: boolean }>;
   /** What the SDK holds on this device, in bytes. */
   storage(): Promise<{ models: { version: string; build: string; bytes: number }[]; sharingQueueBytes: number }>;
@@ -91,7 +117,8 @@ export interface TajweedDiagnosis {
   lastError: TajweedErrorCode | null;
   /** Waiting chunks dropped because the app did not read `chunks` (at most 256 wait), since the Client was made. */
   droppedChunks: number;
-  /** The connection as far as the runtime can tell; 'unknown' in Node and where the browser has no Network Information API. */
+  /** The connection as far as the runtime can tell; 'unknown' in Node and where the browser has no Network Information API.
+   * Reported only: no download or upload waits for, or is held by, the kind of network. */
   connection: 'unmetered' | 'metered' | 'none' | 'unknown';
   /** 4.0.1: the servers in use: the API and model servers asked first, the frame's server (the engine's in Node), and the
    * last request whose first server could not be reached, or null. */

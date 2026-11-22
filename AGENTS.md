@@ -30,7 +30,7 @@ Everything an assistant needs to integrate this SDK correctly: use only the name
 </td>
 <td valign="top">
 
-**Nothing to host**<br>The SDK downloads the model (55.5 MB) from our CDN in six regions, verifies it and keeps it up to date.
+**Nothing to host**<br>The SDK downloads the model (55.5 MB) from Quran Lab's servers, verifies it and keeps it up to date.
 
 </td>
 <td valign="top">
@@ -61,12 +61,14 @@ Copy the setup prompt from [sdk.quranlab.ai](https://sdk.quranlab.ai) and paste 
   pinned in the portal for a while), and runs it only after checking Quran Lab's Ed25519 signature and every
   file's SHA-256 (with WebCrypto's Ed25519 where the browser has it, else the vendored @noble/ed25519 2.3.0, MIT, so
   Chrome before 137 and Safari before 17 work too). The public API has a number, 4; engine updates never change it.
-- **A wrong device clock changes nothing.** The signed config is judged by the server's time when the device clock
-  is off by more than five minutes, the lease by the Core's clock (anchored at the server's time in each lease).
+- **A wrong device clock changes nothing.** The SDK judges its signed config and the model's lease by Quran Lab's
+  time, not by the device's clock.
 - **Your origins only.** The frame is shown only on the origins your key lists (the browser enforces it), it checks
   its parent's origin itself, and the server checks that origin again for every request.
 - **The same API as 3.x** (Client, Model, Session, Heads, Backend), the same names as the Android, Apple and C SDKs.
   `NAMES.md` lists every public name.
+- **Any network.** Downloads and uploads go out on whatever network the device has: the SDK never waits for Wi-Fi
+  (from 4.0.2 `prefetch()` has no network option). `diagnose().connection` reports the network and holds nothing back.
 - **Microphone in your page.** Capture stays in your page (one permission prompt, yours); the samples are passed in.
 
 ## Install
@@ -96,8 +98,8 @@ import { TajweedClient } from '@quran-lab/tajweedformer';
 | **Key** | A web key from [sdk.quranlab.ai](https://sdk.quranlab.ai), locked to your site's origins: Quran Lab's frame is shown only on the origins your key lists. For local work use the app's development key, with `http://localhost:*` among its origins. |
 | **Page** | A secure context: `https`, or `http://localhost`. If your site sends a Content-Security-Policy, add the lines of "The Content-Security-Policy lines your site needs" (after the quick start). Audio starts only after a tap or a click. |
 | **Browser** | WebAssembly with SIMD and AudioWorklet, in a current Chrome, Edge, Firefox or Safari. Node 20 or later runs the same API for a desktop app, with a desktop key and its app id (see "Node"). |
-| **Hosts** | Quran Lab's frame comes from `web.quranlab.ai`, with backup servers the SDK uses if the main ones can't be reached. Your Content-Security-Policy names them all (see "The Content-Security-Policy lines your site needs"). |
-| **Check** | The first lease passes Cloudflare Turnstile inside Quran Lab's frame, invisibly: a learner never sees a check or a box. When the check gives no answer or Turnstile is down, the learner still gets a lease. |
+| **Hosts** | Quran Lab's frame comes from Quran Lab's servers. Your Content-Security-Policy names them all (see "The Content-Security-Policy lines your site needs"). |
+| **Check** | The first model open of a page session passes an invisible bot check inside Quran Lab's frame: a learner never sees a check or a box. When the check gives no clear answer, the learner is never refused. |
 | **Download** | The first visit downloads the model, encrypted, into Quran Lab's frame: 55.5 MB, once (68.4 MB stored); later visits read it from the frame's storage. A browser that blocks the site's storage keeps nothing: there the model is downloaded at every visit. |
 | **Offline** | The first visit needs a connection; after that the model opens with no connection, and while online the SDK keeps itself up to date in the background. A Model that is open keeps running. |
 | **Model** | The engine, the model and its lease live in the Worker of Quran Lab's frame: your page's scripts never see the model's files. When Quran Lab refuses the key or the app, the model is removed from the browser. |
@@ -120,10 +122,34 @@ The same as a page you can run: [examples/quickstart.html](examples/quickstart.h
 `model.session()` and `session.push(float32Samples)`, or `model.listen({ from: samples })`. When your app judges a
 take, `session.reportRecited(surah, from, to, { outcome })` (see "Recited ayat").
 
+## Errors
+
+Every failure is a `TajweedError` with a `code` from the shared catalogue, a `message` and a `fix`. From 4.0.2 it also
+has `errorCause`: short tokens that say where it failed and why, the same ones as Quran Lab's error report. An app can
+log them, choose its words by them, and send them in a support request.
+
+```js
+try {
+  await client.model();
+} catch (e) {
+  // e.code === 'needs_connection', e.errorCause: { stage: 'download', reason: 'network', needs: 'model' }
+  if (e.code === 'needs_connection') show(e.errorCause?.needs === 'lease' ? 'Connect to continue' : 'Connect to download the model');
+}
+```
+
+- `stage` and `reason`: where and why (`download` and `network`: a model file got no answer at all).
+- `httpStatus`, `errorName`, `errorCode`: the HTTP status, the error's class and its code, when there are any.
+- `needs`, on `needs_connection` only: `model` when the model files are not on the device yet (connect to download),
+  `lease` when the model is on the device and needs Quran Lab's answer to open.
+
+`errorCause` is never a message, a URL or an identifier. The codes that only say the API was used wrongly
+(`invalid_argument`, `client_exists`, `session_open`, `session_closed`, `cancelled`) have none, and the platform's own
+`cause` keeps the underlying error.
+
 ## The Content-Security-Policy lines your site needs
 
-If your site sends a Content-Security-Policy, add the lines below. The `tajweedformer.com` hosts are backup servers the
-SDK uses if the main ones can't be reached.
+If your site sends a Content-Security-Policy, add the lines below. They name every Quran Lab host the SDK may use,
+so it keeps working when one of them is unreachable.
 
 ```
 script-src  https://web.quranlab.ai https://web2.quranlab.ai https://web-b.tajweedformer.com https://web-g.tajweedformer.com https://web-a.tajweedformer.com blob:
@@ -136,8 +162,8 @@ connect-src https://web.quranlab.ai https://web2.quranlab.ai https://web-b.tajwe
 - `frame-src`: Quran Lab's frame on any of its hosts. Without it the browser blocks the frame and `create()` fails
   with `needs_connection`.
 - `connect-src`: the frame's hosts for the sharing chunk and its encoder, Quran Lab's API hosts for the sharing
-  sheet's requests and the origin check, the R2 host for the shared recordings' uploads (as in 3.x).
-- The backup hosts are listed from 4.0.1; with 4.0.0 the first two of each line are enough.
+  sheet's requests and the origin check, and the storage host for the shared recordings' uploads (as in 3.x).
+- SDK 4.0.0 uses only the `quranlab.ai` hosts of each line.
 - If your page sets `Permissions-Policy`, keep `microphone=(self)` for `listen()`.
 
 Nothing else of yours needs to change: the engine, the model download and the requests to Quran Lab run inside the
@@ -145,18 +171,17 @@ frame, under Quran Lab's own headers.
 
 ## How it works
 
-1. `create()` adds a hidden iframe `https://web.quranlab.ai/4/frame/<your key>` (from another of its hosts when that
-   one can't be reached). Quran Lab's server answers it with `Content-Security-Policy: frame-ancestors <your key's
-   origins>`, so it loads nowhere else.
+1. `create()` adds a hidden iframe, Quran Lab's frame `https://web.quranlab.ai/4/frame/<your key>`. Quran Lab's server
+   answers it with `Content-Security-Policy: frame-ancestors <your key's origins>`, so it loads nowhere else. When a
+   Quran Lab server is unreachable, the SDK keeps working through another.
 2. The frame runs only inside a page (never top-level, never in a window opened with `window.open`), and learns your
    origin from the browser alone: the origin the browser stamps on your page's answer to its hello, checked against
    the browser's own ancestor list where it has one. Then it starts its Worker and hands it a direct channel to the
    loader. From then on your page and the Worker exchange audio and results only.
 3. The Worker makes the install keys (WebCrypto, not extractable), registers, reads the signed config, loads and
    verifies the engine build named for your site, and asks for a lease, the permission to open the model here: it
-   passes Cloudflare Turnstile on Quran Lab's hostname, invisibly. A learner never sees a check or a box. When the
-   check gives no answer or Turnstile is down, the learner still gets a lease; only a token made for another site is
-   refused.
+   passes an invisible bot check on Quran Lab's hostname. A learner never sees a check or a box, and is never refused
+   when the check gives no clear answer; only a check made for another site is refused.
 4. **The first visit needs a connection; after that it works offline.** The lease is kept across page loads in the
    frame's storage for your site: the keys as non-extractable WebCrypto keys, the Core's state sealed under another
    non-extractable key. A reload opens the model with no request to Quran Lab, also offline, and while the device is
@@ -236,6 +261,12 @@ ever (the sheet and two cards). `client.sharing.ask()` asks at your app's own mo
 rules (without the minute), never before a completed take of the visit and never during a take; otherwise it
 resolves with null and shows nothing. Quran Lab's signed config can make asking rarer, never more frequent.
 
+Each `storage` name of a site keeps its own queue of shared recordings (4.0.2): the default name in the IndexedDB
+database `quranlab-sharing`, another name in `quranlab-sharing.<name>`. A learner's answer under one name never deletes
+or sends the recordings of another. Recordings that a named client queued in the one shared database of 4.0.0 and
+4.0.1 move to that name's database the next time a page with that name starts; until then the default name leaves
+them where they are.
+
 Every app shows the same sheet, under the same rules; no option selects another. (3.x had an `audience` option; in
 4.0 an `audience` passed to `create()`, whatever its value, is refused with `invalid_argument`, whose message points to
 [docs/migrating-to-4.md](docs/migrating-to-4.md): delete it.) A learner who already said yes in 3.x keeps that yes
@@ -306,8 +337,8 @@ QL_TEST_BUILD=... node scripts/bench-web4.mjs <clip.f32>
 
 The tests use the contract's test keys (a default build of the Core is its test release, 4.0.0-c1) and a local
 stand-in for Quran Lab's API and CDN; they never call a production endpoint. CI runs them on Quran Lab's own runner
-(`.github/workflows/ci.yml`). `docs/server-for-web-4.md` is what Quran Lab's CDN Worker serves; `docs/core-requests.md`
-lists what this SDK asks of the Core.
+(`.github/workflows/ci.yml`). `docs/server-for-web-4.md` is what Quran Lab's servers do for this SDK;
+`docs/core-requests.md` lists what this SDK asks of the Core.
 
 ## Problems and wishes
 

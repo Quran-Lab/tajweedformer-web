@@ -169,6 +169,53 @@ async function apiError(res) {
   } catch (_) { return null; }
 }
 
+/** 28.11 item 4 (SDK 4.0.2): after a 429 on optional traffic, the wait when the answer gives no Retry-After, and the
+ * most the doubling reaches (seconds). */
+export const STEP_BACK_S = 300;
+export const STEP_BACK_MAX_S = 3600;
+/** 28.11 item 3 (SDK 4.0.2): a kept time more than this far ahead of the clock at start (a clock that moved back) is
+ * read as ending now; also the most a Retry-After is read as (seconds). */
+export const HOLD_MAX_S = 21600;
+
+/** A kept time (ms) read back at start: null when gone, the clock's now when more than HOLD_MAX_S ahead. */
+const keptUntil = (until, now) => (!Number.isFinite(until) || until <= now ? null : until - now > HOLD_MAX_S * 1000 ? now : until);
+
+/**
+ * 28.11 item 4 (SDK 4.0.2): one optional route's step back after 429s (telemetry, error reports, shared-recording
+ * uploads). Its next attempt waits the larger of the answer's Retry-After (300 s when it has none) and its own next send
+ * point, and the wait doubles at each 429 in a row, up to 3600 s (never below a Retry-After); an accepted answer ends
+ * the row. Nothing is dropped for it: the route's queue keeps its own limits. `keep` ({ get(), set(v) }, the SDK's
+ * state): the row and its time are kept there and read back at the next start (28.11 item 3); none: this process only.
+ */
+export class StepBack {
+  constructor(clock = () => Date.now(), keep = null) {
+    this.clock = clock; this.keep = keep; this.row = 0; this.until = 0;
+    let v = null;
+    try { v = keep ? keep.get() : null; } catch (_) { v = null; }
+    if (v && Number.isInteger(v.row) && v.row > 0) {
+      this.row = Math.min(v.row, 32);
+      this.until = keptUntil(v.until, this.clock()) || 0;
+    }
+  }
+  _save() {
+    if (!this.keep) return;
+    try { this.keep.set(this.row ? { row: this.row, until: this.until } : null); } catch (_) { /* this process only */ }
+  }
+  /** A 429 (`retryAfter` in seconds, or null): the wait it starts, in seconds. */
+  slowDown(retryAfter = null) {
+    this.row += 1;
+    const ra = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter, HOLD_MAX_S) : null;
+    const wait = Math.max(ra || 0, Math.min(STEP_BACK_MAX_S, (ra || STEP_BACK_S) * 2 ** (this.row - 1)));
+    this.until = Math.max(this.until, this.clock() + wait * 1000);
+    this._save();
+    return wait;
+  }
+  /** An accepted answer: the row ends. */
+  ok() { if (this.row) { this.row = 0; this._save(); } }
+  /** Milliseconds before the route may be asked again (0: now). */
+  left() { return Math.max(0, this.until - this.clock()); }
+}
+
 /** A Retry-After header in seconds (a number of seconds, or an HTTP date), or null. */
 export function retryAfterOf(res, nowMs = Date.now()) {
   let h = null;
@@ -181,6 +228,9 @@ export function retryAfterOf(res, nowMs = Date.now()) {
 }
 
 const unref = (t) => { if (t && typeof t.unref === 'function') t.unref(); return t; };
+// the answer a held route stands on (28.11 item 2): the status and error token of the answer that held it, and the time left
+const heldAnswer = (h) => new Response(JSON.stringify({ error: h.error || (h.status === 429 ? 'rate_limited' : 'unavailable') }),
+  { status: h.status, headers: { 'content-type': 'application/json', 'retry-after': String(Math.max(1, h.left)) } });
 const drop = (res) => { try { if (res && res.body && typeof res.body.cancel === 'function') res.body.cancel().catch(() => {}); } catch (_) { /* gone */ } };
 const mark = (o, props) => { try { for (const [k, v] of Object.entries(props)) Object.defineProperty(o, k, { value: v, configurable: true }); } catch (_) { /* frozen */ } return o; };
 /** A request that ended on a redirect: fetch with redirect 'error' says so only in its message (Node: "unexpected
@@ -207,6 +257,11 @@ export class Endpoints {
     this.clock = clock;
     this.headMs = headMs;
     this.lastFailover = null;
+    // 28.11 item 2 (4.0.2): "<role> <route> <host>" -> { until (ms), status, error }: a 429, or a 503 with a Retry-After,
+    // holds that route on that host until then; no request of the route goes to the host before it
+    this.holds = new Map();
+    /** (holds) => void: a hold was set (28.11 item 3: Quran Lab keeps holdsState() in the SDK's state) */
+    this.onHolds = null;
     /** ({ role, stage, reason, status }) => void: a request of a stage answered on another host (28.7, silent report) */
     this.onFailover = null;
     /** () => void: the api or models P moved by an answer (the other parts of the page are told, share) */
@@ -293,6 +348,52 @@ export class Endpoints {
     return null;
   }
 
+  /**
+   * 28.11 item 2 (SDK 4.0.2): an answer of `host` for `route` (a path without its query; on the models role each file's
+   * path, contract e330c08)
+   * that was a 429, or a 503 with a Retry-After: no request of that route goes to that host before the Retry-After
+   * (read as 1 to 21600 s; a 429 without one holds nothing here: its route's own rules wait). `error`: the answer's own
+   * error token, answered again while the hold lasts.
+   */
+  hold(role, route, host, retryAfter, status, error = null) {
+    if (!(status === 429 || status === 503) || !Number.isFinite(retryAfter)) return;
+    const s = Math.min(Math.max(Math.ceil(retryAfter), 1), HOLD_MAX_S);
+    const key = `${role} ${route} ${host}`, until = this.clock() + s * 1000;
+    const had = this.holds.get(key);
+    if (had && had.until >= until) return;
+    this.holds.set(key, { until, status, error });
+    if (typeof this.onHolds === 'function') { try { this.onHolds(this.holdsState()); } catch (_) { /* this process only */ } }
+  }
+
+  /** 28.11 item 3 (SDK 4.0.2): the holds in force, as the SDK's state keeps them ([{ k, until, status, error }]). */
+  holdsState() {
+    const now = this.clock();
+    return [...this.holds].filter(([, h]) => h.until > now).map(([k, h]) => ({ k, until: h.until, status: h.status, error: h.error || null }));
+  }
+
+  /** 28.11 item 3 (SDK 4.0.2): the holds an earlier page load or process kept (holdsState), each still in force taken
+   * again; one ending more than 6 h ahead of the clock (a clock that moved back) is read as ending now. */
+  restoreHolds(list) {
+    if (!Array.isArray(list)) return;
+    const now = this.clock();
+    for (const h of list) {
+      if (!h || typeof h.k !== 'string' || !(h.status === 429 || h.status === 503)) continue;
+      const until = keptUntil(h.until, now);
+      if (!until || until === now) continue;
+      const had = this.holds.get(h.k);
+      if (!had || had.until < until) this.holds.set(h.k, { until, status: h.status, error: typeof h.error === 'string' ? h.error : null });
+    }
+  }
+
+  /** The hold of `route` on `host` now ({ until, status, error, left (s) }), or null. */
+  held(role, route, host) {
+    const key = `${role} ${route} ${host}`, h = this.holds.get(key);
+    if (!h) return null;
+    const left = Math.ceil((h.until - this.clock()) / 1000);
+    if (left <= 0) { this.holds.delete(key); return null; }
+    return { ...h, left };
+  }
+
   /** 28.7: diagnose()'s endpoints. `webFrame`: the frame's host on the web, the engine's P in Node. */
   diagnose(webFrame) {
     return { api: this.roles.api.p, models: this.roles.models.p, ...(webFrame ? { webFrame } : {}), lastFailover: this.lastFailover ? { ...this.lastFailover } : null };
@@ -300,10 +401,13 @@ export class Endpoints {
 
   /** A request whose first host was unreachable: diagnose's lastFailover; and when another host answered, the silent
    * report of its stage (28.7). */
-  noteFailover(role, first, to, stage) {
+  noteFailover(role, first, to, stage, toAsked = true) {
     this.lastFailover = { role, from: first.host, to: to || null, reason: first.reason || 'network', status: Number.isInteger(first.status) ? first.status : null,
       at: Math.floor(this.clock() / 1000) };
-    if (to && stage && typeof this.onFailover === 'function') {
+    // 4.0.2: the silent report only when the first host was asked and was unreachable, and the host the request ended on
+    // was asked and answered (28.7, "answered on another of Quran Lab's hosts"); a host passed or ended on for a
+    // Retry-After hold (28.11 item 2, kept from an earlier answer or page load) was not asked, and reports nothing
+    if (to && stage && first.asked !== false && toAsked !== false && typeof this.onFailover === 'function') {
       try { this.onFailover({ role, stage, reason: this.lastFailover.reason, status: this.lastFailover.status }); } catch (_) { /* never in the way */ }
     }
   }
@@ -371,23 +475,32 @@ export class Endpoints {
     let { order, probe } = ro.order(now);
     if (first && !ro.hosts.includes(first)) order = [first, ...order];
     const tried = [];
+    // 4.0.2 (ERRORS_40 24.3, ENDPOINTS_40 28.7): `fallback` is true only when more than one host was asked; a host
+    // passed for its Retry-After hold was not (diagnose's lastFailover still names it, as before)
+    const askedMore = () => tried.filter((t) => t.asked).length > 1;
     let head = null, retryAfter = null;
+    const route = String(path).split('?')[0];
     for (const host of order) {
-      const one = await this.ask(fetch, this.origin(host) + path, init, bodyMs);
+      // 28.11 item 2: a route that host holds (a 429 or a 503 with Retry-After) is not asked of it before its time: its
+      // answer stands for it (a 429 ends the request there, 28.3; a 503 goes on to the next host)
+      const h = this.held(role, route, host);
+      const one = h ? { res: mark(heldAnswer(h), { qlHeld: true }) } : await this.ask(fetch, this.origin(host) + path, init, bodyMs);
+      if (!h && one.res && (one.res.status === 429 || one.res.status === 503)) {
+        this.hold(role, route, host, retryAfterOf(one.res, this.clock()), one.res.status, await apiError(one.res.clone()));
+      }
       const c = await this.classify(one, { accept, notModified });
-      tried.push({ host, reason: c.reason, status: c.status });
+      tried.push({ host, reason: c.reason, status: c.status, asked: !h });
       // 28.5: an attempt unreachable on every host waits the largest Retry-After any host gave
       const ra = one.res ? retryAfterOf(one.res, this.clock()) : null;
       if (ra !== null && (c.cls === 'unreachable' || c.cls === 'slow_down')) retryAfter = c.cls === 'slow_down' ? ra : Math.max(retryAfter || 0, ra);
       if (c.cls !== 'unreachable') {
         ro.settle(host, now, probe);
-        const fallback = tried.length > 1;
-        if (fallback) { drop(head && head.res); this.noteFailover(role, tried[0], host, stage); }
-        return { res: one.res, host, cls: c.cls, fallback, probe, value: c.value, status: c.status, retryAfter: c.cls === 'slow_down' ? ra : null };
+        if (tried.length > 1) { drop(head && head.res); this.noteFailover(role, tried[0], host, stage, !h); }
+        return { res: one.res, host, cls: c.cls, fallback: askedMore(), probe, value: c.value, status: c.status, retryAfter: c.cls === 'slow_down' ? ra : null };
       }
       if (!head) head = one; else drop(one.res);
     }
-    const fallback = tried.length > 1;
+    const fallback = askedMore();
     this.noteFailover(role, tried[0], null, stage);
     if (head.res) return { res: head.res, host: order[0], cls: 'unreachable', fallback, probe, value: undefined, status: head.res.status, retryAfter };
     throw mark(head.error, { qlHostRole: role, qlFallback: fallback, qlProbe: probe });

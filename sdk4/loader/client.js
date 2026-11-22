@@ -10,6 +10,7 @@ import { RULE_RE } from '../shared/recited.js';
 import { MODEL_VERSION_RE } from '../../web/tajweed/manifest.js';
 import { refuseRemovedOptions } from '../shared/options.js';
 import { ROLES, Endpoints } from '../shared/endpoints.js';
+import { tag } from '../../web/platform/error-reports.js';
 
 /* global __QL_FRAME_BASE__, __QL_FRAME_FALLBACK__, __QL_API__, __QL_TEST__, __QL_APP__, __QL_SHARING_SHA384__, __QL_PINS__ */
 const APP = typeof __QL_APP__ !== 'undefined' ? __QL_APP__ : null;
@@ -24,7 +25,7 @@ export const FRAME_FALLBACK = typeof __QL_FRAME_FALLBACK__ !== 'undefined' ? __Q
  * loader carries this list itself: it is never taken from a config (28.2). */
 export const FRAME_BASES = Object.freeze(typeof __QL_FRAME_BASE__ !== 'undefined' ? [FRAME_BASE, FRAME_FALLBACK] : ROLES.web_frame.map((h) => `https://${h}`));
 export const API_URL = typeof __QL_API__ !== 'undefined' ? __QL_API__ : 'https://api.quranlab.ai';
-export const SDK_VERSION = '4.0.1';
+export const SDK_VERSION = '4.0.2';
 export const API = 4;
 const MADE = Symbol('TajweedClient.create');
 const MAX_CHECKS = 100_000;
@@ -132,8 +133,10 @@ export class TajweedClient {
       if (link) link.close();
       if (current === claim) current = null;
       const err = errorFrom(e, 'needs_connection');
-      // no frame answered: nothing here can report it, so the next frame that answers does (ERRORS_40.md section 24)
-      if (!link) notePending(err);
+      // no frame answered: nothing here can report it, so the next frame that answers does (ERRORS_40.md section 24),
+      // and the error's cause is that report's (24.13: runtime, frame or frame_offline; `needs` model, as nothing of
+      // the frame's could be reached)
+      if (!link) { tag(err, { stage: 'runtime', reason: frameReason() }); notePending(err); }
       throw err;
     }
   }
@@ -185,11 +188,14 @@ export class TajweedClient {
     return promise;
   }
 
-  /** Download and install the model ahead of use (a lease is needed: the files are installed as they arrive). */
-  async prefetch({ unmeteredOnly = false, onProgress = null, version = null } = {}) {
+  /**
+   * Download and install the model ahead of use (a lease is needed: the files are installed as they arrive), on
+   * whatever network the device has (4.0.2, NO_WAIT_40.md: there is no network option; an `unmeteredOnly` a page
+   * written for 4.0.1 still passes is not read).
+   */
+  async prefetch({ onProgress = null, version = null } = {}) {
     this._guard();
     if (onProgress !== null && typeof onProgress !== 'function') throw invalid('onProgress must be a function');
-    if (unmeteredOnly && ['metered', 'none'].includes(connection())) return { bytesDone: 0, bytesTotal: 0, complete: false };
     const progressId = Math.random().toString(36).slice(2);
     let total = 0;
     const off = this._x.rpc.onEvent((d) => { if (d.ev === 'progress' && d.id === progressId) { total = d.bytesTotal; if (onProgress) onProgress({ bytesDone: d.bytesDone, bytesTotal: d.bytesTotal }); } });
@@ -271,6 +277,8 @@ async function loadSharingChunk(frameBase) {
   try { return await import(/* @vite-ignore */ url); } finally { URL.revokeObjectURL(url); }
 }
 
+// diagnose().connection: the network as far as the browser tells (the Network Information API). It is reported only:
+// no request of the SDK waits for, or is held by, the kind of network or the data saver (NO_WAIT_40.md, 33.1)
 function connection() {
   const nav = globalThis.navigator, c = nav && nav.connection;
   if ((c && c.type === 'none') || (nav && nav.onLine === false)) return 'none';
@@ -284,13 +292,13 @@ function connection() {
 // cannot start it), kept on this page's origin until a frame answers and reports them: at most 8, the newest kept.
 // Only the code and a reason; no message, URL or time finer than the entry's UTC day (the frame reports it today).
 const PENDING_KEY = 'quranlab.sdk4.pending_errors';
+const frameReason = () => (globalThis.navigator && globalThis.navigator.onLine === false ? 'frame_offline' : 'frame');
 function notePending(err) {
   try {
     const ls = globalThis.localStorage;
     if (!ls) return;
     const list = JSON.parse(ls.getItem(PENDING_KEY) || '[]');
-    const online = !(globalThis.navigator && globalThis.navigator.onLine === false);
-    list.push({ reason: online ? 'frame' : 'frame_offline', code: err && typeof err.code === 'string' ? err.code : 'needs_connection' });
+    list.push({ reason: frameReason(), code: err && typeof err.code === 'string' ? err.code : 'needs_connection' });
     ls.setItem(PENDING_KEY, JSON.stringify(list.slice(-8)));
   } catch (_) { /* nothing is kept */ }
 }

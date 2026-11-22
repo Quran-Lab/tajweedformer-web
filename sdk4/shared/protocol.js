@@ -7,7 +7,8 @@
 //    the browser stamps (checked against location.ancestorOrigins where the browser has it). No message field, URL
 //    part or referrer is ever the site (frame.js). The frame refuses to run top-level or in a window.open window.
 // 2. Calls, loader <-> engine Worker, over the transferred MessagePort (the frame relays nothing):
-//      { id, op, args }  ->  { id, ok: true, value } | { id, ok: false, error: { code, message, reason } }
+//      { id, op, args }  ->  { id, ok: true, value } | { id, ok: false, error: { code, message, reason, cause } }
+//      (cause, 4.0.2: the public cause of ERRORS_40.md 24.13, tokens only; the loader holds it to its patterns again)
 //      events            ->  { ev: 'progress' | 'frame', ... }
 // Nothing that crosses carries a model byte, a key, the lease or the install certificate.
 export const API = 4;
@@ -41,7 +42,8 @@ export function caller(port) {
     const w = waiting.get(d.id);
     if (!w) return;
     waiting.delete(d.id);
-    if (d.ok) w.resolve(d.value); else w.reject(Object.assign(new Error(d.error && d.error.message || 'failed'), { code: d.error && d.error.code, reason: d.error && d.error.reason }));
+    if (d.ok) w.resolve(d.value);
+    else w.reject(Object.assign(new Error(d.error && d.error.message || 'failed'), { code: d.error && d.error.code, reason: d.error && d.error.reason, qlCause: d.error && d.error.cause }));
   };
   if (typeof port.start === 'function') port.start();
   return {

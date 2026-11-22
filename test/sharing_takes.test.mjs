@@ -888,7 +888,7 @@ test('the shared vector sharing_30.json, take_list_answers: the list\'s state af
   }
 });
 
-test('the take list call: 401 renews the token and sends again; a network failure, 429 and 503 retry the same body with the outbox backoff, across a reload', { skip }, async () => {
+test('the take list call: 401 renews the token and sends again; a network failure, 429 and 503 retry the same body with the outbox backoff (a 429 at least 300 s, 4.0.2), across a reload', { skip }, async () => {
   // 401: the token is renewed and the same body goes again at once
   const s1 = new Server();
   s1.takes = (k) => (k === 1 ? { status: 401, body: { error: 'invalid_token' } } : null);
@@ -944,6 +944,12 @@ test('the take list call: 401 renews the token and sends again; a network failur
     await t.outbox.drain();
     assert.equal(s3.lists(id3).length, 1, `${status}: not before the backoff`);
     t.s.advance(30001);
+    // 4.0.2 (ENDPOINTS_40.md 28.11 item 4): a 429 steps the uploads back 300 s when it has no Retry-After (4.0.1: the backoff's 30 s)
+    if (status === 429) {
+      await t.outbox.drain();
+      assert.equal(s3.lists(id3).length, 1, '429: not before 300 s');
+      t.s.advance(270_000);
+    }
     await t.outbox.drain();
     assert.equal((await t.outbox.item(id3)).takeList, 'sent', String(status));
     assert.deepEqual(s3.lists(id3).map((x) => x.body), [BODY, BODY]);

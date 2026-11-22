@@ -11,6 +11,7 @@
 // true: on); a group that is off sends nothing and seals no facts.
 import { Telemetry, utcDay } from '../../web/platform/telemetry.js';
 import { LearnerJournal, DayMath, juzOf } from './learner.js';
+import { hostAllowed, asciiLower } from '../shared/endpoints.js';
 
 const CAP = 10_000_000;
 const clip = (n) => Math.max(0, Math.min(CAP, Math.round(n)));
@@ -34,6 +35,45 @@ export const METRIC_GROUPS = Object.freeze({
 export const REPORTED_4 = Object.freeze(['app_ayahs', 'app_surah_ayahs', 'words', 'rule_checks', 'rule_flags', 'judged',
   'judged_surah_ayahs', 'correct_surah_ayahs', 'judged_tenure', 'trend']);
 const bucket = (v, edges) => { const i = edges.findIndex((e) => v <= e); return i < 0 ? edges.length : i; };
+const under = (v, edges) => { const i = edges.findIndex((e) => v < e); return i < 0 ? edges.length : i; };
+
+/**
+ * STEERING_40.md 34.6 (SDK 4.0.2): per models host per UTC day, the download counts the host order is made from. A
+ * request's time from sent to status in 9 buckets (under 100, 250, 500, 1000, 1500, 3000, 6000, 10000 ms, and over);
+ * each transfer of at least 256 KiB, its average rate over its body in 10 buckets of kB/s (1000 bytes: under 32, 64,
+ * 128, 256, 512, 1024, 2048, 4096, 8192, and over); at most 8 hosts a day, hosts of the allow-list only (28.1).
+ */
+export const HOST_TTFB_MS = Object.freeze([100, 250, 500, 1000, 1500, 3000, 6000, 10000]);
+export const HOST_KBPS = Object.freeze([32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]);
+export const HOSTS_MAX = 8;
+export const HOST_TRANSFER_MIN = 256 * 1024;
+/**
+ * The switch of 34.6's sending: ON in 4.0.2. POST /v1/events is a closed object; qlab-api takes `hosts` in it from
+ * 2026-11-21 (34.6 "The server"), and a body with anything else in `hosts` is refused whole, so the body is built only
+ * as hostsValid takes it. Off, the counts are still measured and kept in the day's record from the first page load (or
+ * Node start) and leave with the day at its seal. Tests set it per instance (o.sendHosts).
+ */
+export const SEND_HOSTS = true;
+const HOST_KEYS = ['role', 'host', 'files', 'bytes', 'requests', 'unreachable', 'hedged', 'slow_switches', 'ttfb_ms', 'kbps'];
+const count = (n) => Number.isInteger(n) && n >= 0;
+
+/** 34.6: whether `hosts` is a body the server takes (steering_40.json `telemetry`): at most 8 entries, each exactly
+ * HOST_KEYS, role models, a host of the allow-list once, counts that are integers of 0 or more, 9 and 10 buckets. */
+export function hostsValid(list) {
+  if (!Array.isArray(list) || list.length > HOSTS_MAX) return false;
+  const seen = new Set();
+  for (const e of list) {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) return false;
+    const keys = Object.keys(e);
+    if (keys.length !== HOST_KEYS.length || !HOST_KEYS.every((k) => keys.includes(k))) return false;
+    if (e.role !== 'models' || typeof e.host !== 'string' || !hostAllowed(e.host) || e.host !== e.host.toLowerCase() || seen.has(e.host)) return false;
+    seen.add(e.host);
+    if (!['files', 'bytes', 'requests', 'unreachable', 'hedged', 'slow_switches'].every((k) => count(e[k]))) return false;
+    if (!Array.isArray(e.ttfb_ms) || e.ttfb_ms.length !== HOST_TTFB_MS.length + 1 || !e.ttfb_ms.every(count)) return false;
+    if (!Array.isArray(e.kbps) || e.kbps.length !== HOST_KBPS.length + 1 || !e.kbps.every(count)) return false;
+  }
+  return true;
+}
 const hist = (names, counts) => Object.fromEntries(names.map((n, i) => [n, clip(counts[i] || 0)]));
 
 export class Telemetry4 extends Telemetry {
@@ -46,6 +86,46 @@ export class Telemetry4 extends Telemetry {
     this.metricsOff = o.metricsOff || (() => new Set());
     this.local = o.local || DayMath.local;
     this._at = null;
+    this.sendHosts = typeof o.sendHosts === 'boolean' ? o.sendHosts : SEND_HOSTS; // 34.6: on in 4.0.2 (SEND_HOSTS)
+  }
+
+  /**
+   * 34.6: one model request's facts on a models host, into today's record: `requests` (1 when sent), `unreachable` (1
+   * when it ended unreachable, 28.3 item 3), `ttfbMs` (from sent to status, when a status came), `bytes` (model bytes
+   * it received), `transfer` ({ bytes, ms }: its body, rated when 256 KiB or more), `files` (1 when the file's last
+   * byte came from it). A host off the allow-list, or a ninth host of the day, is not counted.
+   */
+  recordHost(host, { requests = 0, unreachable = 0, ttfbMs = null, bytes = 0, transfer = null, files = 0 } = {}) {
+    const h = typeof host === 'string' ? asciiLower(host) : '';
+    if (!hostAllowed(h)) return;
+    this._edit((d) => {
+      const v = (d.v4 = d.v4 || {});
+      const all = (v.hosts = v.hosts || {});
+      if (!all[h] && Object.keys(all).length >= HOSTS_MAX) return;
+      const e = (all[h] = all[h] || { files: 0, bytes: 0, requests: 0, unreachable: 0, ttfb: Array(HOST_TTFB_MS.length + 1).fill(0), kbps: Array(HOST_KBPS.length + 1).fill(0) });
+      add(e, 'requests', requests);
+      add(e, 'unreachable', unreachable);
+      add(e, 'files', files);
+      e.bytes = Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.round(e.bytes + Math.max(0, bytes))));
+      if (Number.isFinite(ttfbMs) && ttfbMs >= 0) { const i = under(ttfbMs, HOST_TTFB_MS); e.ttfb[i] = clip(e.ttfb[i] + 1); }
+      if (transfer && transfer.bytes >= HOST_TRANSFER_MIN) {
+        const i = under(transfer.bytes / Math.max(1, transfer.ms), HOST_KBPS); // bytes per ms is kB/s
+        e.kbps[i] = clip(e.kbps[i] + 1);
+      }
+    });
+  }
+
+  /** 34.6: the day's `hosts` as the server takes it (hedged and slow_switches 0: 34.4 and 34.5 are SDK 4.0.3). */
+  static hostsBody(v) {
+    const out = [];
+    for (const [host, e] of Object.entries((v && v.hosts) || {})) {
+      if (out.length >= HOSTS_MAX || !hostAllowed(host) || !e) continue;
+      const n = (x) => (Number.isFinite(x) && x > 0 ? Math.min(Number.MAX_SAFE_INTEGER, Math.round(x)) : 0);
+      const list = (a, len) => Array.from({ length: len }, (_, i) => n(Array.isArray(a) ? a[i] : 0));
+      out.push({ role: 'models', host: asciiLower(host), files: n(e.files), bytes: n(e.bytes), requests: n(e.requests), unreachable: n(e.unreachable),
+        hedged: 0, slow_switches: 0, ttfb_ms: list(e.ttfb, HOST_TTFB_MS.length + 1), kbps: list(e.kbps, HOST_KBPS.length + 1) });
+    }
+    return out;
   }
 
   // ---- the install's days and the open session (state keys written with the counters) ----
@@ -184,7 +264,7 @@ export class Telemetry4 extends Telemetry {
       const v = (p.v4 = p.v4 || {});
       if (!off.has('learner')) { const f = j.takeFacts(day); if (f) { v.learner = f.learner; v.learner_gap = f.gap; v.streak = f.streak; } }
       if (!off.has('judged')) { const t = j.takeTrend(day); if (t) v.trend = t; }
-      const body = Telemetry4.wire(p, off);
+      const body = Telemetry4.wire(p, off, { hosts: this.sendHosts });
       delete days[day];
       if (!Telemetry4.hasContent(body)) continue;
       const reportId = globalThis.crypto.getRandomValues(new Uint8Array(16)).reduce((s, b) => s + b.toString(16).padStart(2, '0'), '');
@@ -199,11 +279,12 @@ export class Telemetry4 extends Telemetry {
 
   static hasContent(b) {
     return baseHas.call(Telemetry, b) || ['app_ayahs', 'app_surah_ayahs', 'judged', 'juz_ayahs', 'hour_speech_s', 'take_s', 'session_s', 'learner',
-      'repeat_ayahs', 'recited_takes', 'lease', 'trend'].some((k) => b[k] !== undefined);
+      'repeat_ayahs', 'recited_takes', 'lease', 'trend', 'hosts'].some((k) => b[k] !== undefined);
   }
 
-  /** The closed body: the 3.x body, the 4.0 fields each left out when empty, none of a group switched off. */
-  static wire(p, off = new Set()) {
+  /** The closed body: the 3.x body, the 4.0 fields each left out when empty, none of a group switched off; `hosts`
+   * (34.6) only with the switch on (`hosts: true`) and a host counted that day. */
+  static wire(p, off = new Set(), { hosts = false } = {}) {
     const out = baseWire.call(Telemetry, { ...p, coverage: {} });
     delete out.reported;
     const v = p.v4 || {};
@@ -233,6 +314,7 @@ export class Telemetry4 extends Telemetry {
     if (v.learner_gap) out.learner_gap = { [v.learner_gap]: 1 };
     if (v.streak) out.streak = { [v.streak]: 1 };
     if (v.trend) out.trend = { [v.trend]: 1 };
+    if (hosts) { const h = Telemetry4.hostsBody(v); if (h.length) out.hosts = h; }
     for (const g of off) for (const f of METRIC_GROUPS[g] || []) delete out[f];
     const reported = REPORTED_4.filter((k) => out[k] !== undefined);
     if (reported.length) out.reported = reported;

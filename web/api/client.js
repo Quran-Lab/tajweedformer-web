@@ -8,7 +8,7 @@
 // It owns the platform client of 2.x (web/platform/client.js, now internal), the delivery cache
 // (web/tajweed/delivery.js) and the sharing controller (web/consent), and puts the five concepts in front.
 import { QuranLab, SDK_VERSION } from '../platform/client.js';
-import { localState, dirState } from '../platform/storage.js';
+import { localState, dirState, sharingDbName } from '../platform/storage.js';
 import { node as nodeParts, isNode } from '../platform/node-hook.js';
 import { sdkLatestOf } from '../platform/update-notice.js';
 import { cachedReader, openDefaultStore, profilePaths } from '../tajweed/delivery.js';
@@ -253,11 +253,10 @@ export class TajweedClient {
 
   /**
    * Download and verify the model ahead of use (SPEC 13.4): resumable, a no-op when done. `onProgress` gets
-   * { bytesDone, bytesTotal }. With `unmeteredOnly`, nothing is downloaded on a connection the browser reports
-   * as metered or data-saving, or with no connection; where the browser cannot tell (diagnose().connection is
-   * 'unknown') it downloads. Resolves with { bytesDone, bytesTotal, complete }.
+   * { bytesDone, bytesTotal }. It downloads on whatever network the device has (4.0.2, NO_WAIT_40.md: there is no
+   * network option; an `unmeteredOnly` an older app passes is not read). Resolves with { bytesDone, bytesTotal, complete }.
    */
-  async prefetch({ unmeteredOnly = false, onProgress = null, version = null } = {}) {
+  async prefetch({ onProgress = null, version = null } = {}) {
     this._guard();
     if (onProgress !== null && typeof onProgress !== 'function') throw invalid('onProgress must be a function');
     let src = null, reader = null;
@@ -279,8 +278,6 @@ export class TajweedClient {
       report();
       const done = () => ({ bytesDone: [...loaded.values()].reduce((a, b) => a + b, 0), bytesTotal: total, complete: have.length === paths.length });
       if (have.length === paths.length) { this._stillRefused(); await this._installed(src, had); return done(); }
-      // waits on a metered connection and with none; downloads on an unmetered one and where the browser cannot tell
-      if (unmeteredOnly && ['metered', 'none'].includes(this._connection())) return done();
       for (const p of paths) {
         if (have.includes(p)) continue;
         await folder.read(p);
@@ -313,7 +310,8 @@ export class TajweedClient {
 
   // The connection as far as this runtime can tell: 'unmetered' (wifi, ethernet), 'metered' (cellular, or the
   // browser's data saver or metered flag), 'none' (offline), 'unknown' (no Network Information API: Safari,
-  // Firefox, Node; or a browser that gives no connection type, as Chrome on a desktop).
+  // Firefox, Node; or a browser that gives no connection type, as Chrome on a desktop). diagnose() reports it; no
+  // request waits for, or is held by, the kind of network (4.0.2, NO_WAIT_40.md 33.1).
   _connection() {
     const nav = globalThis.navigator;
     const c = this._i.connection !== undefined ? this._i.connection : nav && nav.connection;
@@ -520,6 +518,8 @@ export async function createClient(options, seams = {}) {
       trustedKeys: seams.trustedKeys, lifecycle: seams.lifecycle, autoSend: seams.autoSend, debug: seams.debug,
     });
     if (sharingStorage) ql.sharingStorage = sharingStorage;
+    // 4.0.2: in a browser, the shared recordings of this `storage` name in a database of their own (outbox.js)
+    ql.sharingDb = sharingDbName(o.storage || null);
     // a browser that blocks storage: the model runs from memory and is downloaded at every visit (24.1, silent)
     if (store && store.blocked) ql._silent('storage', 'unavailable', { error_name: 'SecurityError' });
     if (seams.sharing) ql.sharingSeams = seams.sharing;

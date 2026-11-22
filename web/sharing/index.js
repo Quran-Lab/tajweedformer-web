@@ -21,7 +21,7 @@ import { OggOpusWriter, SEGMENT_PLAN, OPUS_SETTINGS, segmentName, CODED_RATE } f
 import { OpusEncoder, loadOpus, opusVersion } from './encoder.js';
 import { ShareResampler } from './resampler.js';
 import { ContributionClient, sessionJson, utcDay, b64url, SDK_VERSION } from './uploader.js';
-import { Outbox, FILES, defaultStorage, writeJson, mark, recover, activeCaptures, captureLocks } from './outbox.js';
+import { Outbox, FILES, defaultStorage, writeJson, mark, recover, activeCaptures, captureLocks, adoptRecordings } from './outbox.js';
 import { BitrateLadder } from './bitrate.js';
 import { ShareRecorder } from './recorder.js';
 import { takesBody } from './takes.js';
@@ -30,6 +30,8 @@ export * from './oggopus.js';
 export { OpusEncoder, loadOpus, opusVersion, decodeOggOpus, OPUS_REQUEST } from './encoder.js';
 export { ShareResampler } from './resampler.js';
 export { ContributionClient, SharingError, sessionJson, parseUrls, requestCounts, utcDay, b64url, deletionMessage, INPUT_ROUTES, SDK_VERSION } from './uploader.js';
+export { SHARING_DB, sharingDbName, namedContributors } from '../platform/storage.js';
+export { adoptRecordings };
 export { Outbox, MemoryStorage, dirStorage, indexedDbStorage, defaultStorage, recover, markers, markerSeconds, activeCaptures, sha256Hex, MAX_AGE_MS, FILES,
   lastFailedOnNetwork, networkFailedIn, captureLocks, CAPTURE_LOCK, CAPTURE_LOCK_WAIT_MS } from './outbox.js';
 export { BitrateLadder, BITRATE_RUNGS, UP_STREAK, UP_MAX_BACKLOG_S, DOWN_BACKLOG_S, isNetworkFailure } from './bitrate.js';
@@ -72,6 +74,8 @@ export function webDevice() {
  * @param {string} [o.recoveryHash]  SHA-256 hex of the normalised recovery code (PLATFORM_CLIENT 9.1)
  * @param {object} [o.headers]  extra headers for the Worker calls (never sent to R2)
  * @param {object} [o.storage]  MemoryStorage, dirStorage(), indexedDbStorage() (default per runtime)
+ * @param {string} [o.dbName]  4.0.2: without `storage`, the IndexedDB database of the Client's `storage` name
+ *        (platform/storage.js sharingDbName; default quranlab-sharing)
  * @param {Function} [o.fetch]
  * @param {() => Promise<string|null>} [o.turnstile]
  * @param {string} [o.platform]  'web'
@@ -92,9 +96,11 @@ export function webDevice() {
  * @param {(message: string) => void} [o.log]  one line for the developer (default console.warn)
  * @param {object|null} [o.locks]  the origin's Web Locks (default navigator.locks; null: none): a recording being
  *        captured holds a lock, so another page of the site never takes it for one a closed page left
+ * @param {() => Set<string>} [o.others]  4.0.2, the default `storage` name's pipeline: the contributor ids of the site's
+ *        other names, whose recordings in this queue are left alone (outbox.js)
  */
 export async function createSharing(o) {
-  const storage = o.storage || await defaultStorage();
+  const storage = o.storage || await defaultStorage(o.dbName || undefined);
   const locks = captureLocks(o.locks);
   const client = new ContributionClient({ api: o.api, fetch: o.fetch, headers: o.headers || {} });
   const opts = { ...o };
@@ -128,10 +134,15 @@ export async function createSharing(o) {
     if (Number.isInteger(was.seq) && was.seq > 0) recorder.seq = was.seq;
     if (typeof was.prevEnd === 'number' && Number.isFinite(was.prevEnd)) recorder.prevEnd = was.prevEnd;
   } catch (_) { /* a storage without them starts at the first recording */ }
-  const outbox = new Outbox({ storage, client, tokenProvider, flags, enabled,
+  // 28.11 items 3 and 4 (4.0.2): the uploads' step back after 429s, kept with this queue and read back at the next start
+  let back = null;
+  try { back = await storage.getGlobal('uploads.stepback'); } catch (_) { back = null; }
+  const backState = { get: () => back, set: (v) => { back = v; Promise.resolve().then(() => storage.setGlobal('uploads.stepback', v)).catch(() => {}); } };
+  const outbox = new Outbox({ storage, client, tokenProvider, flags, enabled, backState,
     turnstile: async () => (opts.turnstile ? opts.turnstile() : null), platform: o.platform || 'web', contributor, clock: o.clock,
     onChange: (x) => opts.onChange && opts.onChange(x), onError: (e) => opts.onError && opts.onError(e), random: o.random, ladder,
     onIssue: (kind, code) => opts.onIssue && opts.onIssue(kind, code), log: (m) => (opts.log ? opts.log(m) : console.warn(m)), epoch, locks,
+    others: () => (typeof opts.others === 'function' ? opts.others() : null),
     // sharing went off: the recording being captured ends at once (its files go with the queue)
     onStop: () => recorder.stop() });
   let opus = null;
@@ -330,7 +341,17 @@ export class ShareCapture {
     if (this._lock) this.io = this._lock.ready.then(() => {});
   }
 
-  _queue(fn) { this.io = this.io.then(fn).catch((e) => { this.error = this.error || e; this.failed = true; }); }
+  // 4.0.2 (SHARE_WRITE_40.md 29.1): a write of the recording that fails (a page, a marker, capture.json, the take list)
+  // ends it at once, as a crash would: nothing queued after it is written (a page after a missing one would leave a hole
+  // in the stream), and the 2.0.1 recovery closes what is on the device (abort). Before, the recording stayed open and
+  // in this page's activeCaptures until the page was reloaded.
+  _queue(fn) {
+    this.io = this.io.then(() => (this._broken ? undefined : fn())).catch((e) => {
+      this.error = this.error || e;
+      this.failed = true;
+      if (!this._broken) { this._broken = true; Promise.resolve().then(() => this.abort()).catch(() => {}); }
+    });
+  }
 
   /** Audio seconds captured so far. */
   get duration() { return this.writer ? this.writer.duration : 0; }
@@ -403,15 +424,26 @@ export class ShareCapture {
   }
 
   /** A cancelled or failed recording: segments already closed stay with the outbox while sharing is on (the
-   * stream ends at its last whole page, and the take list with it). */
-  async abort() {
+   * stream ends at its last whole page, and the take list with it). Once; later calls wait for the first. */
+  abort() {
+    if (!this._aborted) this._aborted = this._abort();
+    return this._aborted;
+  }
+
+  async _abort() {
     if (this.writer) this.writer.abandon();
     this.failed = true;
     await this.io.catch(() => {});
-    if (this.segments === 0 || !this.enabled()) await this.storage.removeSession(this.id);
-    else await recover(this.storage, this.id);
-    this._release();
-    if (this.encoder) { this.encoder.free(); this.encoder = null; }
+    try {
+      if (this.segments === 0 || !this.enabled()) await this.storage.removeSession(this.id);
+      else await recover(this.storage, this.id);
+    } catch (_) {
+      // the recovery's own writes failed too (the disk is still full): the recording stays as the capture last wrote
+      // it, and the next pass or launch recovers it as a crash (29.1); its finished segments are never deleted for it
+    } finally {
+      this._release();
+      if (this.encoder) { this.encoder.free(); this.encoder = null; }
+    }
     this.outbox.drain().catch(() => {});
   }
 

@@ -1,6 +1,7 @@
 // The Client's model delivery in the 3.0 API (SPEC 2a, 13.4, 13.5, 13.7): pinning by version, prefetch (progress in
-// bytes, resumed after a cut, unmetered only), storage and removeModels, a first run without a network
-// (needs_connection) and a later one from the cache, the reference data, and diagnose() with no Model open.
+// bytes, resumed after a cut, on any network), storage and removeModels, a first run without a network
+// (needs_connection) and a later one from the cache, the reference data, and diagnose() with no Model open. SDK 4.0.2
+// (NO_WAIT_40.md, section 33): nothing waits for Wi-Fi; vectors40/no_wait_40.json's web cases replayed on this path.
 import test from 'node:test';
 import '../web/index.node.js'; // Node's parts of the SDK (a test imports its modules by path)
 import assert from 'node:assert/strict';
@@ -86,16 +87,12 @@ test('a first run without a network is needs_connection, not a timeout; after a 
   await client.close();
 });
 
-test('prefetch: bytes done and total, a no-op when done, resumed after a cut, unmetered only', async () => {
+test('prefetch: bytes done and total, a no-op when done, resumed after a cut, on any network', async () => {
   let { client, api, seams } = await setup({}, { connection: { saveData: true } });
-  // a metered connection and unmeteredOnly: nothing but the manifest is fetched
-  let r = await client.prefetch({ unmeteredOnly: true });
-  assert.equal(r.complete, false);
-  assert.equal(r.bytesDone, 0);
-  assert.deepEqual(cdnPaths(api), ['manifest.json']);
-  // without the option it downloads; progress never goes back and ends at the total
+  // on a metered connection with the data saver on it downloads (4.0.2: no network option); progress never goes back
+  // and ends at the total
   const seen = [];
-  r = await client.prefetch({ onProgress: (p) => seen.push(p) });
+  let r = await client.prefetch({ onProgress: (p) => seen.push(p) });
   assert.equal(r.complete, true);
   assert.equal(r.bytesDone, r.bytesTotal);
   const want = ['tokens.txt', 'calibration.json.gz', 'layers.zfw.gz', 'frontend.zfw', 'c16_l64/frames.zfw', 'c16_l64/model_engine2.onnx.zfg', 'selftest/selftest.json'];
@@ -105,7 +102,7 @@ test('prefetch: bytes done and total, a no-op when done, resumed after a cut, un
   assert.ok(!cdnPaths(api).some((p) => /c24_l72|c8_l64|expected_tj3|\.s16|model_engine2\.onnx$/.test(p)), 'no other context, no reference table, no clips, no native-only file');
   // done: a second call fetches nothing but the manifest, and model() downloads nothing
   api.log.length = 0;
-  r = await client.prefetch({ unmeteredOnly: true });
+  r = await client.prefetch();
   assert.equal(r.complete, true);
   await client.model();
   assert.deepEqual([...new Set(cdnPaths(api))], ['manifest.json']);
@@ -173,22 +170,26 @@ test('the reference data: not in the model\'s set, fetched on request, looked up
   await bare.client.close();
 });
 
-test('prefetch({ unmeteredOnly }): waits on a metered connection, downloads on an unmetered one and where the browser says nothing', async () => {
-  // the network kind comes from a fake of navigator.connection (the Network Information API: Chrome and Android
-  // browsers have it; Safari and Firefox do not, and there the connection counts as unmetered)
-  for (const [connection, says, downloads] of [[{ saveData: true }, 'metered', false], [{ type: 'cellular' }, 'metered', false], [{ metered: true }, 'metered', false],
-    [{ type: 'none' }, 'none', false], [{ online: false }, 'none', false],
-    [{ type: 'wifi', saveData: false }, 'unmetered', true], [{ type: 'ethernet' }, 'unmetered', true],
+test('4.0.2: prefetch downloads on every connection the browser reports, and diagnose() reports it; the SDK reads it for diagnose() only', async () => {
+  // the network kind from a fake of navigator.connection (the Network Information API: Chrome and Android browsers have
+  // it; Safari and Firefox do not). The network itself works in every row: what the browser says never holds a request
+  for (const [connection, says] of [[{ saveData: true }, 'metered'], [{ type: 'cellular' }, 'metered'], [{ metered: true }, 'metered'],
+    [{ type: 'none' }, 'none'], [{ online: false }, 'none'],
+    [{ type: 'wifi', saveData: false }, 'unmetered'], [{ type: 'ethernet' }, 'unmetered'],
     // the browser cannot tell: no Network Information API (null), or the API without a connection type
-    [null, 'unknown', true], [{ saveData: false, effectiveType: '4g' }, 'unknown', true]]) {
-    const { client, api } = await setup({}, { connection });
-    assert.equal((await client.diagnose()).connection, says, JSON.stringify(connection));
-    const r = await client.prefetch({ unmeteredOnly: true });
+    [null, 'unknown'], [{ saveData: false, effectiveType: '4g' }, 'unknown']]) {
+    const reads = { n: 0 };
+    const seen = connection === null ? null : new Proxy(connection, { get(t, k) { reads.n++; return t[k]; } });
+    const { client, api } = await setup({}, { connection: seen });
     const what = JSON.stringify(connection);
-    assert.equal(r.complete, downloads, what);
-    assert.equal(r.bytesDone > 0, downloads, what);
-    assert.equal(cdnPaths(api).some((p) => p !== 'manifest.json'), downloads, `${what}: ${downloads ? 'the model files were fetched' : 'nothing but the manifest was fetched'}`);
-    if (!downloads) assert.equal(r.bytesTotal > 0, true, 'it reports what is still to come');
+    // an older app's prefetch({ unmeteredOnly: true }) too: the option is gone and not read
+    const r = await client.prefetch({ unmeteredOnly: true });
+    assert.equal(r.complete, true, what);
+    assert.ok(r.bytesDone > 0 && r.bytesDone === r.bytesTotal, what);
+    assert.ok(cdnPaths(api).some((p) => p !== 'manifest.json'), `${what}: the model files were fetched`);
+    await (await client.model()).close();
+    assert.equal(reads.n, 0, `${what}: the connection was not read by prefetch() or model()`);
+    assert.equal((await client.diagnose()).connection, says, what);
     await client.close();
   }
 });
@@ -220,3 +221,61 @@ test('diagnose() with no Model open reports the context and the backend a Sessio
   assert.deepEqual([d.model, d.context, d.backend], [null, null, null]);
   await client.close();
 });
+
+// 4.0.2 (NO_WAIT_40.md 33.4): the cases of vectors40/no_wait_40.json that name web, on this path: the connection as the
+// browser reports it (a read of it counted), the stand-in API and CDN, and what each call sends and how it ends.
+// sharing_upload_metered is the sharing pipeline's (test/sharing_no_wait.test.mjs).
+const NW = JSON.parse(readFileSync(new URL('./vectors40/no_wait_40.json', import.meta.url), 'utf8'));
+const OTHER = NW.contexts.other;
+const two = await build3({ contexts: [NW.contexts.default, OTHER] });
+const newer = await build3({ contexts: [NW.contexts.default, OTHER], version: '4.1.0', salt: 1 });
+const browserSays = (c) => (c.connection === 'unknown' ? null : c.connection === 'none' ? { type: 'none' }
+  : { type: c.connection === 'metered' ? 'cellular' : 'wifi', effectiveType: '4g', saveData: !!c.data_saver });
+for (const c of NW.cases.filter((x) => x.platforms.includes('web'))) {
+  // other_context_none: this path (the 3.x Client, which no 4.0 page runs) takes a context whose shared files are cached
+  // for a download in part and answers download_failed; the 4.0 frame answers needs_connection (test/v4/no_wait.test.mjs)
+  const why = c.call === 'upload' ? 'the sharing pipeline: test/sharing_no_wait.test.mjs'
+    : c.name === 'other_context_none' ? 'the 3.x path answers download_failed here; the 4.0 frame is test/v4/no_wait.test.mjs' : false;
+  test(`no_wait_40.json ${c.name} (3.x path): ${c.about}`, { skip: why }, async () => {
+    const reads = { n: 0 };
+    const said = browserSays(c);
+    const connection = said === null ? null : new Proxy(said, { get(t, k) { reads.n++; return t[k]; } });
+    const { client, api } = await setup({ build: two }, { connection });
+    try {
+      if (c.on_device && c.on_device[NW.contexts.default] === 'complete') assert.equal((await client.prefetch()).complete, true);
+      if (c.connection === 'none') api.state.offline = true;
+      if (c.on_device && c.on_device.newer_build_offered) { api.state.build = newer; api.state.configVersion++; await client._ql.refreshConfig(); }
+      const from = api.log.length;
+      reads.n = 0;
+      const sent = () => api.log.slice(from).filter((x) => x.host === 'cdn').map((x) => x.path);
+      let err = null;
+      try {
+        if (c.call === 'model' || c.call === 'update') {
+          const m = await client.model();
+          assert.equal(m.version, c.call === 'update' ? '4.1.0' : '4.0.0');
+          if (c.call === 'update') assert.ok(api.log.slice(from).some((x) => x.host === 'cdn' && x.build === newer.build && x.path !== 'manifest.json'), 'the newer build\'s files were asked for');
+        } else if (c.call === 'prefetch') {
+          const r = await client.prefetch();
+          assert.equal(r.complete, true);
+          assert.ok(sent().some((p) => p !== 'manifest.json'));
+        } else if (c.call === 'session') {
+          const m = await client.model();
+          const mark = api.log.length;
+          const s = m.session({ context: OTHER });
+          s.push(audioFor([4, 4, 0, 0, 0, 0, 0, 0]));
+          await s.finish();
+          const asked = api.log.slice(mark).filter((x) => x.host === 'cdn').map((x) => x.path);
+          assert.ok([`${OTHER}/frames.zfw`, `${OTHER}/model_engine2.onnx.zfg`].every((p) => asked.includes(p)), JSON.stringify(asked));
+          assert.ok(!asked.some((p) => p.startsWith(`${NW.contexts.default}/`)), 'nothing of the default context again');
+        }
+      } catch (e) { err = e; }
+      if (c.outcome === 'error') {
+        assert.ok(err instanceof TajweedError, String(err && err.stack));
+        assert.equal(err.code, c.code, `${err.code}: ${err.message}`);
+        assert.equal(err.errorCause && err.errorCause.needs, c.needs);
+      } else assert.equal(err, null, err && `${err.code}: ${err.message}`);
+      if (c.requests === true) assert.ok(api.log.length > from, 'requests were sent');
+      assert.equal(reads.n, 0, 'the connection was never read');
+    } finally { await client.close(); }
+  });
+}

@@ -14,7 +14,7 @@ import { Telemetry4 } from './telemetry4.js';
 import { productOf } from '../../web/platform/telemetry.js';
 import { certField } from './lease-store.js';
 
-export const SDK_VERSION_4 = '4.0.1';
+export const SDK_VERSION_4 = '4.0.2';
 export const API_VERSION = 4;
 
 /** A state view that keeps some keys in memory only (the token: per page session in 4.0). */
@@ -130,6 +130,7 @@ export class QuranLab4 extends QuranLab {
     try { retryAfter = r.headers && typeof r.headers.get === 'function' ? r.headers.get('retry-after') : null; } catch (_) { retryAfter = null; }
     // 28.5: unreachable on every host, the largest Retry-After any of them gave
     if (Number.isFinite(r.qlRetryAfter) && r.qlRetryAfter !== null) retryAfter = String(r.qlRetryAfter);
-    return { status: r.status, body: json, text, retryAfter, fallback: !!r.qlFallback, value: r.qlValue || null };
+    // held: the answer of a Retry-After hold (28.11 item 2), given again with no request
+    return { status: r.status, body: json, text, retryAfter, fallback: !!r.qlFallback, value: r.qlValue || null, held: !!r.qlHeld };
   }
 }
