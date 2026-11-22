@@ -1,8 +1,10 @@
 // 4.0.1: a fresh open no longer waits for the lease to fetch the model. The first lease's challenge and its invisible
 // Turnstile start at the page's start (init), and the signed manifest and the ciphertext come from the build's model
 // folder while the lease is asked. The files stay ciphertext (the CDN form) until the Core holds the lease, are used
-// only when the lease answer names the same folder, and every way the lease can fail to come (refused, a signed stop,
-// no answer) drops what came down. Through the real Core, against the fake API and CDN (test keys).
+// only when the lease answer names the same folder. A lease refused or stopped drops what came down; from 4.0.2 (SPEC
+// 16.7) one only unreachable (no answer, a 5xx, a 429, 503 lease_unavailable) keeps what verified, and the next call
+// asks none of it again (4.0.1 dropped it: 18 model requests for a first install whose slow lease answer was a 503,
+// against 9). Through the real Core, against the fake API and CDN (test keys).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fakeServer } from './helpers/fake-api.mjs';
@@ -123,7 +125,6 @@ test('the files come while the lease is asked, stay ciphertext until the Core ho
 for (const [name, setup, check] of [
   ['refused (403, not asked again)', (srv) => { srv.state.plan = ['refuse']; }, (e) => e.code === 'server_rejected'],
   ['a signed stop', (srv) => { srv.state.stop = 'key_revoked'; }, (e) => e.code === 'invalid_key'],
-  ['no answer (the lease route unreachable)', null, (e) => e.code === 'needs_connection'],
 ]) {
   test(`a lease that does not come, ${name}: nothing that came down stays`, { skip }, async () => {
     const srv = await fakeServer({ cdnDir: dir });
@@ -146,6 +147,115 @@ for (const [name, setup, check] of [
     await c.close();
   });
 }
+
+// the model requests by file (the CDN's), and how many there were
+const modelAsks = (srv) => {
+  const by = {};
+  for (const r of srv.state.requests.filter((x) => x.path.includes('/models/'))) { const f = r.path.split('/sdk/')[1].split('/').slice(1).join('/'); by[f] = (by[f] || 0) + 1; }
+  return by;
+};
+// the lease route answers once the early fetch has stored `n` files (or after 10 s)
+const whole = async (files) => (await files.list()).filter((f) => !/\.part\.\d+$/.test(f.path));
+const afterFiles = (files, n) => (async () => { for (let i = 0; i < 400 && (await whole(files)).length < n; i++) await new Promise((r) => setTimeout(r, 25)); })();
+
+test('4.0.2, SPEC 16.7: a slow lease answer that fails with 503 lease_unavailable keeps the early fetch\'s files; the call that gets a lease asks none again: 9 model requests in all, no file twice (4.0.1: 18)', { skip }, async (t) => {
+  const srv = await fakeServer({ cdnDir: dir });
+  const files = new MemoryFiles();
+  const all = srv.manifest.files.length;
+  srv.state.hold = afterFiles(files, all); // every file of the build stored, then the answer
+  srv.state.leaseUnavailable = 1;
+  let now = Date.now();
+  const c = await page(srv, { files, clock: () => now });
+  await assert.rejects(c.openModel(), (e) => e.code === 'download_failed' && e.error_code === 'lease_unavailable');
+  assert.equal((await whole(files)).length, all, 'the files that verified stay (ciphertext, the CDN form)');
+  assert.equal(c.state.get(`early:${srv.build}`), true);
+  srv.state.hold = null;
+  now += 31_000; // past the answer's Retry-After (the route is held until then, 28.11 item 2)
+  const info = await c.openModel();
+  assert.equal(info.build, srv.build);
+  const by = modelAsks(srv);
+  const total = Object.values(by).reduce((a, b) => a + b, 0);
+  t.diagnostic(`REQUESTS | slow lease answer 503, then a lease | ${total} model requests`);
+  assert.deepEqual(Object.values(by).filter((n) => n !== 1), [], `no file asked twice: ${JSON.stringify(by)}`);
+  assert.equal(total, all + 1, 'each file and the manifest once');
+  assert.equal(c.state.get(`early:${srv.build}`), null, 'the lease took them');
+  for (const f of await files.list()) assert.ok(f.form === QLC.FORM_DEVICE || f.form === QLC.FORM_PLAIN, `installed: ${f.form}:${f.path}`);
+  await c.close();
+});
+
+test('4.0.2: no answer from the lease route while a file is in flight: the files stored stay and are never asked again; the one in flight goes on from its kept blocks with one request; needs_connection', { skip }, async () => {
+  const srv = await fakeServer({ cdnDir: dir });
+  srv.state.ranges = true;
+  const files = new MemoryFiles();
+  const BLOCK = 4 * 1024 * 1024;
+  const LARGEST = 'c16_l64/layers.zfw.qle';
+  const blocksOf = async () => (await files.list()).filter((f) => f.path.startsWith(`${LARGEST}.part.`)).length;
+  let first = true;
+  // the first answer of the largest file gives 5 blocks and a bit, then nothing more until the request is aborted
+  const slow = async (url, init) => {
+    const r = await srv.fetch(url, init);
+    const rd = r.body.getReader();
+    let held = new Uint8Array(0), sent = 0;
+    const body = new ReadableStream({
+      async pull(ctl) {
+        if (sent >= 5 * BLOCK + 1000) {
+          await new Promise((res) => { if (init.signal) init.signal.addEventListener('abort', res, { once: true }); });
+          ctl.error(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+          return;
+        }
+        if (!held.length) { const x = await rd.read(); if (x.done) { ctl.close(); return; } held = x.value; }
+        const n = Math.min(held.length, 1 << 20);
+        ctl.enqueue(held.subarray(0, n)); held = held.subarray(n); sent += n;
+      },
+    }, { highWaterMark: 0 });
+    return new Response(body, { status: r.status, headers: r.headers });
+  };
+  let gate = (async () => { for (let i = 0; i < 400 && ((await whole(files)).length < 3 || (await blocksOf()) < 5); i++) await new Promise((r) => setTimeout(r, 25)); })();
+  const fetch = async (url, init = {}) => {
+    if (String(url).endsWith('/v1/model-key') && gate) { await gate; throw new TypeError('fetch failed'); }
+    if (String(url).endsWith(`/${LARGEST}`) && first) { first = false; return slow(url, init); }
+    return srv.fetch(url, init);
+  };
+  const c = await page(srv, { files, fetch });
+  await assert.rejects(c.openModel(), (e) => e instanceof SdkError && e.code === 'needs_connection');
+  const stored = (await whole(files)).filter((f) => f.form === QLC.FORM_CDN).map((f) => f.path);
+  assert.ok(stored.length >= 2 && !stored.includes(LARGEST), `files stored before the answer failed: ${stored}`);
+  assert.equal(await blocksOf(), 5, 'the file in flight keeps its whole blocks');
+  assert.equal(await c.needsOf({ code: 'needs_connection' }, 'open'), 'model', 'a file not on the device yet: needs the model');
+  gate = null;
+  const info = await c.openModel();
+  assert.equal(info.build, srv.build);
+  const by = modelAsks(srv);
+  for (const dec of stored) {
+    const f = srv.manifest.files.find((x) => x.decoded && x.decoded.path === dec);
+    assert.equal(by[f.path], 1, `${f.path}: stored before, never asked again`);
+  }
+  assert.equal(by[LARGEST], 2, 'the file in flight: asked once more');
+  const resumed = srv.state.requests.filter((r) => r.path.endsWith(`/${LARGEST}`) && r.headers.range);
+  assert.deepEqual(resumed.map((r) => r.headers.range), [`bytes=${5 * BLOCK}-`], 'from its first byte not kept');
+  assert.equal(by['manifest.json'], 1);
+  await c.close();
+});
+
+test('4.0.2: what an early fetch kept after an unreachable lease is dropped by a later refusal, all of it (files, blocks, manifest)', { skip }, async () => {
+  const srv = await fakeServer({ cdnDir: dir });
+  const files = new MemoryFiles();
+  srv.state.hold = afterFiles(files, 3);
+  srv.state.leaseUnavailable = 1;
+  let now = Date.now();
+  const c = await page(srv, { files, clock: () => now });
+  await assert.rejects(c.openModel(), (e) => e.error_code === 'lease_unavailable');
+  assert.ok((await whole(files)).length >= 3, 'kept');
+  srv.state.hold = null;
+  srv.state.plan = ['refuse'];
+  now += 31_000;
+  await assert.rejects(c.openModel(), (e) => e.code === 'server_rejected');
+  const left = await leftovers(c, files);
+  assert.deepEqual(left.files, [], JSON.stringify(left));
+  assert.deepEqual(left.manifests, [], JSON.stringify(left));
+  assert.equal(c.state.get(`early:${srv.build}`), null);
+  await c.close();
+});
 
 test('a lease answer that names another model folder: the early files are dropped and the files come from the lease\'s base', { skip }, async () => {
   const srv = await fakeServer({ cdnDir: dir });

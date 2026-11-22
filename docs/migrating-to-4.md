@@ -13,7 +13,7 @@ on, are published only encrypted, for SDK 4.0: a page on 3.x never gets them.
 | `npm install @quran-lab/tajweedformer@^3`: the engine and the model files came through your page. | `<script src="https://web.quranlab.ai/4/loader.js">`, or the npm package `@^4`, a thin wrapper that loads the same loader. The engine and the model stay in Quran Lab's frame. |
 | `TajweedClient.create({ key, analytics: 'off' })` turned the anonymous analytics off. | The option is gone: anonymous analytics are always on, because they are daily counts and durations only, never audio, text, names or device identifiers. Remove the option: passing it, whatever its value, is refused with `invalid_argument`, whose message points to this guide. Only Quran Lab can switch them off, from its signed config. |
 | `TajweedClient.create({ key, audience })` chose a sharing sheet. | `audience` is removed: delete the option. Every app shows the same sharing sheet. Passing it, whatever its value, is refused with `invalid_argument`, whose message points to this guide. Complying with children's privacy law is the app's and the app store's, through the app's privacy policy and its store declarations. |
-| A Content-Security-Policy needed nothing for the SDK beyond its files. | Add the `script-src`, `frame-src` and `connect-src` lines of the README's "The Content-Security-Policy lines your site needs" (both hosts, `web.quranlab.ai` and `web2.quranlab.ai`). |
+| A Content-Security-Policy needed nothing for the SDK beyond its files. | Add the `script-src`, `frame-src` and `connect-src` lines of the README's "The Content-Security-Policy lines your site needs", with every host they list. |
 | The model, once in the browser's cache, opened with no connection. | The first visit needs a connection; after that the model opens with no connection, as in 3.x, and while online the SDK keeps itself up to date in the background. The model's encrypted files stay cached for your site, so a later visit does not download them again. See "The protected model". |
 | A config that did not verify, or had expired, was `needs_connection` (up to 3.1.6). | `needs_connection` only when Quran Lab gave no answer at all. See "Error codes". |
 | The SDK asked to share at most three times, a re-ask 7 sessions after "Not now". | The first ask (the full sheet) never right after the install nor before the 3rd completed take, at the end of a good session; a re-ask is a small card, much later; still three at most. `client.sharing.ask()` shows something only when an ask is due, else resolves with null. |
@@ -25,18 +25,17 @@ on, are published only encrypted, for SDK 4.0: a page on 3.x never gets them.
   page's scripts, other scripts on it and extensions limited to your site cannot read them. Only ciphertext is stored,
   in the frame's storage for your site.
 - **A lease kept across page loads.** The Worker makes the install keys (WebCrypto, not extractable) and asks Quran
-  Lab for a lease, the permission to open the model here. It passes Cloudflare Turnstile inside the frame, invisibly:
-  a learner never sees a check or a box. When the check gives no answer or Turnstile is down, the learner still gets
-  a lease. The first visit needs a connection; after that the model opens offline. The keys, the lease and the Core's
+  Lab for a lease, the permission to open the model here. It passes an invisible bot check inside the frame: a learner
+  never sees a check or a box, and is never refused when the check gives no clear answer. The first visit needs a connection; after that the model opens offline. The keys, the lease and the Core's
   state are kept in the frame's storage for your site (sealed under a non-extractable key), so a reload opens the
   model with no request to Quran Lab, also offline; while the device is online the SDK keeps itself up to date in the
   background. A refusal from Quran Lab makes the page ask again. The lease names your site, so a lease taken through
   one site's frame never opens the model under another.
-- **Two hosts.** The frame is served from `web.quranlab.ai` and, on a separate route and server, from
-  `web2.quranlab.ai`, which the loader uses when the first can't be reached. Each host keeps its own storage, so a page served by the second host downloads the
-  model once there too.
-- **Downloads go on.** A download that stalls for 30 seconds or breaks goes on from the bytes it has, up to 5 times
-  in a call, and a later call goes on from the 4 MB blocks kept.
+- **More than one host.** The frame is served from several of Quran Lab's hosts, so the SDK keeps working when one
+  of them is unreachable. Each host keeps its own storage, so a page served by another host downloads the model once
+  there too.
+- **Downloads go on.** A download that stalls or breaks goes on from the bytes it has, and a later call goes on from
+  what it kept.
 - **A Model already open keeps running** until it is closed.
 - **A wrong device clock changes nothing.** The lease is judged by the Core's clock, anchored at the server's time.
 - **The honest limit.** A model that runs on a device can be taken by someone who controls that device and has the
@@ -56,6 +55,15 @@ failure gets: an answer from a server is never `needs_connection`.
 | Quran Lab answered with a failure: a server error, a 429, a redirect, a config that does not verify or has expired with none stored | `download_failed`; the message names what answered ("the server answered 503"). Call again later |
 | Quran Lab refused the key or the site | `invalid_key`, or `server_rejected` with the reason, as in 3.x; `sdk_too_old` when the key needs a newer SDK |
 | The browser cannot verify or run the engine | `runtime_unsupported` |
+
+From 4.0.2 each error also has `errorCause`, where it failed and why in the tokens of its error report (below):
+`{ stage, reason, httpStatus?, errorName?, errorCode?, needs? }`, frozen, or undefined for the codes that only say the
+API was used wrongly. On `needs_connection`, `needs` is `model` when the model files are not on the device yet
+(connect to download) and `lease` when the model is on the device and needs Quran Lab's answer to open. The platform's
+own `cause` keeps the underlying error.
+
+Downloads and uploads go out on whatever network the device has. From 4.0.2 `prefetch()` takes no network option: an
+`unmeteredOnly` that a page still passes is not read, and the files download.
 
 ## Error reports
 
@@ -80,6 +88,9 @@ signed config. A failed download is also counted in the day's analytics, with it
   Lab's config sets it), so a learner who pauses between turns gives one recording. Nothing to change.
 - The sheet (`<quranlab-consent>`), the settings (`<quranlab-sharing-settings>`) and `client.sharing` run in your
   page as in 3.x, loaded by the loader as a chunk it checks.
+- **One queue per `storage` name** (4.0.2): the shared recordings of the default name are kept in the IndexedDB
+  database `quranlab-sharing`, those of another name in `quranlab-sharing.<name>`, so one name's answer never touches
+  another name's recordings. Nothing to change.
 
 ## What stays the same
 

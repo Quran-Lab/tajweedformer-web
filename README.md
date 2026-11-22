@@ -44,7 +44,7 @@
 </td>
 <td valign="top">
 
-**Nothing to host**<br>The SDK downloads the model (55.5 MB) from our CDN in six regions, verifies it and keeps it up to date.
+**Nothing to host**<br>The SDK downloads the model (55.5 MB) from Quran Lab's servers, verifies it and keeps it up to date.
 
 </td>
 <td valign="top">
@@ -93,8 +93,8 @@ import { TajweedClient } from '@quran-lab/tajweedformer';
 | **Key** | A web key from [sdk.quranlab.ai](https://sdk.quranlab.ai/go/gh-tajweedformer-web), locked to your site's origins: Quran Lab's frame is shown only on the origins your key lists. For local work use the app's development key, with `http://localhost:*` among its origins. |
 | **Page** | A secure context: `https`, or `http://localhost`. If your site sends a Content-Security-Policy, add the lines of "The Content-Security-Policy lines your site needs" (after the quick start). Audio starts only after a tap or a click. |
 | **Browser** | WebAssembly with SIMD and AudioWorklet, in a current Chrome, Edge, Firefox or Safari. Node 20 or later runs the same API for a desktop app, with a desktop key and its app id (see "Node"). |
-| **Hosts** | Quran Lab's frame comes from `web.quranlab.ai`, with backup servers the SDK uses if the main ones can't be reached. Your Content-Security-Policy names them all (see "The Content-Security-Policy lines your site needs"). |
-| **Check** | The first lease passes Cloudflare Turnstile inside Quran Lab's frame, invisibly: a learner never sees a check or a box. When the check gives no answer or Turnstile is down, the learner still gets a lease. |
+| **Hosts** | Quran Lab's frame comes from Quran Lab's servers. Your Content-Security-Policy names them all (see "The Content-Security-Policy lines your site needs"). |
+| **Check** | The first model open of a page session passes an invisible bot check inside Quran Lab's frame: a learner never sees a check or a box. When the check gives no clear answer, the learner is never refused. |
 | **Download** | The first visit downloads the model, encrypted, into Quran Lab's frame: 55.5 MB, once (68.4 MB stored); later visits read it from the frame's storage. A browser that blocks the site's storage keeps nothing: there the model is downloaded at every visit. |
 | **Offline** | The first visit needs a connection; after that the model opens with no connection, and while online the SDK keeps itself up to date in the background. A Model that is open keeps running. |
 | **Model** | The engine, the model and its lease live in the Worker of Quran Lab's frame: your page's scripts never see the model's files. When Quran Lab refuses the key or the app, the model is removed from the browser. |
@@ -119,8 +119,8 @@ take, `session.reportRecited(surah, from, to, { outcome })` (see "Recited ayat")
 
 ## The Content-Security-Policy lines your site needs
 
-If your site sends a Content-Security-Policy, add the lines below. The `tajweedformer.com` hosts are backup servers the
-SDK uses if the main ones can't be reached.
+If your site sends a Content-Security-Policy, add the lines below. They name every Quran Lab host the SDK may use,
+so it keeps working when one of them is unreachable.
 
 ```
 script-src  https://web.quranlab.ai https://web2.quranlab.ai https://web-b.tajweedformer.com https://web-g.tajweedformer.com https://web-a.tajweedformer.com blob:
@@ -133,8 +133,8 @@ connect-src https://web.quranlab.ai https://web2.quranlab.ai https://web-b.tajwe
 - `frame-src`: Quran Lab's frame on any of its hosts. Without it the browser blocks the frame and `create()` fails
   with `needs_connection`.
 - `connect-src`: the frame's hosts for the sharing chunk and its encoder, Quran Lab's API hosts for the sharing
-  sheet's requests and the origin check, the R2 host for the shared recordings' uploads (as in 3.x).
-- The backup hosts are listed from 4.0.1; with 4.0.0 the first two of each line are enough.
+  sheet's requests and the origin check, and the storage host for the shared recordings' uploads (as in 3.x).
+- SDK 4.0.0 uses only the `quranlab.ai` hosts of each line.
 - If your page sets `Permissions-Policy`, keep `microphone=(self)` for `listen()`.
 
 Nothing else of yours needs to change: the engine, the model download and the requests to Quran Lab run inside the

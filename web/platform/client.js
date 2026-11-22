@@ -13,9 +13,9 @@ import { QURANLAB_PUBLIC_KEY_HEX, hexToBytes, bytesToHex } from '../tajweed/mani
 import { noticeSdkLatest } from './update-notice.js';
 import { ErrorReports, classify, webSnapshot, refreshStorageEstimate, tag, telemetryReason, SEND_AFTER_MS } from './error-reports.js';
 import { MODEL_STOP_REASONS, stopReasonOf } from '../api/errors.js';
-import { Endpoints, ROLES, API_BODY_MS, HEAD_MS } from '../../sdk4/shared/endpoints.js';
+import { Endpoints, ROLES, API_BODY_MS, HEAD_MS, retryAfterOf, StepBack } from '../../sdk4/shared/endpoints.js';
 
-export const SDK_VERSION = '4.0.1';
+export const SDK_VERSION = '4.0.2';
 // the first host of each role (ENDPOINTS_40.md 28.1): every request to the API goes through the api order of the
 // endpoint set (sdk4/shared/endpoints.js), the first host first, the others when it cannot be reached (28.3)
 export const API_URL = `https://${ROLES.api[0]}`;
@@ -240,6 +240,13 @@ export class QuranLab {
     this.rawFetch = o.fetch || globalThis.fetch.bind(globalThis);
     this.fetch = this.ep.wrap(this.rawFetch, { bodyMs: Number.isFinite(o.apiTimeoutMs) && o.apiTimeoutMs > 0 ? o.apiTimeoutMs : API_BODY_MS });
     this.state = o.state || localState();
+    // 28.11 items 2 to 4 (4.0.2): each route's Retry-After hold, and the step back of telemetry and error reports after a
+    // 429 (StepBack, each route on its own), are kept in the SDK's state and read back here, so a new page load or
+    // process waits as the one before would have
+    try { this.ep.restoreHolds(this.state.get('holds')); } catch (_) { /* none kept */ }
+    if (!this.ep.onHolds) this.ep.onHolds = (list) => { try { this.state.set('holds', list.length ? list : null); } catch (_) { /* this process only */ } };
+    const kept = (k) => ({ get: () => this.state.get(k), set: (v) => this.state.set(k, v) });
+    this.stepBack = { events: new StepBack(() => this.clock(), kept('stepback.events')), issues: new StepBack(() => this.clock(), kept('stepback.issues')) };
     this.trustedKeys = o.trustedKeys || [QURANLAB_PUBLIC_KEY_HEX];
     this.analyticsOn = o.analytics !== 'off';
     this.issuesOn = o.issues !== false;
@@ -439,6 +446,10 @@ export class QuranLab {
       err.stage = stage;
       err.host_role = 'api';
       err.fallback = fallback;
+      // 28.11 (4.0.2): the answer's Retry-After in seconds, for the routes that wait it (events, issues), or null
+      err.retryAfter = Number.isFinite(r.qlRetryAfter) ? r.qlRetryAfter : retryAfterOf(r, this.clock());
+      // 28.11 item 2: the answer of a route held by an earlier Retry-After, given again with no request
+      if (r.qlHeld) err.held = true;
       if (typeof e.min_sdk === 'string') err.minSdk = e.min_sdk; // 403 sdk_too_old: the version this key needs
       // the check that refused (a 401 invalid_key names it: app_not_allowed, origin_not_allowed, key_type_mismatch);
       // the error raised to the app reads it first, what the client does with the network follows `error`
@@ -784,16 +795,19 @@ export class QuranLab {
     let sent = 0;
     if (this.stopped) return 0;
     if (this.telemetry.enabled && this.flags.analytics !== false) {
-      for (const r of this.telemetry.due()) {
+      // 28.11 item 4: after a 429 nothing is sent before the step back's time; the reports wait, kept
+      for (const r of this.stepBack.events.left() ? [] : this.telemetry.due()) {
         try {
           await this._call('POST', '/v1/events', { body: r.body, keepalive });
           this.telemetry.dropReport(r.report_id);
+          this.stepBack.events.ok();
           sent++;
         } catch (e) {
           if (e.status === 400 || e.status === 413) {
             this.telemetry.dropReport(r.report_id);
             this._silent('events', 'http', { http_status: e.status, error_code: e.code });
           } else {
+            if (e.status === 429 && !e.held) this.stepBack.events.slowDown(e.retryAfter);
             this.telemetry.deferReport(r.report_id);
             break;
           }
@@ -804,7 +818,11 @@ export class QuranLab {
     const keep = [];
     for (const i of issues) {
       if (!this.issuesOn || this.flags.issues === false) break;
-      try { await this._call('POST', '/v1/issues', { body: i }); } catch (e) { if (!(e.status === 400)) keep.push(i); }
+      if (this.stepBack.issues.left()) { keep.push(i); continue; }
+      try { await this._call('POST', '/v1/issues', { body: i }); this.stepBack.issues.ok(); } catch (e) {
+        if (e.status === 429 && !e.held) this.stepBack.issues.slowDown(e.retryAfter);
+        if (!(e.status === 400)) keep.push(i);
+      }
     }
     this.state.set('issues.queue', this.flags.issues === false ? [] : keep);
     await this.flushErrors({ keepalive }).catch(() => 0);
@@ -880,7 +898,12 @@ export class QuranLab {
   /** Send the queued error reports, oldest first (202 sent; 400 and 413 dropped; anything else kept for later). */
   flushErrors({ keepalive = false } = {}) {
     if (this.stopped) return Promise.resolve(0);
-    return this.errors.flush((body) => this._call('POST', '/v1/issues', { body, keepalive }));
+    // 28.11 item 4: a 429 on /v1/issues holds the reports until the step back's time (kept, as for any answer but 202, 400, 413)
+    if (this.stepBack.issues.left()) return Promise.resolve(0);
+    return this.errors.flush((body) => this._call('POST', '/v1/issues', { body, keepalive }).then((r) => { this.stepBack.issues.ok(); return r; }, (e) => {
+      if (e && e.status === 429 && !e.held) this.stepBack.issues.slowDown(e.retryAfter);
+      throw e;
+    }));
   }
 
   /** A model download that failed (24.8): counted in the day's telemetry with its reason. */

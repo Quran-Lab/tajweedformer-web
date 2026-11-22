@@ -1,5 +1,39 @@
 # Changelog
 
+## 4.0.2
+
+- **Nothing waits for Wi-Fi.** Downloads and uploads use any network. The `unmeteredOnly` option of `prefetch()` is
+  gone, with no replacement; a page that still passes it gets the download. `diagnose().connection` only reports.
+- **New `error.errorCause`:** where a failure was and why, in short tokens (`stage`, `reason`, `httpStatus`,
+  `errorName`, `errorCode`; on `needs_connection`, `needs`: `model` when the model files are not on the device yet,
+  `lease` when the model is on the device and needs Quran Lab's answer to open).
+- **Each `storage` name keeps its own queue of shared recordings** (`quranlab-sharing.<name>`), so one name's uploads
+  or "off" never delete another name's recordings. Recordings a named client queued before 4.0.2 are kept and move to
+  its queue at its next page load.
+- **A shared recording whose write fails** (a full disk) keeps its finished segments and uploads them, as after a
+  closed page.
+- **When Quran Lab's servers are busy,** the SDK waits longer before asking again, never sooner than a server asks
+  (`Retry-After`), and a new page load or process goes on waiting where the last one stopped; analytics, error reports
+  and shared recordings step back further and are kept, never dropped.
+- **Each model file is one request,** the whole file. A download that is cut goes on from its last byte with one more
+  request (in Node, only if the file has not changed). What a 4.0.1 page or process left half downloaded is completed,
+  not downloaded again. On a first install, the model files that came while the SDK waited for Quran Lab's answer stay
+  on the device when that answer does not come (the servers busy or out of reach), still encrypted, so the next try
+  does not download them again; a refusal still removes them.
+- **The daily telemetry** also counts, per Quran Lab download server, how model downloads went (files, bytes,
+  requests, failures, time to the first answer and speed, in coarse ranges; nothing of the learner or the device), and
+  sends these counts with the rest of the day's telemetry.
+- **Fixed:** a take on another context with no connection failed with `engine_failed` or `invalid_argument`; it is
+  `needs_connection` now. `prefetch()` reports every byte it downloaded.
+- **Fixed:** closing the client, or the page, just as Quran Lab's answer for the model arrived could lose that answer,
+  so the next start had to ask again, and offline the model could not open. The answer is kept now, and one that the
+  close no longer waits for never counts as a failure.
+- **Fixed:** with the site open in two tabs, the tab holding the older answer for the model could save it over the
+  newer one the other tab had just received, so a later start offline could not open the model. The newer answer is
+  kept.
+- **Fixed:** an answer for the model that was on its way when Quran Lab stopped the key (by another of its answers)
+  was still taken and kept; it is now refused, and the model stays stopped.
+
 ## 4.0.1
 
 **Hosted fix** (app `64e00d3777a0`, served by the hosted loader; the npm package needs no update):

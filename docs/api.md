@@ -1,4 +1,4 @@
-# @quran-lab/tajweedformer 4.0.1: API
+# @quran-lab/tajweedformer 4.0.2: API
 
 Every public name of the package, generated from [`web/index.d.ts`](../web/index.d.ts) by
 `scripts/make_api_doc.mjs`: do not edit this page by hand. In a browser the hosted loader
@@ -6,7 +6,7 @@ Every public name of the package, generated from [`web/index.d.ts`](../web/index
 same classes, and in Node its `node` entry runs them with a desktop key and its app id. The names and the call order
 are the same in the Android, Apple and C SDKs.
 
-> Type definitions for @quran-lab/tajweedformer 4.0.1 (web API 4): the whole public surface, and nothing else. The package is a thin wrapper that loads Quran Lab's hosted loader; the same names are on globalThis.QuranLab. Five concepts: Client, Model, Session, Heads, Backend. Call order: Client, model, listen, read.
+> Type definitions for @quran-lab/tajweedformer 4.0.2 (web API 4): the whole public surface, and nothing else. The package is a thin wrapper that loads Quran Lab's hosted loader; the same names are on globalThis.QuranLab. Five concepts: Client, Model, Session, Heads, Backend. Call order: Client, model, listen, read.
 
 ## Call order
 
@@ -28,6 +28,7 @@ option either: every app shows the same sharing sheet, and `create()` refuses an
 - [`API`](#api) (constant)
 - [`loadQuranLab`](#loadquranlab) (function)
 - [`TajweedError`](#tajweederror) (class)
+- [`TajweedErrorCause`](#tajweederrorcause) (interface)
 - [`TajweedErrorCode`](#tajweederrorcode) (type)
 - [`TajweedClientOptions`](#tajweedclientoptions) (interface)
 - [`TajweedClient`](#tajweedclient) (class)
@@ -88,6 +89,22 @@ export declare class TajweedError extends Error
 - `readonly code: TajweedErrorCode`: One of the catalogue's codes, for example "needs_connection" or "microphone_denied".
 - `readonly fix: string`: One sentence a developer can act on.
 - `readonly docs: string`: https://sdk.quranlab.ai/docs/errors#<code>
+- `readonly errorCause?: TajweedErrorCause`: 4.0.2: where the failure was and why, in short tokens an app can log, match on and send in a support request (never a message, a URL or an identifier). A frozen object, or undefined for the codes that only say the app used the API wrongly (invalid_argument, client_exists, session_open, session_closed, cancelled). The platform's own `cause` keeps the underlying error.
+
+## TajweedErrorCause
+
+4.0.2: the cause on a TajweedError (`error.errorCause`). Every field is a token; the optional ones are there when known.
+
+```ts
+export interface TajweedErrorCause
+```
+
+- `readonly stage: 'config' | 'register' | 'attest' | 'lease' | 'manifest' | 'download' | 'verify' | 'storage' | 'runtime' | 'model_open' | 'accelerator' | 'audio' | 'session' | 'sharing' | 'events'`: Where the failure was.
+- `readonly reason: string`: Why, for that stage: for example 'network' (no answer at all), 'http', 'rate_limited', 'refused', 'quota', 'permission_denied', 'wasm_compile', 'memory'; 'other' when none fits. New reasons may be added.
+- `readonly httpStatus?: number`: The HTTP status of the answer that failed, when there was one.
+- `readonly errorName?: string`: The platform error's class, for example 'QuotaExceededError', 'NotAllowedError' or 'CompileError'.
+- `readonly errorCode?: string`: The error's code, for example the server's error token ('model_limit', 'app_blocked').
+- `readonly needs?: 'model' | 'lease'`: On needs_connection only: 'model' when the model files are not on the device yet (connect to download), 'lease' when the model is on the device and needs Quran Lab's answer to open (connect to continue).
 
 ## TajweedErrorCode
 
@@ -124,7 +141,7 @@ export declare class TajweedClient
 
 - `static create(options: TajweedClientOptions): Promise<TajweedClient>`
 - `model(version?: string | { version?: string }): Promise<TajweedModel>`: The Model for this app: downloads on first use, verifies, opens and warms the engine. `version` pins a model version.
-- `prefetch(options?: { unmeteredOnly?: boolean; onProgress?: (p: { bytesDone: number; bytesTotal: number }) => void; version?: string }): Promise<{ bytesDone: number; bytesTotal: number; complete: boolean }>`: Download and verify the model ahead of use: resumable, a no-op when done.
+- `prefetch(options?: { onProgress?: (p: { bytesDone: number; bytesTotal: number }) => void; version?: string }): Promise<{ bytesDone: number; bytesTotal: number; complete: boolean }>`: Download and verify the model ahead of use: resumable, a no-op when done. It downloads on whatever network the device has; there is no option to wait for Wi-Fi (4.0.2). Each model file is one request for the whole file; a cut download goes on from its last byte with one more request (4.0.2).
 - `storage(): Promise<{ models: { version: string; build: string; bytes: number }[]; sharingQueueBytes: number }>`: What the SDK holds on this device, in bytes.
 - `removeModels(): Promise<void>`: Remove the model files of this site (ciphertext only is ever stored).
 - `diagnose(): Promise<TajweedDiagnosis>`: One structured report, safe to paste into an issue.
@@ -159,7 +176,7 @@ export interface TajweedDiagnosis
 - `storage: { models: { version: string; build: string; bytes: number }[]; sharingQueueBytes: number }`
 - `lastError: TajweedErrorCode | null`: The code of the last TajweedError, or null.
 - `droppedChunks: number`: Waiting chunks dropped because the app did not read `chunks` (at most 256 wait), since the Client was made.
-- `connection: 'unmetered' | 'metered' | 'none' | 'unknown'`: The connection as far as the runtime can tell; 'unknown' in Node and where the browser has no Network Information API.
+- `connection: 'unmetered' | 'metered' | 'none' | 'unknown'`: The connection as far as the runtime can tell; 'unknown' in Node and where the browser has no Network Information API. Reported only: no download or upload waits for, or is held by, the kind of network.
 - `endpoints?: { api: string; models: string; webFrame?: string; lastFailover: { role: 'api' | 'models' | 'web_frame'; from: string; to: string | null; reason: string; status: number | null; at: number } | null; }`: 4.0.1: the servers in use: the API and model servers asked first, the frame's server (the engine's in Node), and the last request whose first server could not be reached, or null.
 
 ## TajweedSharing

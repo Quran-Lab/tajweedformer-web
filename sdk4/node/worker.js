@@ -37,6 +37,8 @@ parentPort.once('message', (d) => {
     key: o.key, desktop: { platform: o.platform, appId: o.appId }, apiUrl: t.apiUrl || undefined, modelsUrl: t.modelsUrl || undefined,
     trustedKeys: pins, appVersion: o.appVersion, appBuild: o.appBuild, endpoints,
     files: new DirFiles(o.dir), kv: new FileKV(o.dir),
+    // SPEC 16.7 (4.0.2): a resumed model file carries If-Range here (no CORS in Node); the frame cannot send it
+    ifRange: true,
     leaseStore: new NodeLeaseStore(o.dir, { key: o.key, appId: o.appId, ...(t.machineId ? { read: () => ({ id: t.machineId, byCommand: false }) } : {}) }),
     // a key Quran Lab refused or stopped gets no engine: nothing is fetched for it (before, the engine came first: 20 s
     // more when the first two web_frame hosts were silent). The start ends with that refusal, which index.js keeps:

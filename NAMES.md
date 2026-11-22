@@ -11,7 +11,7 @@ Every public type and function, and nothing else. The names are the four SDKs';
 | Name | Where | What |
 |---|---|---|
 | `QuranLab.api` | loader | `4` |
-| `QuranLab.version` | loader | `"4.0.1"` (the loader's version; the engine's is in `diagnose().sdk.engine`) |
+| `QuranLab.version` | loader | `"4.0.2"` (the loader's version; the engine's is in `diagnose().sdk.engine`) |
 | `QuranLab.v4` | loader | the same object, by API number |
 | `LOADER_URL` | npm | `"https://web.quranlab.ai/4/loader.js"` |
 | `API` | npm | `4` |
@@ -21,11 +21,11 @@ Every public type and function, and nothing else. The names are the four SDKs';
 
 | Class | Members |
 |---|---|
-| `TajweedClient` | `static create(options)`, `model(version?)`, `prefetch({ unmeteredOnly?, onProgress?, version? })`, `storage()`, `removeModels()`, `diagnose()`, `sharing`, `analytics`, `pin`, `background()`, `foreground()`, `close()` |
+| `TajweedClient` | `static create(options)`, `model(version?)`, `prefetch({ onProgress?, version? })`, `storage()`, `removeModels()`, `diagnose()`, `sharing`, `analytics`, `pin`, `background()`, `foreground()`, `close()` |
 | `TajweedModel` | `id`, `version`, `build`, `contexts`, `defaultContext`, `chunkMs(context?)`, `tokens`, `calibration`, `reference` (null in 4.0.0), `sampleClips`, `backend`, `listen(options?)`, `session(options?)`, `close()` |
 | `TajweedSession` | `push(samples)`, `chunks`, `events`, `finish()`, `cancel()`, `backend`, `reportRecited(surah, ayahFrom, ayahTo, { outcome?, perAyah? }?)` |
 | `TajweedHeads` | `names`, `get(name)`, `greedy(name?)`, `decoded()` |
-| `TajweedError` | `code`, `message`, `fix`, `docs` (the catalogue's 26 codes) |
+| `TajweedError` | `code`, `message`, `fix`, `docs` (the catalogue's 26 codes), `errorCause` (4.0.2) |
 | `Microphone` | `static open()`, `sampleRate`, `samples()`, `close()` |
 
 `TajweedModel`, `TajweedSession` and `TajweedHeads` are made by the SDK only (`client.model()`, `model.listen()`,
@@ -55,7 +55,8 @@ Every public type and function, and nothing else. The names are the four SDKs';
 `TajweedSessionOptions` (`context?`, `sampleRate?`, `heads?`, `backend?`, `topK?`, `endOnSilenceMs?`, `pace?`,
 `onChunk?`, `onEvent?`), `TajweedChunk`, `TajweedEvent`, `TajweedDecoded`, `TajweedToken`, `TajweedWord`,
 `TajweedFrame`, `TajweedHead`, `TajweedBackend`, `TajweedDiagnosis`, `TajweedReference`, `RecitedOutcome`
-(`{ correct: true }` or `{ correct: false, mistakes?, rules? }`), `TajweedErrorCode`.
+(`{ correct: true }` or `{ correct: false, mistakes?, rules? }`), `TajweedErrorCode`, `TajweedErrorCause` (4.0.2: `stage`,
+`reason`, `httpStatus?`, `errorName?`, `errorCode?`, `needs?`).
 
 ## Changed from 3.x
 

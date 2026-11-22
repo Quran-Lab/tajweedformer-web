@@ -26,7 +26,9 @@ const ENTRY = ['LOADER_URL', 'API', 'loadQuranLab'];
 const CLASSES = ['TajweedClient', 'TajweedModel', 'TajweedSession', 'TajweedHeads', 'TajweedError', 'Microphone'];
 const OBJECTS = ['TajweedAnalytics', 'TajweedSharing', 'TajweedTokens', 'TajweedCalibration', 'TajweedClip'];
 const DATA = ['TajweedClientOptions', 'TajweedSessionOptions', 'TajweedChunk', 'TajweedEvent', 'TajweedDecoded', 'TajweedToken', 'TajweedWord',
-  'TajweedFrame', 'TajweedHead', 'TajweedBackend', 'TajweedDiagnosis', 'TajweedReference', 'RecitedOutcome'];
+  'TajweedFrame', 'TajweedHead', 'TajweedBackend', 'TajweedDiagnosis', 'TajweedReference', 'RecitedOutcome',
+  // 4.0.2 (ERRORS_40.md 24.13): the cause on a TajweedError
+  'TajweedErrorCause'];
 
 // every module specifier of a source text: import ... from 'x', export ... from 'x', import 'x', import('x')
 function specifiers(src) {
@@ -119,6 +121,9 @@ test('loadQuranLab: the web_frame hosts in order (28.6): a host that fails is fo
   r = await wrapperRun(() => 'fail');
   assert.equal(r.err && r.err.code, 'needs_connection');
   assert.deepEqual(r.tried, LOADERS);
+  // 4.0.2 (24.13): the wrapper's own error has the cause an app reads on every error, frozen
+  assert.deepEqual(r.err.errorCause, { stage: 'runtime', reason: 'loader', needs: 'model' });
+  assert.ok(Object.isFrozen(r.err.errorCause));
 });
 
 test('loadQuranLab: a host that has not loaded within the switch time is left in the page and the next is tried; a src given is the only one', async () => {

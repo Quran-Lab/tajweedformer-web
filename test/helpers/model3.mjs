@@ -33,16 +33,19 @@ export const REFERENCE = { '1:1': { units: [3, 5, 1, 7, 9], words: [0, 0, 0, 1, 
 /**
  * A synthetic 3.0 model build: { files (the transport folder, by stored path), manifest, bytes, build }.
  * o: { version = '4.0.0', minSdk = '3.0.0', calibration = true, reference = true, selftest = true, edit(manifest),
- *      signed = true, goldenRaw (a golden_raw_tolerance object written into the manifest) }.
+ *      signed = true, goldenRaw (a golden_raw_tolerance object written into the manifest), contexts (default c16_l64,
+ *      c8_l64 and c24_l72; the first is the default), salt (a number: other bytes in layers.zfw) }.
  */
 export async function build3(o = {}) {
   const logical = [];
   const add = (path, bytes, role, { context = '*', need = 'required', gzip = false, platforms = '*' } = {}) => logical.push({ path, bytes, role, context, need, gzip, platforms });
   add('tokens.txt', enc(TOKENS), 'tokens');
   if (o.calibration !== false) add('calibration.json', enc(calFixture), 'calibration', { gzip: true });
-  add('layers.zfw', new Uint8Array(3000).map((_, i) => (i * 7) & 255), 'weights', { gzip: true });
+  // (o.salt: other weights, so a newer build has a file of its own to download)
+  add('layers.zfw', new Uint8Array(3000).map((_, i) => (i * 7 + (o.salt || 0)) & 255), 'weights', { gzip: true });
   add('frontend.zfw', enc('frontend'), 'frontend');
-  for (const c of ['c16_l64', 'c8_l64', 'c24_l72']) {
+  const contexts = o.contexts || ['c16_l64', 'c8_l64', 'c24_l72'];
+  for (const c of contexts) {
     add(`${c}/frames.zfw`, enc(`frames ${c}`), 'frames', { context: c });
     add(`${c}/model_engine2.onnx.zfg`, enc(`graph ${c}`), 'graph', { context: c });
     add(`${c}/model_engine2.onnx`, enc(`ort ${c}`), 'ort-graph', { context: c, need: 'optional', platforms: ['native'] });
@@ -73,7 +76,7 @@ export async function build3(o = {}) {
   }
   const m = { format: 3, model_id: 'v4.0', family: 'tajweedformer', revision: 'v4.0-test', version: o.version === undefined ? '4.0.0' : o.version,
     min_sdk_version: o.minSdk || '3.0.0', engine_format: 3, coreml_format: 9, tokens: 'tokens.txt', tokens_sha256: await sha256Hex(enc(TOKENS)),
-    default_context: 'c16_l64', contexts: ['c16_l64', 'c8_l64', 'c24_l72'], files: list };
+    default_context: contexts[0], contexts: [...contexts], files: list };
   if (m.version === null) delete m.version;
   if (o.goldenRaw) m.golden_raw_tolerance = o.goldenRaw;
   if (o.edit) o.edit(m, files);

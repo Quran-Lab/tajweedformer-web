@@ -169,7 +169,7 @@ test('the frame: an SdkError keeps the code it was made with and reports its sta
   assert.equal(mem.error_name, 'RangeError');
 });
 
-test('serve(): every error it answers with is reported once with the code the loader gets; the answer is unchanged', async () => {
+test('serve(): every error it answers with is reported once with the code the loader gets; the answer is unchanged but for its cause (4.0.2)', async () => {
   const seen = [];
   const ctl = {
     init: async () => { throw new SdkError('download_failed', 'x', { stage: 'config', why: 'http', http_status: 503 }); },
@@ -179,7 +179,8 @@ test('serve(): every error it answers with is reported once with the code the lo
   serve(ch.port1, ctl);
   const answer = await new Promise((resolve) => { ch.port2.onmessage = (m) => resolve(m.data); ch.port2.postMessage({ id: 1, op: 'init', args: { pending: [] } }); });
   ch.port1.close(); ch.port2.close();
-  assert.deepEqual(answer, { id: 1, ok: false, error: { code: 'download_failed', message: 'x', reason: null } });
+  // 4.0.2 (24.13): the cause beside the code, from the same reading as the report (tokens only)
+  assert.deepEqual(answer, { id: 1, ok: false, error: { code: 'download_failed', message: 'x', reason: null, cause: { stage: 'config', reason: 'http', httpStatus: 503 } } });
   assert.deepEqual(seen, [['download_failed', 'download_failed']]);
 });
 

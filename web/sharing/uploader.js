@@ -3,8 +3,9 @@
 // URLs for segments 1 to 20, each for its own key v1/{id}/seg-NNNNN.opus (content-type audio/ogg
 // signed, valid 7 days); POST /v1/uploads/{id}/urls?from=n answers the next batch, or fresh URLs for
 // the same numbers. Segments go straight to R2 as plain PUTs. Nothing is sent at the end.
+import { retryAfterOf } from '../../sdk4/shared/endpoints.js';
 
-export const SDK_VERSION = '4.0.1';
+export const SDK_VERSION = '4.0.2';
 export const INPUT_ROUTES = Object.freeze(['built_in', 'wired', 'usb', 'bluetooth', 'car', 'continuity', 'other', 'unknown']);
 const CONSENT_RE = /^[A-Za-z0-9._-]{1,32}$/;
 const DEVICE_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,23}$/;
@@ -131,7 +132,9 @@ export class ContributionClient {
     const text = await r.text().catch(() => '');
     let body = null;
     try { body = text ? JSON.parse(text) : null; } catch (_) { body = null; }
-    return { status: r.status, body, text };
+    // 4.0.2 (28.11 item 4): a 429's or 503's Retry-After in seconds, for the outbox's step back
+    // held: the answer of a Retry-After hold of the endpoint set (28.11 item 2), given again with no request
+    return { status: r.status, body, text, retryAfter: r.status === 429 || r.status === 503 ? retryAfterOf(r) : null, held: !!r.qlHeld };
   }
 
   start({ id, session, token, turnstile = null, signal }) {

@@ -13,7 +13,7 @@
 // its SHA-384 against the value compiled into the loader, and imports it from those bytes. The Opus encoder's
 // WebAssembly is checked here the same way before it is instantiated.
 import { QuranLab } from '../../web/platform/client.js';
-import { localState } from '../../web/platform/storage.js';
+import { localState, sharingDbName } from '../../web/platform/storage.js';
 import { enableSharing } from '../../web/consent/index.js';
 import { QuranLabConsent, QuranLabSharingSettings } from '../../web/consent/element.js';
 import { hostOpus } from '../../web/sharing/encoder.js';
@@ -36,6 +36,9 @@ export class SharingLink extends QuranLab {
     super({ key: o.key, platform: 'web', appVersion: o.appVersion, appBuild: o.appBuild, apiUrl: o.apiUrl, fetch: o.fetch,
       clock: o.clock, trustedKeys: o.trustedKeys, autoSend: false, bundleId: o.bundleId, origin: o.origin,
       state: o.state || localState(o.storage ? `quranlab.${o.storage}.` : 'quranlab.') });
+    // 4.0.2: the shared recordings of this `storage` name in a database of their own (quranlab-sharing for the default
+    // name, quranlab-sharing.<name> for another: web/consent/index.js, web/sharing/outbox.js)
+    this.sharingDb = sharingDbName(o.storage || null);
     // one sticky host per role for the page (28.3): this link's api P starts where the frame's is, and follows it
     // (o.endpoints: { state(), subscribe(fn), tell(state) }, the loader's link to the frame)
     const share = o.endpoints && typeof o.endpoints === 'object' ? o.endpoints : null;

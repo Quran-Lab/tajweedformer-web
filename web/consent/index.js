@@ -25,6 +25,7 @@ import { validateWording, deriveConsent } from './wording.js';
 import { themeProperties } from './theme.js';
 import { contributorKey, forgetContributorKey, deletionMessage, b64url, newRecoveryCode, recoveryHash } from '../platform/contributor-key.js';
 import { SDK_VERSION } from '../platform/client.js';
+import { SHARING_DB, namedContributors } from '../platform/storage.js';
 
 export { SharingState, MAX_ASKS, LEGACY_CONSENT_VERSION, SHARING_STATE_KEY } from './state.js';
 export { decide as decideShareAsk, resolveConfig as resolveShareAsk, SHARE_ASK_DEFAULTS } from './ask40.js';
@@ -339,6 +340,12 @@ export function enableSharing(ql, o = {}) {
   };
   ql.sharing = ctl;
   // every session the SDK listens to, shared in full while consent is on (P2.9)
+  // 4.0.2: the queue of this Client's `storage` name (ql.sharingDb, from the Client's `storage` option): one database
+  // per name (`where`: the test seam's storage, where there is one). The default name's queue, the one every name
+  // shared up to 4.0.1, leaves alone the recordings made under another name's contributor id
+  const dbName = () => ql.sharingDb || SHARING_DB;
+  const where = () => (ql.sharingStorage ? { storage: ql.sharingStorage } : { dbName: dbName() });
+  const others = () => (!ql.sharingStorage && dbName() === SHARING_DB ? namedContributors() : null);
   // what the sharing pipeline of this page needs (made once, updated at every take)
   const pipelineOptions = async () => {
     const tokenProvider = async () => {
@@ -349,8 +356,21 @@ export function enableSharing(ql, o = {}) {
     return { api: ql.apiUrl, fetch: ql.fetch, tokenProvider, headers: ql.origin ? { origin: ql.origin } : {},
       flags: () => ql.flags, enabled: () => state.sharing, epoch: () => state.changes, onIssue: (kind, code) => ql.reportIssue(kind, code),
       install: { get: async () => ql.state.get('sharing.install'), set: (v) => ql.state.set('sharing.install', v.seq || v.prevEnd !== null ? v : null) },
-      ...(ql.sharingStorage ? { storage: ql.sharingStorage } : {}), ...(ql.sharingSeams || {}) };
+      ...where(), others, ...(ql.sharingSeams || {}) };
   };
+  // 4.0.2: a storage name other than the default takes its own recordings out of the one database 4.0.0 and 4.0.1 kept
+  // for every name of the site (adoptRecordings), at every page start, before its queue is looked at. Only when that
+  // database is there and this name has ever shared (it has a contributor id); nothing is made where there is none
+  const adopt = async () => {
+    if (ql.sharingStorage || !ql.sharingDb || ql.sharingDb === SHARING_DB) return;
+    const own = ql.state.get('contributor');
+    if (typeof own !== 'string') return;
+    const mod = await import('../sharing/index.js');
+    const legacy = await mod.indexedDbStorage(SHARING_DB, undefined, { existing: true }).catch(() => null);
+    if (legacy) await mod.adoptRecordings(legacy, await mod.defaultStorage(dbName()), own, { locks: mod.captureLocks() });
+  };
+  ctl.adopt = adopt;
+  const adopts = !ql.sharingStorage && dbName() !== SHARING_DB && typeof ql.state.get('contributor') === 'string';
   // What a stop left on the device (the page died after the "off" was saved and before the queue was deleted;
   // a delete failed): deleted at the start and after every "off". The sharing module is loaded for it only
   // when the consent's count of changes is ahead of the count the queue was last known clean at.
@@ -372,14 +392,14 @@ export function enableSharing(ql, o = {}) {
     if (!state.sharing) return;
     const mod = await import('../sharing/index.js');
     // the queue's records are read first: a page with none to try makes no pipeline at its start
-    const storage = ql.sharingStorage || await mod.defaultStorage();
+    const storage = ql.sharingStorage || await mod.defaultStorage(dbName());
     if (!(await mod.networkFailedIn(storage)).length || !state.sharing) return;
     const pipe = await mod.outbox.configure(await pipelineOptions());
     ctl.outbox = mod.outbox;
     await pipe.outbox.drain();
   };
   ctl.retryAtLoad = retryAtLoad;
-  ctl.loadRetried = Promise.resolve().then(sweep).catch(() => {}).then(retryAtLoad).catch(() => {});
+  ctl.loadRetried = (adopts ? Promise.resolve().then(adopt).catch(() => {}) : Promise.resolve()).then(sweep).catch(() => {}).then(retryAtLoad).catch(() => {});
   let takes = 0; // takes running now (a buffer fed while a take runs is dropped)
   let feedWaiting = 0; // fed samples on their way to the pipeline
   /** Fed samples that have not reached the pipeline yet (at most FEED_WAIT_S of audio). */
@@ -444,9 +464,9 @@ export function enableSharing(ql, o = {}) {
         // a take list the server refused as a bad request goes to the issue reports
         onIssue: (kind, code) => ql.reportIssue(kind, code),
         ...(ql.sharingBitrate ? { bitrate: ql.sharingBitrate } : {}),
-        // where the outbox keeps its files when the Client was given a storage folder (Node), and the Client's
-        // test seams (a libopus module, a clock, timers, the page's life)
-        ...(ql.sharingStorage ? { storage: ql.sharingStorage } : {}),
+        // where the outbox keeps its files (4.0.2: the database of this Client's storage name; a storage folder in
+        // Node), and the Client's test seams (a libopus module, a clock, timers, the page's life)
+        ...where(), others,
         ...(ql.sharingSeams || {}),
       });
       ctl.outbox = mod.outbox || ctl.outbox;

@@ -28,6 +28,8 @@ import { freshUrl, parseUrls, SharingError } from './uploader.js';
 import { isNetworkFailure } from './bitrate.js';
 import { takeList, takesBody } from './takes.js';
 import { node, isNode } from '../platform/node-hook.js';
+import { SHARING_DB } from '../platform/storage.js';
+import { StepBack } from '../../sdk4/shared/endpoints.js';
 
 export const FILES = Object.freeze({ session: 'session.json', capture: 'capture.json', end: 'end.json', item: 'item.json', takes: 'takes.json' });
 const DAY_MS = 86400000;
@@ -145,14 +147,19 @@ export async function dirStorage(root) {
 }
 
 /**
- * IndexedDB (browsers), per origin: database `quranlab-sharing`, store `files` keyed [id, name, part]
- * (an append is one new record, so a page is never torn), store `global`.
+ * IndexedDB (browsers), per origin and `storage` name (4.0.2: platform/storage.js sharingDbName; `quranlab-sharing` for
+ * the default name): store `files` keyed [id, name, part] (an append is one new record, so a page is never torn), store
+ * `global`. `existing`: open the database only if it is there (rejects, and makes none, when it is not).
  */
-export async function indexedDbStorage(dbName = 'quranlab-sharing', idb = globalThis.indexedDB) {
+export async function indexedDbStorage(dbName = SHARING_DB, idb = globalThis.indexedDB, { existing = false } = {}) {
   if (!idb) throw new Error('IndexedDB is not available');
   const db = await new Promise((resolve, reject) => {
     const r = idb.open(dbName, 1);
-    r.onupgradeneeded = () => { r.result.createObjectStore('files'); r.result.createObjectStore('global'); };
+    r.onupgradeneeded = () => {
+      // a database that was not there: none is made when only an existing one is wanted (the abort takes it away)
+      if (existing) { try { r.transaction.abort(); } catch (_) { /* rejected below */ } return; }
+      r.result.createObjectStore('files'); r.result.createObjectStore('global');
+    };
     r.onsuccess = () => resolve(r.result);
     r.onerror = () => reject(r.error);
   });
@@ -206,9 +213,10 @@ export async function indexedDbStorage(dbName = 'quranlab-sharing', idb = global
   };
 }
 
-/** The default storage: IndexedDB in a browser, `<cwd>/.quranlab` in Node, else memory. */
-export async function defaultStorage() {
-  if (globalThis.indexedDB) return indexedDbStorage();
+/** The default storage: IndexedDB in a browser (the database `dbName`, one per `storage` name from 4.0.2), `<cwd>/.quranlab`
+ * in Node, else memory. */
+export async function defaultStorage(dbName = SHARING_DB) {
+  if (globalThis.indexedDB) return indexedDbStorage(dbName);
   if (isNode()) return dirStorage(node().path.join(globalThis.process.cwd(), '.quranlab'));
   return new MemoryStorage();
 }
@@ -290,6 +298,44 @@ export async function recover(s, id) {
   return true;
 }
 
+/**
+ * 4.0.2: a `storage` name other than the default takes its own recordings out of the database every name of the site
+ * shared up to 4.0.1 (`quranlab-sharing`, `from`): those whose session names its contributor id. Each recording is
+ * written whole into `to` first, then deleted from `from` (a page that dies between the two finds it in both, and the
+ * next start moves it again over itself). A recording being captured (this page's, or another page's lock) waits for
+ * a later start. What was moved is then judged by that name's own rules (its consent count, its uploads, as they
+ * stood). Returns the ids moved; never throws.
+ */
+export async function adoptRecordings(from, to, contributor, { locks = null } = {}) {
+  const moved = [];
+  try {
+    if (!from || !to || from === to || typeof contributor !== 'string' || !/^[0-9a-f]{32}$/.test(contributor)) return moved;
+    const held = (locks && await locks.held()) || new Set();
+    for (const id of await from.sessions()) {
+      if (activeCaptures.has(id) || held.has(id)) continue;
+      const ses = await readJson(from, id, FILES.session);
+      if (!ses || ses.contributor !== contributor) continue;
+      // while its files are on their way no pass looks at the folder (a half-moved folder would read as one a closed
+      // page left, and be recovered or deleted): this page's passes skip it (`moving`), another page's see its lock
+      moving.add(id);
+      const lock = locks ? locks.hold(id) : null;
+      try {
+        if (lock) await lock.ready;
+        for (const name of await from.list(id)) { const b = await from.read(id, name); if (b) await to.write(id, name, b); }
+        await from.removeSession(id);
+        moved.push(id);
+      } catch (_) { /* left where it is; the next start tries again */ } finally {
+        moving.delete(id);
+        if (lock) lock.release();
+      }
+    }
+  } catch (_) { /* nothing more moved */ }
+  return moved;
+}
+
+/** 4.0.2: the recordings adoptRecordings is moving now (no pass of this page looks at them meanwhile). */
+export const moving = new Set();
+
 /** Session ids being captured in this page or process (never taken for crashed). */
 export const activeCaptures = new Set();
 
@@ -357,15 +403,25 @@ export function captureLocks(locks = globalThis.navigator ? globalThis.navigator
  * @param {(message: string) => void} [o.log]  one line for the developer (a server without the take list route)
  * @param {object|null} [o.locks]  captureLocks(): the recordings other pages of the origin are capturing (default
  *        the browser's; null: none known)
+ * @param {() => Set<string>} [o.others]  4.0.2, the default `storage` name's queue (the database every name shared up
+ *        to 4.0.1): the contributor ids of the site's other names. A recording made under one of them is that name's: it
+ *        is never deleted, uploaded, listed or expired here, and that name takes it into its own database
+ *        (adoptRecordings)
  */
 export class Outbox {
   constructor({ storage, client, tokenProvider, flags = () => null, enabled = () => true, turnstile = null, platform = 'web',
     contributor, clock = () => Date.now(), onChange = null, onError = null, random = Math.random, ladder = null,
-    onIssue = null, onStop = null, log = null, epoch = null, locks }) {
+    onIssue = null, onStop = null, log = null, epoch = null, locks, others = null, backState = null }) {
     Object.assign(this, { storage, client, tokenProvider, flags, enabled, turnstile, platform, contributor, clock, onChange, onError, random, ladder,
-      onIssue, onStop, log, epoch });
+      onIssue, onStop, log, epoch, others });
     this.locks = locks === undefined ? captureLocks() : locks;
     this._elsewhere = new Set(); // recordings another page was capturing at the last scan
+    this._theirs = new Set(); // 4.0.2: recordings of another storage name at the last scan (`others`)
+    // 28.11 item 4 (4.0.2): the uploads (start, URLs, take list, PUT) step back after a 429: the next attempt of any
+    // recording waits the larger of the Retry-After (300 s without one, doubled per 429 in a row, up to 3600 s) and its
+    // own backoff; nothing is dropped for it. Kept with the queue (backState) and read back at the next start
+    this.uploadsBack = new StepBack(() => this.clock(), backState);
+    this._contributorOf = new Map(); // id -> the contributor its session names (it never changes)
     this._epochSeen = null; // the count of consent changes at the last scan
     this._undeletable = new Set(); // recordings whose delete failed (logged once each)
     this.takesLogged = false; // the dropped take list line, once per pipeline
@@ -521,10 +577,11 @@ export class Outbox {
       else if (r.takeList === 'pending') await this._takesDone(r, 'dropped', 'sharing_off');
     }
     // a second look at the disk itself: nothing unsent may be left, whatever the records say. A recording another
-    // page of the site is capturing goes too (the queue is the origin's); a page under the same `storage` name reads
+    // page of the site is capturing under this `storage` name goes too (the queue is the name's, 4.0.2): that page reads
     // the same stored answer, so its capture stops at its next audio and deletes what it wrote since
     for (const id of await this.storage.sessions()) {
       if (activeCaptures.has(id)) continue;
+      if (this._theirs.has(id) || moving.has(id)) continue; // 4.0.2: another storage name's, or on its way here
       if (this._undeletable.has(id)) continue; // tried above, and at every pass from now on
       const item = await readJson(this.storage, id, FILES.item);
       if (!item || item.state === 'active') await this._remove(id, until);
@@ -583,6 +640,8 @@ export class Outbox {
     this.inFlight.set(key, ctrl);
     try {
       const r = await send(ctrl.signal);
+      if (r && r.status === 429 && !r.held) this.uploadsBack.slowDown(Number.isFinite(r.retryAfter) ? r.retryAfter : null);
+      else if (r && r.status >= 200 && r.status < 300) this.uploadsBack.ok();
       return this._live() ? r : null;
     } catch (e) {
       if ((e && e.name === 'AbortError') || !this._live()) return null;
@@ -662,6 +721,8 @@ export class Outbox {
     // deletion and limits are as for every pass: the switch and the flags above, the consent stamps of _scan, _expire.
     const loadRetry = this._loadRetry && allowed.ok;
     if (allowed.ok) this._loadRetry = false;
+    // 28.11 item 4: after a 429 no upload request goes before the step back's time, whatever a recording's own schedule says
+    if (!ignoringBackoff && this.uploadsBack.left()) return;
     const due = [...this.records.values()].filter((r) => r.state === 'active' && (ignoringBackoff || !r.nextAttempt || r.nextAttempt <= now
       || (loadRetry && lastFailedOnNetwork(r))))
       .sort((a, b) => a.seq - b.seq).map((r) => r.id);
@@ -845,7 +906,7 @@ export class Outbox {
     const n = Math.max(1, rec.takeListAttempts || 1);
     const base = Math.min(30 * 2 ** Math.min(n - 1, 16), 6 * 3600);
     rec.takeListError = why;
-    rec.takeListNext = this.clock() + base * (0.8 + 0.4 * this.random()) * 1000;
+    rec.takeListNext = Math.max(this.clock() + base * (0.8 + 0.4 * this.random()) * 1000, this.uploadsBack.until); // 28.11 item 4
     await this._save(rec);
   }
 
@@ -924,7 +985,7 @@ export class Outbox {
         const now = this.clock();
         rec.lastError = `HTTP ${r.status} ${code}: retry tomorrow`;
         rec.lastFailure = 'answer';
-        rec.nextAttempt = (Math.floor(now / DAY_MS) + 1) * DAY_MS + Math.floor(this.random() * 3600000);
+        rec.nextAttempt = Math.max((Math.floor(now / DAY_MS) + 1) * DAY_MS + Math.floor(this.random() * 3600000), this.uploadsBack.until);
         await this._save(rec);
       }
       if (this.onError) this.onError(new SharingError(code, r.status, message));
@@ -952,7 +1013,8 @@ export class Outbox {
     const n = Math.max(1, rec.attempts);
     const base = long ? 6 * 3600 : Math.min(30 * 2 ** Math.min(n - 1, 16), 6 * 3600);
     const delay = immediately ? 0 : base * (0.8 + 0.4 * this.random());
-    rec.nextAttempt = this.clock() + delay * 1000;
+    // 28.11 item 4: never before the uploads' step back after a 429
+    rec.nextAttempt = Math.max(this.clock() + delay * 1000, this.uploadsBack.until);
     await this._save(rec);
   }
 
@@ -1020,6 +1082,25 @@ export class Outbox {
     return held;
   }
 
+  // 4.0.2: the recordings of `ids` whose session names the contributor id of another storage name of the site (`others`)
+  async _theirsIn(ids) {
+    const out = new Set();
+    let others = null;
+    try { others = typeof this.others === 'function' ? this.others() : null; } catch (_) { others = null; }
+    if (!others || !others.size) return out;
+    for (const id of ids) {
+      if (activeCaptures.has(id)) continue; // this page's own capture
+      let c = this._contributorOf.get(id);
+      if (c === undefined) {
+        const ses = await readJson(this.storage, id, FILES.session);
+        c = ses && typeof ses.contributor === 'string' ? ses.contributor : null;
+        if (ses) this._contributorOf.set(id, c);
+      }
+      if (c && others.has(c)) out.add(id);
+    }
+    return out;
+  }
+
   // Picks up sessions the captures made and recovers the ones a closed page left.
   async _scan(until = 0) {
     const s = this.storage;
@@ -1028,6 +1109,10 @@ export class Outbox {
     const ids = await s.sessions();
     const elsewhere = await this._capturedElsewhere();
     this._elsewhere = elsewhere;
+    // 4.0.2: another storage name's recordings in the default name's queue (made there by 4.0.0 and 4.0.1): left alone
+    const theirs = await this._theirsIn(ids);
+    this._theirs = theirs;
+    for (const id of theirs) { this.records.delete(id); this.waiting.delete(id); }
     // A recording is stamped at its creation with the count of the learner's consent changes. One whose stamp is
     // not the current count was made before the learner's last "off" (the stop did not get to it: the page
     // died, or its delete failed): it is never read into the queue, and it is deleted here, at every pass and
@@ -1042,6 +1127,9 @@ export class Outbox {
       if (this.removed.has(id)) { if (!until || !this._undeletable.has(id)) await this._remove(id, until); continue; }
       // being captured in another page of the site: that page uploads it as it records; read here once it has ended
       if (elsewhere.has(id)) continue;
+      // another storage name's (4.0.2): that name takes it into its own database at its next start; or on its way
+      // into this database (adoptRecordings)
+      if (theirs.has(id) || moving.has(id)) continue;
       if (this.records.has(id)) continue;
       const capturing = activeCaptures.has(id);
       const rec = await readJson(s, id, FILES.item);

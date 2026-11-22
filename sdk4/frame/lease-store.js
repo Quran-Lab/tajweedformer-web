@@ -42,6 +42,18 @@ import { InstallKeys } from './keys.js';
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
+/**
+ * 4.0.2: whether a record with `lease` may replace the stored record `prev`: never when the stored lease has a server
+ * issue time (`iat`, seconds) and the new record has none or an older one. Two frames of one origin (two tabs) share
+ * the record: an old tab's write of an older lease (one in its grace, say) after another tab renewed would leave the
+ * next start, offline, without the newer lease. A record without an issue time (4.0.1's) never blocks.
+ */
+export function leaseNotOlder(prev, lease) {
+  const had = isObj(prev) && isObj(prev.lease) && Number.isFinite(prev.lease.iat) ? prev.lease.iat : null;
+  if (had === null) return true;
+  return isObj(lease) && Number.isFinite(lease.iat) && lease.iat >= had;
+}
+
 export const LEASE_RECORD = 'lease.v1';
 export const KEYS_MAX_MS = 30 * 86_400_000;
 export const CLOCK_BACK_S = 3600;
@@ -153,18 +165,26 @@ export class LeaseStore {
       blob = new Uint8Array(await this.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad(this.site, this.key, keys.installHex) }, this.seal, coreState));
     }
     const prev = this.state.get(name);
-    this.state.set(name, {
+    const rec = {
       v: 1, site: this.site, key: this.key, made: this.made, wall: now,
       coreNow: Number.isFinite(coreNow) ? coreNow : (isObj(prev) && Number.isFinite(prev.coreNow) ? prev.coreNow : null),
       keys: keys.stored(), seal: this.seal, iv, blob, cert: typeof cert === 'string' ? cert : null, lease: lease || null, mirror: mirror || null,
-    });
-    await this.state.flush();
+    };
+    // 4.0.2: read, compare and write as one atomic step of the store (one IndexedDB transaction): a record whose lease
+    // is older than the stored one's is not written, and the stored record (its lease and the Core state sealed with
+    // it) stays. Not an error to the app: this frame goes on with what it holds
+    this.refused = !(await this.state.writeIf(name, rec, (stored) => leaseNotOlder(stored, rec.lease)));
   }
 
-  /** The record is gone (a verified stop, unusable keys): the next page makes new keys. */
-  async clear() {
-    try { this.state.set(await this._name(), null); await this.state.flush(); } catch (_) { /* nothing kept */ }
-    this.seal = null;
-    this.made = null;
+  /** The record is gone (a verified stop, a refusal of the key or app, unusable keys): the next page makes new keys.
+   * Always written, never through the issue-time check (4.0.2), and after any save queued before it (a save started
+   * before a stop never puts the lease back after the stop's clear). */
+  clear() {
+    this._q = this._q.then(async () => {
+      try { this.state.set(await this._name(), null); await this.state.flush(); } catch (_) { /* nothing kept */ }
+      this.seal = null;
+      this.made = null;
+    }).catch(() => {});
+    return this._q;
   }
 }

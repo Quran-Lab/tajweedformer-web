@@ -287,16 +287,84 @@ test('two tabs in headless Chrome: a pass in one tab never takes the recording t
     });
     await a.close();
     const r2 = await b.evaluate(async (id) => {
-      for (let i = 0; i < 50; i++) {
+      // (the closed tab's lock goes when the browser has ended that page: on a loaded machine that takes a while)
+      for (let i = 0; i < 100; i++) {
         await window.sh.outbox.drain({ ignoringBackoff: true });
         const it = await window.sh.outbox.item(id);
         if (it && it.status !== 'queued') break;
+        await new Promise((res) => setTimeout(res, 100));
       }
       const objs = Object.keys(JSON.parse(localStorage.getItem('objs') || '{}')).filter((k) => k.includes(id));
       return { item: await window.sh.outbox.item(id), objects: objs.length };
     }, open);
     assert.deepEqual([r2.item.status, r2.item.completed, r2.item.segments, r2.objects], ['uploaded', false, 2, 2]);
     t.diagnostic(`two tabs: tab B left tab A's live recording alone (lock seen), the 12 s take reached R2 whole (${r.bytes} bytes); tab A closed at 13 s: tab B recovered and uploaded ${r2.item.durationMs} ms`);
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test('4.0.2 in headless Chrome: one IndexedDB database per storage name; a named Client\'s recording 4.0.1 left in the old one stays through the default name\'s pass and "off", and moves to its own', { skip, timeout: 300000 }, async () => {
+  const server = createServer(async (req, res) => {
+    const p = new URL(req.url, 'http://x').pathname;
+    if (p === '/') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(PAGE); return; }
+    const f = path.join(root, path.normalize(decodeURIComponent(p)).replace(/^([\/])+/, ''));
+    if (!f.startsWith(root)) { res.writeHead(403); res.end(); return; }
+    try { const b = await readFile(f); res.writeHead(200, { 'content-type': TYPES[path.extname(f)] || 'application/octet-stream' }); res.end(b); } catch (_) { res.writeHead(404); res.end(); }
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
+  try {
+    const page = await browser.newPage();
+    await page.goto(origin + '/');
+    await page.waitForFunction('window.ready === true');
+    const r = await page.evaluate(async () => {
+      const out = {};
+      // a database that is not there is not made by a look for it
+      try { await S.indexedDbStorage('qls-absent', indexedDB, { existing: true }); out.absent = 'opened'; } catch (_) { out.absent = 'refused'; }
+      out.absentMade = (await indexedDB.databases()).some((d) => d.name === 'qls-absent');
+      const K = 'a'.repeat(32), D = 'd'.repeat(32);
+      localStorage.setItem('quranlab.kids.contributor', JSON.stringify(K)); // the Client of the name kids keeps its id there
+      const mk = (storage, contributor, epoch, fetch, extra = {}) => S.createSharing({ api: 'https://api.test', fetch, storage, consentVersion: 'deck-1', contributor,
+        tokenProvider: async () => ({ token: 'qlt_v1.x.y', attested: false }), flags: { contributions: true, upload_trust: { web: 'capped' } }, epoch: () => epoch, locks: null, ...extra });
+      // kids' recording (its count 1), queued with no network in the one database as 4.0.1 wrote it
+      const tmp = await S.indexedDbStorage('qls-tmp');
+      const p = await mk(tmp, K, 1, async () => { throw new TypeError('offline'); });
+      const t = await p.startSession({ inputSampleRate: 48000, inputRoute: 'built_in', decode: { backend: 'exact' } });
+      const id = t.id;
+      const x = window.noise(48000 * 3, 5);
+      for (let at = 0; at < x.length; at += 960) t.push(x.subarray(at, at + 960));
+      await t.finish({ completed: true });
+      await p.closeRecording();
+      const legacy = await S.indexedDbStorage(S.SHARING_DB);
+      for (const n of await tmp.list(id)) await legacy.write(id, n, await tmp.read(id, n));
+      // the default name, its count 3: kids' recording is not its own (S.namedContributors reads the page's storage)
+      const def = await mk(legacy, D, 3, window.stubFetch, { others: () => S.namedContributors() });
+      for (let i = 0; i < 5; i++) await def.outbox.drain({ ignoringBackoff: true });
+      out.listed = (await def.outbox.items()).length;
+      await def.stop();
+      out.afterOff = await legacy.sessions();
+      // the next page of the name kids: its database, its recording moved there whole, then uploaded from there
+      const named = await S.indexedDbStorage(S.sharingDbName('kids'));
+      out.moved = await S.adoptRecordings(legacy, named, K, { locks: S.captureLocks() });
+      out.legacyAfter = await legacy.sessions();
+      const kids = await mk(named, K, 1, window.stubFetch);
+      for (let i = 0; i < 20 && (await kids.outbox.pending()).length; i++) await kids.outbox.drain({ ignoringBackoff: true });
+      out.kids = (await kids.outbox.items()).map((i) => [i.id === id, i.status]);
+      out.dbs = (await indexedDB.databases()).map((d) => d.name).filter((n) => n.startsWith('quranlab-sharing')).sort();
+      out.id = id;
+      return out;
+    });
+    assert.equal(r.absent, 'refused');
+    assert.equal(r.absentMade, false);
+    assert.equal(r.listed, 0);
+    assert.deepEqual(r.afterOff, [r.id], 'the default name\'s "off" leaves kids\' recording');
+    assert.deepEqual(r.moved, [r.id]);
+    assert.deepEqual(r.legacyAfter, []);
+    assert.deepEqual(r.kids, [[true, 'uploaded']]);
+    assert.deepEqual(r.dbs, ['quranlab-sharing', 'quranlab-sharing.kids']);
   } finally {
     await browser.close();
     server.close();

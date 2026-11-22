@@ -24,6 +24,10 @@ const LOADER_SWITCH_MS = 4_000;
 export const API = 4;
 
 let loading = null;
+// 4.0.2 (ERRORS_40.md 24.13): the errors this wrapper makes itself carry an errorCause of the SDK's shape, frozen (the
+// wrapper imports nothing, so it is written here): no loader from any host is the runtime's failure, and nothing of
+// the model could be reached (needs model)
+const failure = (message, code, cause) => Object.assign(new Error(message), { name: 'TajweedError', code, errorCause: Object.freeze(cause) });
 
 /**
  * Load the hosted loader once; resolves with its API 4 object (globalThis.QuranLab.v4). The default loader comes from
@@ -37,7 +41,8 @@ export function loadQuranLab({ src = LOADER_URL, integrity = null, fallback = nu
   if (g.QuranLab && g.QuranLab.api === API) return Promise.resolve(g.QuranLab.v4);
   if (loading) return loading;
   if (typeof g.document === 'undefined') {
-    return Promise.reject(Object.assign(new Error('SDK 4.0 for the web runs in a browser page (it opens Quran Lab\'s frame); in Node import the package by name, which resolves to its Node entry'), { name: 'TajweedError', code: 'runtime_unsupported' }));
+    return Promise.reject(failure('SDK 4.0 for the web runs in a browser page (it opens Quran Lab\'s frame); in Node import the package by name, which resolves to its Node entry',
+      'runtime_unsupported', { stage: 'runtime', reason: 'other' }));
   }
   const urls = src === LOADER_URL && !fallback ? LOADER_URLS : [src, ...(fallback ? [fallback] : [])];
   loading = new Promise((resolve, reject) => {
@@ -61,7 +66,7 @@ export function loadQuranLab({ src = LOADER_URL, integrity = null, fallback = nu
       s.onerror = () => {
         s.remove();
         failed++;
-        if (failed === urls.length) end(reject, Object.assign(new Error(`the Quran Lab loader could not be loaded from ${urls.length > 1 ? 'any of its hosts' : url}`), { name: 'TajweedError', code: 'needs_connection' }));
+        if (failed === urls.length) end(reject, failure(`the Quran Lab loader could not be loaded from ${urls.length > 1 ? 'any of its hosts' : url}`, 'needs_connection', { stage: 'runtime', reason: 'loader', needs: 'model' }));
         else if (i === next - 1) start(); // the newest host failed: the next at once (an older one's failure only counts)
       };
       (g.document.head || g.document.documentElement).appendChild(s);

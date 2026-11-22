@@ -217,12 +217,36 @@ export class StateStore {
     return this._q;
   }
   async clear(prefix) { for (const k of [...this.m.keys()]) if (k.startsWith(prefix)) this.set(k, null); await this.flush(); }
+
+  /**
+   * 4.0.2: one record written only when `write(stored)` says so, `stored` read from the backend in the same atomic step
+   * (IndexedDB: one readwrite transaction, so the frames of one origin, in other tabs, cannot interleave). After the
+   * writes queued before it. Resolves true when it was written (this view then holds it too).
+   */
+  writeIf(k, v, write) {
+    const val = structuredClone(v);
+    const p = this._q.then(async () => {
+      let ok;
+      if (typeof this.backend.writeIf === 'function') ok = await this.backend.writeIf(k, val, write);
+      else { const all = await this.backend.load(); ok = !!write(all.has(k) ? all.get(k) : null); if (ok) await this.backend.write([[k, val]]); }
+      if (ok) { this.m.set(k, structuredClone(val)); this.dirty.delete(k); }
+      return ok;
+    });
+    this._q = p.catch(() => {});
+    return p;
+  }
 }
 
 export class MemoryKV {
   constructor(m = new Map()) { this.m = m; this.writes = 0; }
   async load() { return new Map([...this.m].map(([k, v]) => [k, structuredClone(v)])); }
   async write(entries) { this.writes++; for (const [k, v] of entries) { if (v === null) this.m.delete(k); else this.m.set(k, structuredClone(v)); } }
+  async writeIf(k, v, write) {
+    if (!write(this.m.has(k) ? structuredClone(this.m.get(k)) : null)) return false;
+    this.writes++;
+    this.m.set(k, structuredClone(v));
+    return true;
+  }
 }
 
 export class IndexedDbKV {
@@ -251,6 +275,22 @@ export class IndexedDbKV {
       const s = t.objectStore('kv');
       for (const [k, v] of entries) { if (v === null) s.delete(k); else s.put(v, k); }
       t.oncomplete = () => res();
+      t.onerror = () => rej(t.error);
+      t.onabort = () => rej(t.error);
+    });
+  }
+  /** 4.0.2: read, decide (`write(stored)`) and put in ONE readwrite transaction: atomic across the frames of one origin. */
+  writeIf(k, v, write) {
+    return new Promise((res, rej) => {
+      const t = this.db.transaction('kv', 'readwrite');
+      const s = t.objectStore('kv');
+      let ok = false;
+      const g = s.get(k);
+      g.onsuccess = () => {
+        try { ok = !!write(g.result === undefined ? null : g.result); } catch (_) { ok = false; }
+        if (ok) s.put(v, k);
+      };
+      t.oncomplete = () => res(ok);
       t.onerror = () => rej(t.error);
       t.onabort = () => rej(t.error);
     });

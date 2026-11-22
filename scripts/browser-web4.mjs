@@ -13,7 +13,8 @@
 // another allowed origin than its parent's sends a hello the browser never delivers; (4) model.reference.units()
 // reads the build's reference data through the Core from the origin private file system (Gate C, 11-20: 4.0.0 called
 // the Core with the frame's file handles closed, so it failed reference_missing in every browser with OPFS); (5) the
-// first units() waits while another page of the site holds the reference file, instead of failing for good (4.0.1).
+// first units() waits while another page of the site holds the reference file, instead of failing for good (4.0.1);
+// (6) 4.0.2: an error the frame answers crosses to the page with its errorCause (ERRORS_40.md 24.13).
 //
 //   QL_TEST_BUILD=<test build sdk/v4.0> PLAYWRIGHT_CORE=<a playwright-core folder> node scripts/browser-web4.mjs
 //   ED25519=absent   the frame's Worker (where the config, the engine index and the Core are) has no Ed25519 in
@@ -270,9 +271,24 @@ const REFERENCE_BUSY = `(async () => {
   } catch (e) { out.error = { code: e.code, message: String(e.message) }; }
   out.done = true;
 })();`;
+// 4.0.2 (ERRORS_40.md 24.13): the model call fails in the frame (every API and CDN route answers 503 once the harness
+// says so); the page's TajweedError carries the frame's cause, frozen
+const CAUSE = `(async () => {
+  const out = window.__result = {};
+  try {
+    const client = window.__client = await QuranLab.TajweedClient.create({ key: ${JSON.stringify(srv.apiKey)}, _frameBase: ${JSON.stringify(FRAME)}, _apiUrl: ${JSON.stringify(API)}, _timeoutMs: 8000 });
+    out.created = true;
+    await new Promise((r) => { window.__go = r; });
+    try { await client.model(); out.opened = true; } catch (e) {
+      out.code = e.code; out.isError = e instanceof QuranLab.TajweedError; out.cause = e.errorCause ? { ...e.errorCause } : null; out.frozen = Object.isFrozen(e.errorCause);
+    }
+    out.ok = true;
+  } catch (e) { out.error = { code: e.code, message: String(e.message) }; }
+  out.done = true;
+})();`;
 await listen(PB, (req, res) => {
   res.writeHead(200, { 'content-type': 'text/html' });
-  res.end(page(req.url.startsWith('/spoof') ? SPOOF : req.url.startsWith('/open') ? OPEN : req.url.startsWith('/timing') ? TIMING : req.url.startsWith('/noanalytics') ? NOANALYTICS : req.url.startsWith('/noaudience') ? NOAUDIENCE : req.url.startsWith('/reference-busy') ? REFERENCE_BUSY : req.url.startsWith('/reference') ? REFERENCE : RUN));
+  res.end(page(req.url.startsWith('/spoof') ? SPOOF : req.url.startsWith('/open') ? OPEN : req.url.startsWith('/timing') ? TIMING : req.url.startsWith('/noanalytics') ? NOANALYTICS : req.url.startsWith('/noaudience') ? NOAUDIENCE : req.url.startsWith('/reference-busy') ? REFERENCE_BUSY : req.url.startsWith('/reference') ? REFERENCE : req.url.startsWith('/cause') ? CAUSE : RUN));
 });
 
 const results = [];
@@ -382,6 +398,23 @@ try {
     await ctx.close();
     check('the reference file held by another page of the site (1.5 s): the first units() waits for it and reads the table',
       held === 'held' && r.ok === true && r.units > 4 && r.wordCount >= 4 && r.ms >= 1000, { held, ...(r.ok ? { ms: r.ms, units: r.units } : { error: r.error }) });
+  }
+  // 4.0.2: an error of the frame reaches the page with its cause (a fresh profile: nothing on the device, every route 503)
+  {
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+    await p.goto(`${SITE}/cause`);
+    await p.waitForFunction(() => window.__result && (window.__result.created || window.__result.done), null, { timeout: 120_000 });
+    srv.state.status5xx = 503;
+    await p.evaluate(() => window.__go && window.__go());
+    await p.waitForFunction(() => window.__result && window.__result.done, null, { timeout: 120_000 });
+    srv.state.status5xx = 0;
+    const r = await p.evaluate(() => window.__result);
+    await p.evaluate(() => window.__client && window.__client.close()).catch(() => {});
+    await ctx.close();
+    check('4.0.2: an error the frame answers crosses to the page with its errorCause (the 503 of the request that failed), frozen',
+      r.ok === true && r.code === 'download_failed' && r.isError === true && r.frozen === true && !!r.cause && r.cause.reason === 'http' && r.cause.httpStatus === 503
+        && ['config', 'attest', 'lease', 'manifest', 'download'].includes(r.cause.stage) && r.cause.needs === undefined, r);
   }
   // window.open from an allowed site, and the frame's URL opened top-level: both refuse before any request
   const ctx = await browser.newContext();

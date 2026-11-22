@@ -121,14 +121,18 @@ export class TajweedModel {
     this._closed = false;
     const self = this;
     const rpc = x.rpc;
+    // a take's calls; a failure the Worker answers is the TajweedError it made, with its code and cause (4.0.2: the
+    // Session read the crossed message as a failure of its own engine, so a take whose start found no network for
+    // another context's files failed with engine_failed)
+    const own = (e) => { throw errorFrom(e, 'engine_failed'); };
     const host = {
       takeId: null,
-      warm: (a) => rpc.call('warm', a),
-      start: async (a) => { host.takeId = null; const r = await rpc.call('start', a); host.takeId = r.takeId; return r; },
+      warm: (a) => rpc.call('warm', a).catch(own),
+      start: async (a) => { host.takeId = null; const r = await rpc.call('start', a).catch(own); host.takeId = r.takeId; return r; },
       // a copy crosses (transferred): the Session keeps counting its own array's length
-      push: (samples) => { const c = samples.slice(); return rpc.call('push', { samples: c }, [c.buffer]); },
-      finish: () => rpc.call('finish'),
-      cancel: () => rpc.call('cancel'),
+      push: (samples) => { const c = samples.slice(); return rpc.call('push', { samples: c }, [c.buffer]).catch(own); },
+      finish: () => rpc.call('finish').catch(own),
+      cancel: () => rpc.call('cancel').catch(own),
     };
     // a take's numbers go to the Worker; its audio goes to the sharing controller in this page (as 3.x), which
     // records only for a learner who said yes

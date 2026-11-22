@@ -205,7 +205,7 @@ signed config's `flags.issues` is Quran Lab's switch. Developers see them on the
 1. **First run.** The first install downloads only the CPU files of the default context, and the first session
    runs on the exact CPU engine. Nothing else is downloaded or compiled before it.
 2. **In the background,** one step at a time, remembered across launches for each model revision, context,
-   accelerator build, OS build and device: download the accelerator's program (Wi-Fi or an unmetered network,
+   accelerator build, OS build and device: download the accelerator's program (on whatever network the device has,
    resumable, verified against the signed manifest; usually as a small delta that the SDK applies to the CPU
    weights already on the device, checking the rebuilt program's SHA-256 before the runtime sees it); compile
    it for this device at low priority (the Neural Engine compiler on Apple, the NPU program on Android, kept and

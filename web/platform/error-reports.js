@@ -317,6 +317,28 @@ export function classify(e) {
   return out;
 }
 
+/**
+ * 24.13 (SDK 4.0.2): the cause on the app's error, from the same fields its report has (`c`: what classify() gives, or
+ * a cause that crossed from the frame): a frozen { stage, reason, httpStatus?, errorName?, errorCode?, needs? }, or
+ * undefined for the codes 24.1 never reports and for anything that is not a cause. Each field is the report's value,
+ * held to 24.2's pattern (a value that fails it is left out, never cut into one); `needs` ('model' or 'lease') is on
+ * needs_connection only, 'model' unless the caller knows every file the call needs is on the device. Never a message,
+ * a URL, a path or an identifier. The cause does not depend on the reports being on.
+ */
+export function publicCause(c, code, needs = null) {
+  if (!c || typeof c !== 'object' || typeof code !== 'string' || code === 'none' || NOT_REPORTED.includes(code)) return undefined;
+  if (!STAGES.includes(c.stage) || typeof c.reason !== 'string' || !TOKEN.test(c.reason)) return undefined;
+  const out = { stage: c.stage, reason: c.reason };
+  const status = c.http_status !== undefined ? c.http_status : c.httpStatus;
+  if (Number.isInteger(status) && status >= 100 && status <= 599) out.httpStatus = status;
+  const name = c.error_name !== undefined ? c.error_name : c.errorName;
+  if (typeof name === 'string' && ERROR_NAME.test(name)) out.errorName = name;
+  const ec = c.error_code !== undefined ? c.error_code : c.errorCode;
+  if ((typeof ec === 'string' || Number.isInteger(ec)) && ERROR_CODE.test(String(ec))) out.errorCode = String(ec);
+  if (code === 'needs_connection') out.needs = needs === 'lease' ? 'lease' : 'model';
+  return Object.freeze(out);
+}
+
 // ---- 24.5 and 24.6: the queue ----
 
 const KEY = 'errors.v1';

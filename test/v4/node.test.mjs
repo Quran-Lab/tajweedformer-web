@@ -56,7 +56,12 @@ before(async () => {
     const h = {};
     r.headers.forEach((v, k) => { h[k] = v; });
     res.writeHead(r.status, h);
-    res.end(Buffer.from(await r.arrayBuffer()));
+    // streamed as it comes; an answer whose stream breaks (srv.state.cut) ends the connection there, after the bytes
+    // sent so far (end, not destroy: those reach the client)
+    try {
+      if (r.body) for await (const c of r.body) { if (!res.write(c)) await new Promise((ok) => res.once('drain', ok)); }
+      res.end();
+    } catch (_) { req.socket.end(); }
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   API = `http://127.0.0.1:${server.address().port}`;
@@ -194,6 +199,25 @@ test('the engine: a kept file that is not the signed bytes is fetched again; off
   // an index signed with a key that is not pinned is refused
   await assert.rejects(loadNodeEngine({ dir: folder(), config: null, pinned: ['00'.repeat(32)], base: `${API}/4/engine/`, builtIn: ENGINE_ID }),
     (e) => e.code === 'signature_invalid' && e.failures[0].cause === 'signature');
+});
+
+test('16.7 (4.0.2): the Node path asks each model file once, whole; a cut in the largest file resumes once, from the cut, with If-Range', { skip }, async () => {
+  const at = 5 * 4 * 1024 * 1024 + 777;
+  const from = srv.state.requests.length;
+  srv.state.ranges = true; // the CDN as it answers: ETag, Accept-Ranges, 206 for an open-ended Range
+  srv.state.cut = { file: 'c16_l64/layers.zfw.qle', at };
+  try {
+    const c = await create(folder());
+    assert.equal((await c.model()).build, srv.build);
+    await c.close();
+  } finally { srv.state.ranges = false; srv.state.cut = null; }
+  const asked = srv.state.requests.slice(from).filter((r) => r.path.startsWith('GET /models/'));
+  assert.equal(asked.length, 10, 'the 8 files and the manifest, and one resume');
+  const ranged = asked.filter((r) => r.headers.range);
+  assert.equal(ranged.length, 1);
+  assert.ok(ranged[0].path.endsWith('/c16_l64/layers.zfw.qle'));
+  assert.equal(ranged[0].headers.range, `bytes=${at}-`);
+  assert.match(String(ranged[0].headers['if-range']), /^"[0-9a-f]{32}"$/, 'If-Range: the ETag of the answer that started it');
 });
 
 test('one Client per folder in a process; another folder is another Client', { skip }, async () => {

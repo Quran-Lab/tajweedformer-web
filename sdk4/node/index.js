@@ -27,7 +27,7 @@ import { TajweedHeads } from '../../web/api/heads.js';
 import { TajweedError, invalid } from '../../web/api/errors.js';
 import { MODEL_VERSION_RE } from '../../web/tajweed/manifest.js';
 
-export const SDK_VERSION = '4.0.1';
+export const SDK_VERSION = '4.0.2';
 export const API = 4;
 const MADE = Symbol('TajweedClient.create');
 const APP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
