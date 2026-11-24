@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Licence: from the next release, the SDK and the model are under the Quran-Lab No-Profit License 1.3 (NPL-1.3),
+  which replaces NPL-1.2. NPL-1.3 forbids using the model or its outputs to train other models without Quran Lab's
+  written permission, and TajweedFormer V4 and later models are used only through the SDK. The licence's Changes
+  paragraph lists the rest.
+
 ## 4.0.2
 
 - **Nothing waits for Wi-Fi.** Downloads and uploads use any network. The `unmeteredOnly` option of `prefetch()` is
