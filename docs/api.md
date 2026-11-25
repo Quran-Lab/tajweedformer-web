@@ -1,4 +1,4 @@
-# @quran-lab/tajweedformer 4.0.2: API
+# @quran-lab/tajweedformer 4.0.3: API
 
 Every public name of the package, generated from [`web/index.d.ts`](../web/index.d.ts) by
 `scripts/make_api_doc.mjs`: do not edit this page by hand. In a browser the hosted loader
@@ -6,7 +6,7 @@ Every public name of the package, generated from [`web/index.d.ts`](../web/index
 same classes, and in Node its `node` entry runs them with a desktop key and its app id. The names and the call order
 are the same in the Android, Apple and C SDKs.
 
-> Type definitions for @quran-lab/tajweedformer 4.0.2 (web API 4): the whole public surface, and nothing else. The package is a thin wrapper that loads Quran Lab's hosted loader; the same names are on globalThis.QuranLab. Five concepts: Client, Model, Session, Heads, Backend. Call order: Client, model, listen, read.
+> Type definitions for @quran-lab/tajweedformer 4.0.3 (web API 4): the whole public surface, and nothing else. The package is a thin wrapper that loads Quran Lab's hosted loader; the same names are on globalThis.QuranLab. Five concepts: Client, Model, Session, Heads, Backend. Call order: Client, model, listen, read.
 
 ## Call order
 
@@ -227,7 +227,7 @@ export interface TajweedTokens
 
 ## TajweedCalibration
 
-calibration.json as shipped: read-only data for a developer's own judge. The SDK never applies it.
+The model's calibration.json as signed: read-only data for the app's feedback engine (https://sdk.quranlab.ai/docs/engine). The SDK never applies it.
 
 ```ts
 export interface TajweedCalibration
@@ -245,14 +245,14 @@ export interface TajweedCalibration
 
 ## TajweedReference
 
-The expected units of each ayah: read-only data, downloaded only when the app asks.
+The expected units of each ayah: read-only data from the model's build, downloaded with the model.
 
 ```ts
 export interface TajweedReference
 ```
 
-- `readonly isDownloaded: boolean`
-- `fetch(): Promise<void>`: Download and verify the table, once.
+- `readonly isDownloaded: boolean`: True: the table comes with the model.
+- `fetch(): Promise<void>`: Resolves at once: the table came with the model.
 - `units(surah: number, ayah: number): Promise<{ units: number[]; words: number[]; wordCount: number }>`: The unit ids of an ayah in reading order (the word bar between words included), each unit's word, the word count.
 
 ## TajweedClip
@@ -298,9 +298,9 @@ export declare class TajweedModel
 - `readonly defaultContext: string`
 - `chunkMs(context?: string): number`
 - `readonly tokens: TajweedTokens`
-- `readonly calibration: TajweedCalibration | null`
-- `readonly reference: TajweedReference | null`
-- `readonly sampleClips: readonly TajweedClip[]`
+- `readonly calibration: TajweedCalibration | null`: The model's signed calibration; null only for a build that has none.
+- `readonly reference: TajweedReference | null`: The expected units of each ayah; null only for a build that has none.
+- `readonly sampleClips: readonly TajweedClip[]`: The model's sample clips (its self-test set), for listen({ from }).
 - `readonly backend: TajweedBackend`
 - `listen(options?: TajweedSessionOptions & { from?: TajweedClip | Float32Array }): Promise<TajweedSession>`: A Session fed by the microphone (asks for the permission), or by a clip or samples with `from`.
 - `session(options?: TajweedSessionOptions): TajweedSession`: A Session the app pushes audio into.

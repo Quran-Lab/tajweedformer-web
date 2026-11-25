@@ -111,6 +111,70 @@ async function ecdsaOk(spkiB64, sigB64, text) {
 
 const json = (status, body, headers = {}) => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
 
+// A 4.0 manifest's signed text: protected40.py manifest_text, qlab-cdn modelManifestText3 with the
+// encryption line after `contexts` (the test builds carry no golden tolerance)
+const byBytes = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
+export function manifestText40(m) {
+  let t = `quranlab-model-manifest 3
+model_id ${m.model_id}
+family ${m.family}
+revision ${m.revision}
+`;
+  if ('version' in m) t += `version ${m.version}
+`;
+  t += `min_sdk_version ${m.min_sdk_version}
+engine_format ${m.engine_format}
+coreml_format ${m.coreml_format}
+tokens ${m.tokens}
+tokens_sha256 ${m.tokens_sha256}
+`;
+  t += `default_context ${m.default_context}
+contexts ${m.contexts.join(',')}
+`;
+  if (m.encryption) t += `encryption ${m.encryption.scheme} ${m.encryption.key_id} ${m.encryption.root}
+`;
+  if (m.golden_tolerance || m.golden_raw_tolerance) throw new Error('manifestText40: golden tolerance lines are not written here');
+  for (const f of [...m.files].sort((a, b) => byBytes(a.path, b.path))) {
+    const d = f.encoding === 'identity' ? ['-', '-', '-'] : [f.decoded.sha256, f.decoded.size, f.decoded.path];
+    t += `file ${f.sha256} ${f.size} ${f.path} ${f.platforms === '*' ? '*' : f.platforms.join(',')} ${f.soc} ${f.context} ${f.role} ${f.need} ${f.encoding} ${d[0]} ${d[1]} ${d[2]}
+`;
+  }
+  return t;
+}
+
+// The test clip of gzipPlainBuild: 0.5 s of a 440 Hz tone, 16-bit PCM at 16 kHz (the form of the builds' clips)
+export const PLAIN_CLIP = { id: 'Tone_001001', kind: 'clean', file: 'Tone_001001.s16', samples: 8000, sample_rate: 16000 };
+/**
+ * The test build's plain files as production's builds store them (fakeServer plainGzip): the calibration as
+ * `calibration.json.gz` (encoding gzip, `decoded` the plain calibration.json) and a self-test set under `selftest/`,
+ * gzip too (selftest.json naming one clip, PLAIN_CLIP). The manifest is signed again with the test signer; the
+ * encrypted entries are the test build's own. Returns { manifestBytes, files: path -> bytes, replaced: paths }.
+ */
+export async function gzipPlainBuild(cdnDir) {
+  const { gzipSync } = await import('node:zlib');
+  const m = JSON.parse(readFileSync(join(cdnDir, 'manifest.json'), 'utf8'));
+  const files = new Map(), replaced = new Set();
+  const gz = (path, plainBytes, base) => {
+    const z = new Uint8Array(gzipSync(plainBytes));
+    files.set(`${path}.gz`, z);
+    return { ...base, path: `${path}.gz`, size: z.length, sha256: hex(sha256(z)), encoding: 'gzip', decoded: { path, size: plainBytes.length, sha256: hex(sha256(plainBytes)) } };
+  };
+  m.files = m.files.map((f) => {
+    if (f.role !== 'calibration' || f.encoding === 'qle1') return f;
+    replaced.add(f.path);
+    return gz('calibration.json', new Uint8Array(readFileSync(join(cdnDir, f.path))), f);
+  });
+  const pcm = new Uint8Array(PLAIN_CLIP.samples * 2);
+  const dv = new DataView(pcm.buffer);
+  for (let i = 0; i < PLAIN_CLIP.samples; i++) dv.setInt16(2 * i, Math.round(8000 * Math.sin((2 * Math.PI * 440 * i) / 16000)), true);
+  const st = u8(JSON.stringify({ format: 'quranlab.selftest/1', clips: [{ ...PLAIN_CLIP, surah: 1, ayah: 1 }] }));
+  const one = { platforms: '*', soc: '*', context: '*', role: 'selftest', need: 'optional' };
+  m.files.push(gz('selftest/selftest.json', st, one), gz(`selftest/${PLAIN_CLIP.file}`, pcm, one));
+  delete m.signature;
+  m.signature = Buffer.from(edSignBytes(manifestText40(m))).toString('base64');
+  return { manifestBytes: u8(JSON.stringify(m, null, 1)), files, replaced };
+}
+
 /**
  * The fake API and CDN as a fetch function. `cdnDir`: the test build's sdk/v4.0 folder (CDN form). Options:
  * site (the allowed origin), keyId (the API key id), turnstile ('required' | 'off' | 'outage'), stop (a reason: the
@@ -119,10 +183,12 @@ const json = (status, body, headers = {}) => new Response(typeof body === 'strin
  * certificate and `turnstile: unverified`, `turnstile_why`; a token for another cdata is 403 turnstile_failed (forgery).
  */
 export async function fakeServer({ cdnDir, site = 'https://app.example', apiKey = 'qlk_v1_apps-one_aaaaaaaaaaaaaaaaaaaaaa', keyId = 'apps-one',
-  turnstile = 'required', now = () => Math.floor(Date.now() / 1000), cdnBase = 'https://cdn.test/models', allowed = null, engineId = '20261114.000000000000', contributions = false, configPatch = null, leaseVersion = 2, dates = true, leaseDays = null } = {}) {
+  turnstile = 'required', now = () => Math.floor(Date.now() / 1000), cdnBase = 'https://cdn.test/models', allowed = null, engineId = '20261114.000000000000', contributions = false, configPatch = null, leaseVersion = 2, dates = true, leaseDays = null,
+  plainGzip = false } = {}) {
   // st.pieces: the pieces served in lease answers, one per answer in order (base64url), and the piece ids whose
   // proofs this server refuses (no digest for this target), as qlab-api's piece rules
-  const manifestBytes = new Uint8Array(readFileSync(join(cdnDir, 'manifest.json')));
+  const plain = plainGzip ? await gzipPlainBuild(cdnDir) : null;
+  const manifestBytes = plain ? plain.manifestBytes : new Uint8Array(readFileSync(join(cdnDir, 'manifest.json')));
   const manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
   const build = hex(sha256(manifestBytes)).slice(0, 40);
   const st = { engineId: null, leaseVersion: null, leaseSite: null, requests: [], pieces: [], refuseProofUnder: new Set(), servingPieces: false, askedPieces: [], issues: [], corruptLease: false, calls: [], leases: 0, stop: null, tokens: new Set(), challenges: new Set(), passed: new Set(), sawSite: new Set(), downloads: 0, bytes: 0, events: [],
@@ -163,8 +229,9 @@ export async function fakeServer({ cdnDir, site = 'https://app.example', apiKey 
       if (!tokenOk() || h['x-qlab-key'] !== apiKey) return json(401, { error: 'invalid_token' });
       const rel = decodeURIComponent(u.pathname.split(`/${build}/sdk/${manifest.model_id}/`)[1] || '');
       const p = join(cdnDir, rel);
-      if (!rel || !existsSync(p)) return json(404, { error: 'not_found' });
-      const b = readFileSync(p);
+      const own = plain && (rel === 'manifest.json' ? manifestBytes : plain.files.get(rel));
+      if (!own && (!rel || !existsSync(p) || (plain && plain.replaced.has(rel)))) return json(404, { error: 'not_found' });
+      const b = own ? Buffer.from(own) : readFileSync(p);
       st.downloads++; st.bytes += b.length;
       if (!st.ranges && !st.cut) return new Response(b, { status: 200 });
       // 4.0.2 (SPEC 16.7): st.ranges, the CDN as it answers: an ETag and Accept-Ranges, and an open-ended Range answered
@@ -296,7 +363,7 @@ export async function fakeServer({ cdnDir, site = 'https://app.example', apiKey 
       default: return json(404, { error: 'not_found' });
     }
   };
-  return { fetch, state: st, build, manifest, trustedKey: hex(pub), apiKey, keyId, site,
+  return { fetch, state: st, build, manifest, trustedKey: hex(pub), apiKey, keyId, site, plain,
     /** a Turnstile stand-in: the token names the action and the cdata it was made for */
     turnstile: async ({ action, cdata }) => `ts:${action}:${cdata}` };
 }

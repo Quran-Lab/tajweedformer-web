@@ -1,11 +1,21 @@
 # Changelog
 
-## Unreleased
+## 4.0.3
 
-- Licence: from the next release, the SDK and the model are under the Quran-Lab No-Profit License 1.3 (NPL-1.3),
-  which replaces NPL-1.2. NPL-1.3 forbids using the model or its outputs to train other models without Quran Lab's
-  written permission, and TajweedFormer V4 and later models are used only through the SDK. The licence's Changes
-  paragraph lists the rest.
+- **Fixed: `model.calibration` was `null` and `model.sampleClips` was empty,** in Node and in browsers, while
+  `model.reference` worked. They now hold the model's signed calibration data and its sample clips, which a feedback
+  engine reads (https://sdk.quranlab.ai/docs/engine). In browsers the hosted SDK has had this fix since 2026-11-24,
+  with no update needed; in Node it comes with this release.
+- **Fixed: in some browsers the model did not open, with `engine_failed`.** Where the browser's file storage is
+  missing or refuses to work, including Safari on iOS, the model now opens from memory for that visit and is
+  downloaded again on the next one. A storage failure that remains answers `storage_failed` or `storage_full`, and
+  `errorCause.errorCode` names the step that failed. The hosted SDK has had this since 2026-11-24.
+- **`NAMES.md`** no longer says that `model.reference` is null in 4.0.0: it gives the expected units of each ayah
+  wherever the model's build has them.
+- **Licence:** the SDK and the model are now under the Quran-Lab No-Profit License 1.3 (NPL-1.3), which replaces
+  NPL-1.2. NPL-1.3 forbids using the model or its outputs to train other models without Quran Lab's written
+  permission, and TajweedFormer V4 and later models are used only through the SDK. The licence's Changes paragraph
+  lists the rest.
 
 ## 4.0.2
 

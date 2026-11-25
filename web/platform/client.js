@@ -15,7 +15,7 @@ import { ErrorReports, classify, webSnapshot, refreshStorageEstimate, tag, telem
 import { MODEL_STOP_REASONS, stopReasonOf } from '../api/errors.js';
 import { Endpoints, ROLES, API_BODY_MS, HEAD_MS, retryAfterOf, StepBack } from '../../sdk4/shared/endpoints.js';
 
-export const SDK_VERSION = '4.0.2';
+export const SDK_VERSION = '4.0.3';
 // the first host of each role (ENDPOINTS_40.md 28.1): every request to the API goes through the api order of the
 // endpoint set (sdk4/shared/endpoints.js), the first host first, the others when it cannot be reached (28.3)
 export const API_URL = `https://${ROLES.api[0]}`;

@@ -1,4 +1,4 @@
-// Type definitions for @quran-lab/tajweedformer 4.0.2 (web API 4): the whole public surface, and nothing else.
+// Type definitions for @quran-lab/tajweedformer 4.0.3 (web API 4): the whole public surface, and nothing else.
 // The package is a thin wrapper that loads Quran Lab's hosted loader; the same names are on globalThis.QuranLab.
 // Five concepts: Client, Model, Session, Heads, Backend. Call order: Client, model, listen, read.
 
@@ -178,7 +178,7 @@ export interface TajweedTokens {
   id(name: string): number | null;
 }
 
-/** calibration.json as shipped: read-only data for a developer's own judge. The SDK never applies it. */
+/** The model's calibration.json as signed: read-only data for the app's feedback engine (https://sdk.quranlab.ai/docs/engine). The SDK never applies it. */
 export interface TajweedCalibration {
   readonly format: string | null;
   readonly sha256: string;
@@ -194,10 +194,11 @@ export interface TajweedCalibration {
   threshold(context: string, cls: string, preset: string): number | null;
 }
 
-/** The expected units of each ayah: read-only data, downloaded only when the app asks. */
+/** The expected units of each ayah: read-only data from the model's build, downloaded with the model. */
 export interface TajweedReference {
+  /** True: the table comes with the model. */
   readonly isDownloaded: boolean;
-  /** Download and verify the table, once. */
+  /** Resolves at once: the table came with the model. */
   fetch(): Promise<void>;
   /** The unit ids of an ayah in reading order (the word bar between words included), each unit's word, the word count. */
   units(surah: number, ayah: number): Promise<{ units: number[]; words: number[]; wordCount: number }>;
@@ -239,8 +240,11 @@ export declare class TajweedModel {
   readonly defaultContext: string;
   chunkMs(context?: string): number;
   readonly tokens: TajweedTokens;
+  /** The model's signed calibration; null only for a build that has none. */
   readonly calibration: TajweedCalibration | null;
+  /** The expected units of each ayah; null only for a build that has none. */
   readonly reference: TajweedReference | null;
+  /** The model's sample clips (its self-test set), for listen({ from }). */
   readonly sampleClips: readonly TajweedClip[];
   readonly backend: TajweedBackend;
   /** A Session fed by the microphone (asks for the permission), or by a clip or samples with `from`. */

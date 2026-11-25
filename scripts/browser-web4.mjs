@@ -55,7 +55,8 @@ if (!dir || !existsSync(join(HOSTED, 'loader.js')) || !existsSync(PW)) {
 const { chromium } = createRequire(import.meta.url)(PW);
 const TYPES = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json', '.css': 'text/css', '.html': 'text/html' };
 const ENGINE_ID = readFileSync(join(ENGINES, 'LATEST'), 'utf8').trim();
-const srv = await fakeServer({ cdnDir: dir, site: SITE, turnstile: 'off', cdnBase: `${API}/models`, allowed: [SITE], engineId: ENGINE_ID, contributions: true });
+// plainGzip (4.0.3): the test build's calibration and sample clips stored as production's builds store them (gzip, `decoded`)
+const srv = await fakeServer({ cdnDir: dir, site: SITE, turnstile: 'off', cdnBase: `${API}/models`, allowed: [SITE], engineId: ENGINE_ID, contributions: true, plainGzip: true });
 const allowedByKey = { [srv.apiKey]: [SITE] };
 
 const NO_ED25519 = process.env.ED25519 === 'absent';
@@ -139,7 +140,8 @@ const RUN = `(async () => {
     const t1 = performance.now();
     const model = await client.model();
     out.openMs = Math.round(performance.now() - t1);
-    out.model = { version: model.version, build: model.build, tokens: model.tokens.count, calibration: !!model.calibration };
+    out.model = { version: model.version, build: model.build, tokens: model.tokens.count, calibration: !!model.calibration,
+      calibrationSha256: model.calibration ? model.calibration.sha256 : null, sampleClips: model.sampleClips.map((c) => c.name) };
     const s = model.session({ heads: ['log_probs', 'conf'] });
     const pcm = new Float32Array(16000 * 2); for (let i = 0; i < pcm.length; i++) pcm[i] = Math.sin(i / 7) * 0.02;
     for (let i = 0; i < pcm.length; i += 1600) s.push(pcm.subarray(i, i + 1600));
@@ -312,6 +314,11 @@ try {
   const configs = srv.state.requests.filter((r) => r.path === 'GET /v1/config');
   check('allowed origin: handshake, signed engine, lease, OPFS install, open, a take', a.r.ok === true && a.r.chunks > 0 && a.r.model.tokens === 38,
     a.r.ok ? { openMs: a.r.openMs, steps: a.r.steps, chunks: a.r.chunks, frames: a.r.frames, storage: a.r.diagnose.storage, store: a.r.storage.models[0] && a.r.storage.models[0].bytes, lease: a.r.diagnose.lease } : { error: a.r.error, logs: a.logs.slice(-5) });
+  // 4.0.3: the calibration and the sample clips of a build that stores them gzip, as production's do (4.0.2 gave null and
+  // none: the frame kept the gzip bytes under the stored path, where the Core does not read them)
+  const calEntry = srv.manifest.files.find((f) => f.role === 'calibration');
+  check('model.calibration and model.sampleClips of a build that stores them gzip: its signed sha256 and the clips listed',
+    a.r.ok === true && a.r.model.calibrationSha256 === calEntry.decoded.sha256 && a.r.model.sampleClips.length > 0, a.r.model);
   if (NO_ED25519) check('the Worker had no Ed25519 in WebCrypto (its first refusal was seen)', probes.includes('/probe/ed25519-refused'), probes);
   if (CLOCK_MS) check(`the Worker's clock ${process.env.CLOCK}: the config accepted by the server's Date, the lease by the Core's clock`, a.r.ok === true, a.r.ok ? a.r.diagnose.lease : a.r.error);
   check('the frame\'s config requests carry the app\'s version and build after the parameters of before (27.1), and diagnose names the frame\'s host (28.7)',

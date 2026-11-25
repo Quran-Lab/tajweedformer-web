@@ -224,7 +224,13 @@ session.reportRecited(2, 255, 257, {
 });
 ```
 
-These numbers are your app's own judgement; Quran Lab's SDK does not judge a recitation. A take's record is kept in
+These numbers are your app's own judgement; Quran Lab's SDK does not judge a recitation. It gives a judge what it
+reads, for the model that is loaded: `model.calibration` (the model's signed calibration data: thresholds per check
+and context, its `text` exactly as signed and its `sha256`), `model.reference` (the expected units of each ayah, read
+from the model's build) and `model.sampleClips` (the model's own sample clips, to run through `listen({ from })`).
+The feedback engine that turns a take into feedback, and the vectors that test a build of it, are at
+https://sdk.quranlab.ai/docs/engine. `model.calibration` and `model.reference` are null only for a build that has
+none; then a judge shows what was heard and flags nothing. A take's record is kept in
 the frame's IndexedDB so that a closed tab or a crash loses at most a few seconds of a take, and the take is counted
 once at the next visit.
 
@@ -312,11 +318,6 @@ await client.close();
   developer controls, the protection is the Core's: the model is never written in plaintext, and the lease opens it
   only in this folder on this machine.
 - No recitation sharing in Node (it needs the consent sheet in a page): `client.sharing.isAvailable` is false.
-
-## What 4.0.0 does not do yet
-
-- **Expected units per ayah** (`model.reference`): read by the Core from the build's reference data, downloaded with the
-  model; null only for a build that has none.
 
 ## The honest limit
 

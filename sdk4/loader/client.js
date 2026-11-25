@@ -25,7 +25,7 @@ export const FRAME_FALLBACK = typeof __QL_FRAME_FALLBACK__ !== 'undefined' ? __Q
  * loader carries this list itself: it is never taken from a config (28.2). */
 export const FRAME_BASES = Object.freeze(typeof __QL_FRAME_BASE__ !== 'undefined' ? [FRAME_BASE, FRAME_FALLBACK] : ROLES.web_frame.map((h) => `https://${h}`));
 export const API_URL = typeof __QL_API__ !== 'undefined' ? __QL_API__ : 'https://api.quranlab.ai';
-export const SDK_VERSION = '4.0.2';
+export const SDK_VERSION = '4.0.3';
 export const API = 4;
 const MADE = Symbol('TajweedClient.create');
 const MAX_CHECKS = 100_000;
