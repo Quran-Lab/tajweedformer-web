@@ -5,7 +5,7 @@
 // the same numbers. Segments go straight to R2 as plain PUTs. Nothing is sent at the end.
 import { retryAfterOf } from '../../sdk4/shared/endpoints.js';
 
-export const SDK_VERSION = '4.0.2';
+export const SDK_VERSION = '4.0.3';
 export const INPUT_ROUTES = Object.freeze(['built_in', 'wired', 'usb', 'bluetooth', 'car', 'continuity', 'other', 'unknown']);
 const CONSENT_RE = /^[A-Za-z0-9._-]{1,32}$/;
 const DEVICE_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,23}$/;

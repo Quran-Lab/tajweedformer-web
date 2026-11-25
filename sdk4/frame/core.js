@@ -91,16 +91,20 @@ export class Core {
     this.state = state;
     this.saves = 0; // how many times the Core saved its state (lease-store.js keeps the newest)
     this.fnErr = null; // the first exception a callback swallowed (for the call's error message)
+    // R402-4 (b): the first file callback that answered a failure without an exception (read, write, commit, remove):
+    // a storage failure of the Core with no store failure behind it names it
+    this.fnFail = null;
     this._streamCb = new Map();
     const u8 = () => M.HEAPU8;
     const str = (p) => (p ? this.cstr(p) : null);
     const guard = (f, bad) => (...a) => { try { return f(...a); } catch (e) { if (!this.fnErr) this.fnErr = e; return bad; } };
+    const failed = (op, ok) => { if (ok) return 0; if (!this.fnFail) this.fnFail = op; return -1; };
     const fp = {
       size: M.addFunction(guard((u, form, path) => BigInt(this.files.size(form, str(path))), -1n), 'jiii'),
-      read: M.addFunction(guard((u, form, path, off, buf, len) => this.files.read(form, str(path), Number(off), u8().subarray(buf, buf + len)) ? 0 : -1, -1), 'iiiijii'),
-      write: M.addFunction(guard((u, form, path, off, buf, len) => this.files.write(form, str(path), Number(off), u8().slice(buf, buf + len)) ? 0 : -1, -1), 'iiiijii'),
-      commit: M.addFunction(guard((u, form, path) => (this.files.commit(form, str(path)) ? 0 : -1), -1), 'iiii'),
-      remove: M.addFunction(guard((u, form, path) => (this.files.remove(form, str(path)) ? 0 : -1), -1), 'iiii'),
+      read: M.addFunction(guard((u, form, path, off, buf, len) => failed('read', this.files.read(form, str(path), Number(off), u8().subarray(buf, buf + len))), -1), 'iiiijii'),
+      write: M.addFunction(guard((u, form, path, off, buf, len) => failed('write', this.files.write(form, str(path), Number(off), u8().slice(buf, buf + len))), -1), 'iiiijii'),
+      commit: M.addFunction(guard((u, form, path) => failed('commit', this.files.commit(form, str(path))), -1), 'iiii'),
+      remove: M.addFunction(guard((u, form, path) => failed('remove', this.files.remove(form, str(path))), -1), 'iiii'),
       wall: M.addFunction(guard(() => BigInt(Math.floor(this.clock.wall())), 0n), 'ji'),
       boot: M.addFunction(guard((u, bid) => { u8().set(this.bootId, bid); return BigInt(Math.floor(this.clock.boot())); }, 0n), 'jii'),
       random: M.addFunction(guard((u, buf, len) => { u8().set(randomBytes(len), buf); return 0; }, -1), 'iiii'),
@@ -156,9 +160,10 @@ export class Core {
   _i64(p) { return Number(this._dv().getBigInt64(p, true)); }
   _with(ptrs, f) { try { return f(); } finally { for (const p of ptrs) if (p) this.M._free(p); } }
   _check(rc, where) {
-    if (rc >= 0) { this.fnErr = null; return rc; }
+    if (rc >= 0) { this.fnErr = null; this.fnFail = null; return rc; }
     const e = new CoreError(rc, this.M._qlc_detail(this.ptr), where);
     if (this.fnErr) { e.cause = this.fnErr; this.fnErr = null; }
+    if (this.fnFail) { e.hostOp = this.fnFail; this.fnFail = null; }
     throw e;
   }
   get detail() { return this.M._qlc_detail(this.ptr); }

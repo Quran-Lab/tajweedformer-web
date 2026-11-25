@@ -172,7 +172,7 @@ test('engine_load_failed: a build that is not the signed bytes is reported, and 
   assert.equal(issue.kind, 'engine_failed', 'a kind qlab-api accepts (ISSUE_KINDS)');
   assert.equal(issue.code, `engine_load_failed:${CUR}:sha256`);
   assert.match(issue.code, /^[A-Za-z0-9_.:-]{1,64}$/, 'the issue code form qlab-api accepts');
-  assert.equal(issue.sdk_version, '4.0.2');
+  assert.equal(issue.sdk_version, '4.0.3');
   await c.close();
 });
 

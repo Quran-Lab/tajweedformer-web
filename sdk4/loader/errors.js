@@ -10,5 +10,5 @@ export function errorFrom(e, fallback = 'engine_failed') {
     if (e.qlCause && typeof e.qlCause === 'object') setErrorCause(t, e.qlCause);
     return t;
   }
-  return toTajweedError(e, { fallback, sdk: '4.0.2' });
+  return toTajweedError(e, { fallback, sdk: '4.0.3' });
 }

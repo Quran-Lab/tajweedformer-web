@@ -39,6 +39,7 @@
 // The Core judges the lease itself (its clock, exp, the site it names, the install key, the release).
 import { utf8, hex, sha256 } from '../shared/bytes.js';
 import { InstallKeys } from './keys.js';
+import { storeFailure } from './stores.js';
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
@@ -99,6 +100,7 @@ export class LeaseStore {
     this.seal = null;
     this.made = null;
     this._q = Promise.resolve();
+    this.onFailure = null; // R402-3: hears of a save that failed (the controller: a silent report, storage/write)
   }
 
   async _name() { if (!this.name) this.name = await recordName(this.site, this.key); return this.name; }
@@ -147,10 +149,13 @@ export class LeaseStore {
 
   /**
    * Write the record whole (one KV transaction): `keys` (InstallKeys), `coreState` (the Core's saved state, or null),
-   * `coreNow` (the Core's clock, seconds, or null), `cert`, `lease`, `mirror`. Saves are serialized; never throws.
+   * `coreNow` (the Core's clock, seconds, or null), `cert`, `lease`, `mirror`. Saves are serialized; never throws (a
+   * save that failed is said to onFailure, tagged lease_save unless the store named its own call).
    */
   save(o) {
-    this._q = this._q.then(() => this._save(o)).catch(() => {});
+    this._q = this._q.then(() => this._save(o)).catch((e) => {
+      if (typeof this.onFailure === 'function') { try { this.onFailure(storeFailure(e, 'lease_save')); } catch (_) { /* never in the way */ } }
+    });
     return this._q;
   }
 

@@ -1,7 +1,7 @@
 // The engine Worker (a dedicated module Worker of the frame, on Quran Lab's origin). It holds the page session's
 // install keys, the platform client, the engine and the Core with its lease, and the model's ciphertext in the
 // origin private file system. The frame starts it after the handshake and hands it the loader's port.
-import { Controller } from './controller.js';
+import { Controller, frameAppOf } from './controller.js';
 import { serve } from './serve.js';
 import { openFiles, openKV } from './stores.js';
 import { loadEngine } from './engine-loader.js';
@@ -43,6 +43,8 @@ self.onmessage = async (e) => {
   const ctl = new Controller({
     key: d.key, site: d.site, apiUrl: API_URL, modelsUrl: typeof __QL_MODELS__ !== 'undefined' ? __QL_MODELS__ : undefined, trustedKeys: PINS, appVersion: d.appVersion, appBuild: d.appBuild,
     files: await openFiles(name), kv: await openKV(name), turnstile, turnstilePrepare,
+    // R402-4 (c): the app this Worker was served from (/4/app/<id>/worker.js), on every report it makes
+    frameApp: frameAppOf(self.location && self.location.pathname),
     loadEngine: (config) => loadEngine({ base: ENGINE_BASE, config, pinned: PINS, builtIn: ENGINE_BUILTIN, threads: d.threads === 'auto' ? 'auto' : 'off' }),
   });
   serve(d.port, ctl, { onClose: () => setTimeout(() => self.close(), 0) });

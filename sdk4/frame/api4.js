@@ -14,7 +14,7 @@ import { Telemetry4 } from './telemetry4.js';
 import { productOf } from '../../web/platform/telemetry.js';
 import { certField } from './lease-store.js';
 
-export const SDK_VERSION_4 = '4.0.2';
+export const SDK_VERSION_4 = '4.0.3';
 export const API_VERSION = 4;
 
 /** A state view that keeps some keys in memory only (the token: per page session in 4.0). */

@@ -11,7 +11,7 @@ Every public type and function, and nothing else. The names are the four SDKs';
 | Name | Where | What |
 |---|---|---|
 | `QuranLab.api` | loader | `4` |
-| `QuranLab.version` | loader | `"4.0.2"` (the loader's version; the engine's is in `diagnose().sdk.engine`) |
+| `QuranLab.version` | loader | `"4.0.3"` (the loader's version; the engine's is in `diagnose().sdk.engine`) |
 | `QuranLab.v4` | loader | the same object, by API number |
 | `LOADER_URL` | npm | `"https://web.quranlab.ai/4/loader.js"` |
 | `API` | npm | `4` |
@@ -22,7 +22,7 @@ Every public type and function, and nothing else. The names are the four SDKs';
 | Class | Members |
 |---|---|
 | `TajweedClient` | `static create(options)`, `model(version?)`, `prefetch({ onProgress?, version? })`, `storage()`, `removeModels()`, `diagnose()`, `sharing`, `analytics`, `pin`, `background()`, `foreground()`, `close()` |
-| `TajweedModel` | `id`, `version`, `build`, `contexts`, `defaultContext`, `chunkMs(context?)`, `tokens`, `calibration`, `reference` (null in 4.0.0), `sampleClips`, `backend`, `listen(options?)`, `session(options?)`, `close()` |
+| `TajweedModel` | `id`, `version`, `build`, `contexts`, `defaultContext`, `chunkMs(context?)`, `tokens`, `calibration`, `reference`, `sampleClips`, `backend`, `listen(options?)`, `session(options?)`, `close()` |
 | `TajweedSession` | `push(samples)`, `chunks`, `events`, `finish()`, `cancel()`, `backend`, `reportRecited(surah, ayahFrom, ayahTo, { outcome?, perAyah? }?)` |
 | `TajweedHeads` | `names`, `get(name)`, `greedy(name?)`, `decoded()` |
 | `TajweedError` | `code`, `message`, `fix`, `docs` (the catalogue's 26 codes), `errorCause` (4.0.2) |
@@ -68,6 +68,6 @@ Every public type and function, and nothing else. The names are the four SDKs';
 - Gone: the `analytics` and `audience` options of `TajweedClientOptions` (an `analytics` or `audience` key passed from
   JavaScript, whatever its value, is `invalid_argument`; see docs/migrating-to-4.md). `client.sharing.ask()` resolves
   with `{ yes }` alone.
-- Gone from the web package: `model.reference` data. The two sharing elements are no longer module exports: they
-  are defined by name.
+- The expected units of each ayah no longer ship in the web package: `model.reference` reads them from the model's
+  build. The two sharing elements are no longer module exports: they are defined by name.
 - Unchanged: every other name and meaning above.

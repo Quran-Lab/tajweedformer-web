@@ -19,11 +19,89 @@ import { InstallKeys } from './keys.js';
 import { LeaseStore } from './lease-store.js';
 import { QuranLab4, SDK_VERSION_4, API_TIMEOUT_MS } from './api4.js';
 import { Endpoints, HEAD_MS, HOLD_MAX_S, retryAfterOf } from '../shared/endpoints.js';
-import { StateStore, WithCoreFiles } from './stores.js';
+import { StateStore, WithCoreFiles, MemoryFiles, storeFailure } from './stores.js';
 import { PlatformError, MODELS_URL } from '../../web/platform/client.js';
 import { MODEL_LIMIT_DETAIL } from '../../web/api/errors.js';
 import { tokenAnswer, integrityCode, integrityDetail } from '../../web/platform/error-reports.js';
-import { MODEL_VERSION_RE } from '../../web/tajweed/manifest.js';
+import { MODEL_VERSION_RE, gunzip } from '../../web/tajweed/manifest.js';
+
+// A plain entry (calibration.json, the self-test set: 18.2.5) is kept on the device at its decoded path: production's
+// builds store them gzip (calibration.json.gz, selftest/*.gz) and the Core reads the plain calibration at
+// calibration.json (QLC_FORM_PLAIN). Up to this patch the gzip bytes were kept under the stored path: model.calibration
+// was null and the sample clips none (developer report fb_f5da03d55e58a8ea, 11-23). As Apple, Android and C do.
+const plainPath = (f) => (f.encoding === 'gzip' && f.decoded ? f.decoded.path : f.path);
+const plainSha = (f) => String(f.encoding === 'gzip' && f.decoded ? f.decoded.sha256 : f.sha256).toLowerCase();
+// an entry's name in the file store: an encrypted entry's decoded path (its CDN and device forms), a plain one's plainPath
+const storedPath = (f) => (f.encoding === 'qle1' ? f.decoded.path : plainPath(f));
+const canInflate = () => typeof globalThis.DecompressionStream === 'function';
+
+/** R402-4 (c): the hosted frame's app id, from the path its Worker was served from (/4/app/<12 hex>/worker.js), or null. */
+export function frameAppOf(pathname) {
+  const m = /^\/4\/app\/([0-9a-f]{12})\/[^/]+$/.exec(typeof pathname === 'string' ? pathname : '');
+  return m ? m[1] : null;
+}
+
+/**
+ * R402-4 (c): the frame's app id on each report it makes (error.frame), in the frame alone (the loader and the sharing
+ * chunk keep their bytes): a report this page load makes or counts again is kept with the app; one queued by an older
+ * frame keeps none. A server that does not take the field yet (its closed schema answers 400) gets the same report once
+ * more without it.
+ */
+export function frameReports(r, app) {
+  if (!r || typeof app !== 'string' || !/^[0-9a-f]{12}$/.test(app) || r._frameApp) return;
+  r._frameApp = app;
+  const occur = r.occur.bind(r), body = r.body.bind(r), flush = r.flush.bind(r);
+  r.occur = (o) => {
+    let before = null;
+    try { before = new Map(r._load().queue.map((q) => [`${q.day}|${q.sig}`, q.count])); } catch (_) { before = null; }
+    const made = occur(o);
+    if (before) {
+      try {
+        const s = r._load();
+        let changed = false;
+        for (const q of s.queue) {
+          const k = `${q.day}|${q.sig}`;
+          if (before.has(k) && before.get(k) === q.count) continue; // not touched by this occurrence
+          q.fields = { ...(q.fields || {}), frame: app };
+          changed = true;
+        }
+        if (changed) r._save(s);
+      } catch (_) { /* never in the way */ }
+    }
+    return made;
+  };
+  r.body = (q) => {
+    const b = body(q);
+    const f = q && q.fields && q.fields.frame;
+    if (typeof f === 'string' && /^[0-9a-f]{12}$/.test(f) && b && b.error) b.error.frame = f;
+    return b;
+  };
+  r.flush = (send) => flush(async (b) => {
+    try { return await send(b); } catch (e) {
+      if (!(e && e.status === 400 && b && b.error && b.error.frame !== undefined)) throw e;
+      const plain = { ...b, error: { ...b.error } };
+      delete plain.error.frame;
+      return send(plain);
+    }
+  });
+}
+
+// a file another page of the site holds (the store asked again already: it stays the call's failure)
+const LOCKED = new Set(['NoModificationAllowedError', 'InvalidStateError']);
+const INSTALL_WRITES = new Set(['opfs_put', 'opfs_write', 'opfs_commit', 'opfs_open']);
+/**
+ * R402-4 (a): an install's OPFS write that failed for a reason other than another page holding the file (UnknownError
+ * at opfs_put on iOS Safari 26/27, QuotaExceededError at opfs_write): { error_code, error_name } of the failure, and
+ * the page load goes on in memory as a browser whose OPFS probe fails does. Else null.
+ */
+export function memoryFallbackOf(e) {
+  const raw = e && e.qlReport ? e : e && e.cause && e.cause.qlReport ? e.cause : null;
+  const t = raw && raw.qlReport;
+  if (!t || t.stage !== 'storage' || t.reason === 'read' || !INSTALL_WRITES.has(t.error_code)) return null;
+  const name = typeof raw.name === 'string' ? raw.name : '';
+  if (LOCKED.has(name)) return null;
+  return { error_code: t.error_code, ...(name && name !== 'Error' ? { error_name: name } : {}) };
+}
 
 /** The vocabularies the loader knows by the manifest's tokens_sha256 (the tokens file is encrypted in a protected
  * build, and the Core does not export the names yet: docs/core-requests.md, request 1). */
@@ -147,6 +225,9 @@ export class Controller {
     this.ql = new QuranLab4({ key: o.key, site: o.site, apiUrl: o.apiUrl, modelsUrl: o.modelsUrl, endpoints: this.ep, fetch: o.fetch, clock: this.clock, state: this.state,
       trustedKeys: o.trustedKeys, appVersion: o.appVersion, appBuild: o.appBuild, autoSend: o.autoSend, apiTimeoutMs: Number.isFinite(o.apiTimeoutMs) ? o.apiTimeoutMs : API_TIMEOUT_MS,
       debug: o.debug, keys: this.keys, local: o.local, cert: kept ? kept.cert : null, desktop: o.desktop || null });
+    // R402-4 (c): the hosted frame's app id on every report this page load makes (the Worker passes it; Node has none)
+    frameReports(this.ql.errors, o.frameApp);
+    this._watchStores();
     // a certificate of a Turnstile pass still holds: the leases of this page ride on it with no new token (18.4.9)
     this.turnstilePassed = !!(kept && kept.cert && certField(kept.cert, 'att') === 'turnstile' && this.ql.certHolds());
     // 4.0.1: a page with no kept lease and no pass asks for a lease, and Turnstile is the slow part of that (5.4 s of a
@@ -220,16 +301,31 @@ export class Controller {
    * Keep the install keys, the certificate, the Core's saved state and what the frame knows of the lease, for the next
    * page load (lease-store.js). Called after each step that changes them; never throws, never in the way.
    */
-  _persist() {
+  _persist() { return this._bounded(this._save()); }
+
+  // the record's save as it runs (R402-3: never rejects; a failure is said through the store's onFailure)
+  _save() {
     if (!this.store || !this.core || !this.core.ptr) return Promise.resolve();
-    let now = null;
-    if (!this.take) { try { now = this.core.tick().now; } catch (_) { now = null; } }
-    const li = this.leaseInfo;
-    const lease = li && li.eph ? { build: li.build, base: li.base, exp: li.exp, refreshAfter: li.refreshAfter, iat: Number.isFinite(li.iat) ? li.iat : null, eph: li.eph, anchorD: li.anchorD,
-      src: { build: li.src.build, version: li.src.version, modelId: li.src.modelId, keyId: li.src.keyId } } : null;
-    this._persistedSaves = this.core.saves;
-    return this.store.save({ keys: this.keys, coreState: this.core.state, coreNow: now, cert: this.ql.installCert, lease,
-      mirror: null });
+    try {
+      let now = null;
+      if (!this.take) { try { now = this.core.tick().now; } catch (_) { now = null; } }
+      const li = this.leaseInfo;
+      const lease = li && li.eph ? { build: li.build, base: li.base, exp: li.exp, refreshAfter: li.refreshAfter, iat: Number.isFinite(li.iat) ? li.iat : null, eph: li.eph, anchorD: li.anchorD,
+        src: { build: li.src.build, version: li.src.version, modelId: li.src.modelId, keyId: li.src.keyId } } : null;
+      this._persistedSaves = this.core.saves;
+      return Promise.resolve(this.store.save({ keys: this.keys, coreState: this.core.state, coreNow: now, cert: this.ql.installCert, lease,
+        mirror: null })).catch((e) => this._saveFailed(e));
+    } catch (e) { this._saveFailed(e); return Promise.resolve(); }
+  }
+
+  _saveFailed(e) { try { if (this._storeTold) this._storeTold(storeFailure(e, 'lease_save')); } catch (_) { /* never in the way */ } }
+
+  // R402-3: a wait for the lease record's save, at most leaseSaveWaitMs (a real timer): the record serves the next page
+  // load, so a save that fails or never ends (IndexedDB on iOS) never fails or holds up this call; it goes on behind
+  _bounded(p) {
+    const ms = Number.isFinite(this.o.leaseSaveWaitMs) ? this.o.leaseSaveWaitMs : LEASE_SAVE_WAIT_MS;
+    let t = null;
+    return Promise.race([p, new Promise((r) => { t = setTimeout(r, ms); if (t && typeof t.unref === 'function') t.unref(); })]).finally(() => clearTimeout(t));
   }
 
   // 4.0.2: the lease attempt in flight and the save of a lease it took, waited for at most `ms` (a real timer: close()
@@ -246,6 +342,31 @@ export class Controller {
   /** ERRORS_40.md section 24: a failure the loader is given, with the code it gets (serve.js). Never throws. */
   reportFailure(err, code) {
     try { if (this.ql && code && code !== 'invalid_argument') this.ql.reportFailure(err, { code }); } catch (_) { /* never in the way */ }
+  }
+
+  /**
+   * R402-3: the stores' failures that stop no call are silent error reports, stage storage (ERRORS_40.md 24.1): a file
+   * store or IndexedDB the browser refused at the start, so this page load keeps them in memory (reason unavailable,
+   * error_code the probe that failed, error_name the browser's error), and a write of the SDK's own records that
+   * failed and is written again later (the state, the file index, the lease record). Each failure once per page load
+   * (a report is itself written to the state: a store that keeps failing must not report each time).
+   */
+  _watchStores() {
+    const seen = new Set();
+    const told = (e) => {
+      const t = (e && e.qlReport) || {};
+      const k = `${t.reason}|${t.error_code}|${e && e.name}`;
+      if (seen.has(k)) return;
+      seen.add(k);
+      try { this.ql.reportFailure(e, { silent: true }); } catch (_) { /* never in the way */ }
+    };
+    this._storeTold = told;
+    for (const s of [this.o.files, this.state, this.store]) { if (s && typeof s === 'object') { try { s.onFailure = told; } catch (_) { /* a store that takes none */ } } }
+    for (const x of [this.o.files, this.o.kv]) {
+      const u = x && x.unavailable;
+      if (u && typeof u.error_code === 'string') { try { this.ql._silent('storage', 'unavailable', { error_code: u.error_code, ...(u.error_name ? { error_name: u.error_name } : {}) }); } catch (_) { /* never in the way */ } }
+    }
+    if (this.state && this.state.loadFailed) told(this.state.loadFailed);
   }
 
   // the loader's own failures of earlier page loads (a frame that did not answer): stage, reason, code, error_name
@@ -890,7 +1011,7 @@ export class Controller {
           }
           this._tookLease(src, a, base, man, got, leaseBytes);
         }
-        await this._leaseSaving;
+        await this._bounded(this._leaseSaving);
         return this.leaseInfo;
       }
       // the server cannot answer now (a 5xx, 503 lease_unavailable with Retry-After when a dependency is down, or a
@@ -982,7 +1103,7 @@ export class Controller {
       src: { build: src.build, version: src.version, modelId: src.modelId, keyId: src.keyId, pin: null } };
     this._setRow(0, 0);
     this._scheduleRefresh(src);
-    this._leaseSaving = this._persist();
+    this._leaseSaving = this._save();
   }
 
   // the device's wall clock as the Core reads it (ms)
@@ -1026,7 +1147,17 @@ export class Controller {
     if (e.status === QLC.E_NEEDS_CONNECTION) return new SdkError('needs_connection', `${what}: the lease has expired`, at('lease', 'expired'));
     if (e.status === QLC.E_STOPPED) return new SdkError('invalid_key', `${what}: stopped`, at('lease', 'refused'));
     if (e.status === QLC.E_FILE || e.status === QLC.E_MANIFEST) return new SdkError('model_invalid', `${what} (${e.message})`, at('model_open', 'invalid'));
-    if (e.status === QLC.E_STORAGE) return new SdkError('storage_failed', `${what} (${e.message})`, at('storage', 'write'));
+    if (e.status === QLC.E_STORAGE) {
+      // R402-3: the store's failure the Core's guard kept (stores.js tags it): a full store is storage_full, and
+      // error_code names the store's call (opfs_write, ...); without one, the Core's status as before
+      const t = (e.cause && e.cause.qlReport) || null;
+      const full = (t && t.reason === 'quota') || (!!e.cause && e.cause.name === 'QuotaExceededError');
+      // R402-4 (b): with none, the Core call and its detail, and the callback that answered a failure without an error
+      // (the field's bare "-3" said neither)
+      const named = `${e.where || 'qlc'}:${e.detail | 0}${e.hostOp ? `:${e.hostOp}` : ''}`.slice(0, 32);
+      return new SdkError(full ? 'storage_full' : 'storage_failed', `${what} (${e.message})`,
+        { stage: 'storage', why: full ? 'quota' : 'write', error_code: t && t.error_code ? t.error_code : named, ...(e.cause ? { cause: e.cause } : {}) });
+    }
     if (e.status === QLC.E_KEYSTORE) return new SdkError('engine_failed', `${what}: the key store (${e.message})`, at('storage', 'read'));
     // a status the model open fails with, as errors_40.json core_open names it (24.3): busy, no memory, the engine or an
     // argument told apart in the report's reason and error_code (Gate C, 11-20: Android's engine_failed hid which)
@@ -1069,7 +1200,7 @@ export class Controller {
   _needed(m, context, { recited }) {
     return m.files.filter((f) => {
       if (f.context !== '*' && f.context !== context) return false;
-      if (f.role === 'calibration') return true;
+      if (f.role === 'calibration') return f.encoding !== 'gzip' || canInflate(); // (data: the model opens without it)
       if (f.role === 'recited') return recited;
       return ENGINE_ROLES.has(f.role);
     });
@@ -1084,7 +1215,7 @@ export class Controller {
   async _missing(man, context) {
     const todo = [];
     for (const f of this._needed(man.m, context, { recited: this._recitedOn() })) {
-      const dec = f.encoding === 'qle1' ? f.decoded.path : f.path;
+      const dec = storedPath(f);
       const form = f.encoding === 'qle1' ? QLC.FORM_DEVICE : QLC.FORM_PLAIN;
       if (await this.o.files.has(form, dec)) continue;
       todo.push(f);
@@ -1147,7 +1278,8 @@ export class Controller {
     const good = bytes.length === f.size && (await sha256Hex(bytes)) === String(f.sha256).toLowerCase();
     await this._dropBlocks(f.path);
     if (!good) throw new SdkError('checksum_mismatch', `${f.path}: not the signed bytes`, { stage: 'download', why: 'hash' });
-    await this._serial(() => (f.encoding === 'qle1' ? this.o.files.put(QLC.FORM_CDN, f.decoded.path, bytes) : this.o.files.put(QLC.FORM_PLAIN, f.path, bytes)));
+    if (f.encoding === 'qle1') await this._serial(() => this.o.files.put(QLC.FORM_CDN, f.decoded.path, bytes));
+    else await this._putPlain(f, bytes);
     return bytes.length;
   }
 
@@ -1233,6 +1365,9 @@ export class Controller {
     if (folder(pre.base) === null || folder(pre.base) !== folder(base)) { await this._preDrop(pre); return null; }
     await pre.done.catch(() => {});
     this.state.set(`early:${pre.build}`, null); // (4.0.2) what an early fetch kept is this lease's now
+    // R402-4 (a): the early fetch's write failed as an install's would: the page load goes on in memory, and the call's
+    // install asks for every file again there
+    if (pre.error && this._toMemory(pre.error)) return null;
     if (pre.error) throw this._noAnswer(pre.error, pre.arrived || pre.entries.length > 0 || pre.kept);
     return pre;
   }
@@ -1246,7 +1381,7 @@ export class Controller {
     for (const h of [...pre.cancel.hooks]) { try { h(); } catch (_) { /* gone */ } }
     await pre.done.catch(() => {});
     for (const f of pre.entries) {
-      await this.o.files.drop(f.encoding === 'qle1' ? QLC.FORM_CDN : QLC.FORM_PLAIN, f.encoding === 'qle1' ? f.decoded.path : f.path).catch(() => {});
+      await this.o.files.drop(f.encoding === 'qle1' ? QLC.FORM_CDN : QLC.FORM_PLAIN, storedPath(f)).catch(() => {});
     }
     for (const f of pre.inflight) await this._dropBlocks(f.path).catch(() => {});
     pre.inflight.clear();
@@ -1256,7 +1391,7 @@ export class Controller {
       try { m = JSON.parse(this.state.get(`manifest:${pre.build}`)); } catch (_) { m = null; }
       for (const f of (m && Array.isArray(m.files) ? m.files : [])) {
         if (f.encoding === 'qle1') await this.o.files.drop(QLC.FORM_CDN, f.decoded.path).catch(() => {});
-        else await this.o.files.drop(QLC.FORM_PLAIN, f.path).catch(() => {});
+        else await this.o.files.drop(QLC.FORM_PLAIN, plainPath(f)).catch(() => {});
         await this._dropBlocks(f.path).catch(() => {});
       }
       this.state.set(`early:${pre.build}`, null);
@@ -1281,6 +1416,34 @@ export class Controller {
   }
 
   async _ensureFiles(base, man, context, onProgress, pre = null) {
+    try { return await this._ensureFilesIn(base, man, context, onProgress, pre); } catch (e) {
+      if (!this._toMemory(e)) throw e;
+      // R402-4 (a): the page load goes on in memory; what OPFS held (an early fetch's files) is not there: asked again
+      return this._ensureFilesIn(base, man, context, onProgress, null);
+    }
+  }
+
+  /**
+   * R402-4 (a): an install's OPFS write failed for a reason other than another page holding the file (memoryFallbackOf):
+   * the frame's file store is memory for the rest of the page load (the Core's view too), and that is said once,
+   * silently, as a failed OPFS probe is (storage/unavailable, error_code the call, error_name its error). False when
+   * the failure is not one, or the page load is in memory already.
+   */
+  _toMemory(e) {
+    const why = memoryFallbackOf(e);
+    if (!why || !this.o.files || this.o.files.kind !== 'opfs') return false;
+    const old = this.o.files;
+    const mem = new MemoryFiles();
+    mem.onFailure = old.onFailure || null;
+    mem.unavailable = why;
+    this.o.files = mem;
+    if (this.files) this.files.f = mem;
+    Promise.resolve().then(() => old.close()).catch(() => {});
+    try { this.ql._silent('storage', 'unavailable', why); } catch (_) { /* never in the way */ }
+    return true;
+  }
+
+  async _ensureFilesIn(base, man, context, onProgress, pre = null) {
     const todo = await this._missing(man, context);
     const stats = { bytesDownloaded: 0, installMs: 0, files: 0 };
     // what the early fetch stored (from this lease's base, already checked) is not asked again
@@ -1359,7 +1522,7 @@ export class Controller {
     return {
       id: man.m.model_id, version: man.m.version, build: src.build, contexts: [...man.m.contexts], defaultContext: context,
       chunkMs: Object.fromEntries(man.m.contexts.map((c) => [c, contextChunk(c)])), tokens, tokensSha256: man.m.tokens_sha256,
-      calibration: cal ? { text: fromUtf8(cal), sha256: calEntry ? calEntry.sha256 : await sha256Hex(cal) } : null,
+      calibration: cal ? { text: fromUtf8(cal), sha256: calEntry ? plainSha(calEntry) : await sha256Hex(cal) } : null,
       clips, pin: src.pin || null, loadMs, installMs: stats.installMs, bytesDownloaded: stats.bytesDownloaded,
       lease: { exp: li.exp, refreshAfter: li.refreshAfter, kept: li.restored === true, graceUntil }, engine: this.core.version, recited: this.recitedReady,
       reference: man.m.files.some((f) => f.role === 'reference'),
@@ -1385,17 +1548,43 @@ export class Controller {
     try { this.core.push(new Float32Array(Math.ceil((this.model.rate * Math.max(320, this.core.chunkMs())) / 1000) * 2)); } finally { this.core.endStream(); }
   }
 
+  /**
+   * A plain entry's bytes as downloaded (checked against its signed size and SHA-256 already) kept on the device: a
+   * gzip one inflated and checked against its signed `decoded` size and SHA-256, at its decoded path (plainPath); a copy
+   * an older version kept under the stored path is dropped. Returns the plain bytes.
+   */
+  async _putPlain(f, bytes) {
+    let plain = bytes;
+    if (f.encoding === 'gzip' && f.decoded) {
+      try { plain = await gunzip(bytes); } catch (e) { throw new SdkError('checksum_mismatch', `${f.path}: not a gzip file (${(e && e.message) || e})`, { stage: 'download', why: 'hash' }); }
+      if (plain.length !== f.decoded.size || (await sha256Hex(plain)) !== plainSha(f)) {
+        throw new SdkError('checksum_mismatch', `${f.path}: its plain bytes are not the signed ones`, { stage: 'download', why: 'hash' });
+      }
+    }
+    await this._serial(async () => {
+      await this.o.files.put(QLC.FORM_PLAIN, plainPath(f), plain);
+      if (plainPath(f) !== f.path) await this.o.files.drop(QLC.FORM_PLAIN, f.path).catch(() => {});
+    });
+    return plain;
+  }
+
+  /** A plain entry's plain bytes: the device's copy, else downloaded from the open model's base and kept (_putPlain). */
+  async _plainFile(f) {
+    const had = await this.o.files.get(QLC.FORM_PLAIN, plainPath(f)).catch(() => null);
+    if (had) return had;
+    const b = await this._get(this.model.base + f.path.split('/').map(encodeURIComponent).join('/'));
+    if (b.length !== f.size || (await sha256Hex(b)) !== String(f.sha256).toLowerCase()) {
+      throw new SdkError('checksum_mismatch', `${f.path}: not the signed bytes`, { stage: 'download', why: 'hash' });
+    }
+    return this._putPlain(f, b);
+  }
+
   async _clipList(man) {
-    const entry = man.m.files.find((f) => f.path === 'selftest/selftest.json');
+    const entry = man.m.files.find((f) => f.encoding !== 'qle1' && plainPath(f) === 'selftest/selftest.json');
     if (!entry) return [];
     try {
-      if (!(await this.o.files.has(QLC.FORM_PLAIN, entry.path))) {
-        const b = await this._get(this.model.base + entry.path);
-        if ((await sha256Hex(b)) !== entry.sha256) return [];
-        await this.o.files.put(QLC.FORM_PLAIN, entry.path, b);
-      }
-      const st = JSON.parse(fromUtf8(await this.o.files.get(QLC.FORM_PLAIN, entry.path)));
-      return (Array.isArray(st.clips) ? st.clips : []).filter((c) => typeof c.id === 'string' && c.sample_rate > 0 && man.m.files.some((f) => f.path === `selftest/${c.file}`))
+      const st = JSON.parse(fromUtf8(await this._plainFile(entry)));
+      return (Array.isArray(st.clips) ? st.clips : []).filter((c) => typeof c.id === 'string' && c.sample_rate > 0 && man.m.files.some((f) => f.encoding !== 'qle1' && plainPath(f) === `selftest/${c.file}`))
         .map((c) => ({ name: c.id, kind: String(c.kind || 'clean'), durationMs: Math.round((1000 * c.samples) / c.sample_rate), file: c.file, sampleRate: c.sample_rate }));
     } catch (_) { return []; }
   }
@@ -1434,13 +1623,8 @@ export class Controller {
     const clips = await this._clipList(md.man);
     const c = clips.find((x) => x.name === name);
     if (!c) throw new SdkError('invalid_argument', 'not a sample clip of this model');
-    const path = `selftest/${c.file}`, e = md.man.m.files.find((f) => f.path === path);
-    let b = await this.o.files.get(QLC.FORM_PLAIN, path);
-    if (!b) {
-      b = await this._get(md.base + path);
-      if ((await sha256Hex(b)) !== e.sha256) throw new SdkError('checksum_mismatch', `${path}: not the signed bytes`, { stage: 'download', why: 'hash' });
-      await this.o.files.put(QLC.FORM_PLAIN, path, b);
-    }
+    const path = `selftest/${c.file}`, e = md.man.m.files.find((f) => f.encoding !== 'qle1' && plainPath(f) === path);
+    const b = await this._plainFile(e);
     const n = b.length >> 1, dv = new DataView(b.buffer, b.byteOffset, b.byteLength), out = new Float32Array(n);
     for (let i = 0; i < n; i++) out[i] = dv.getInt16(2 * i, true) / 32768;
     return { samples: out, sampleRate: c.sampleRate };
@@ -1647,7 +1831,7 @@ export class Controller {
       try { m = JSON.parse(this.state.get(k)); } catch (_) { continue; }
       let bytes = 0;
       for (const f of m.files || []) {
-        const dec = f.encoding === 'qle1' ? f.decoded.path : f.path;
+        const dec = storedPath(f);
         for (const x of list) if (x.path === dec) bytes += x.size;
       }
       models.push({ version: m.version, build: k.slice(9), bytes });
@@ -1731,6 +1915,8 @@ export class Controller {
 
 /** close(): the longest it waits for a lease attempt in flight and its save (4.0.2). */
 export const CLOSE_WAIT_MS = 3_000;
+/** R402-3: the longest a call waits for the lease record's save (it goes on behind). */
+export const LEASE_SAVE_WAIT_MS = 5_000;
 
 // A model request's token that could not be had (ql.modelHeaders): a stop or an answer of the API stays as the platform
 // client made it (its code is read from its status and reason); no answer at all is the request's failure, at the

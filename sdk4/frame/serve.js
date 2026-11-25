@@ -11,7 +11,7 @@ import { ReportError } from '../shared/recited.js';
 export function errorOf(e) {
   if (e instanceof SdkError) return { code: e.code, message: e.message, reason: e.reason || null };
   if (e instanceof ReportError) return { code: 'invalid_argument', message: e.message, reason: null };
-  const t = toTajweedError(e, { fallback: 'engine_failed', sdk: '4.0.2' });
+  const t = toTajweedError(e, { fallback: 'engine_failed', sdk: '4.0.3' });
   return { code: t.code, message: (e && e.message) || t.message, reason: (e && e.reason) || null };
 }
 
